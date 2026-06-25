@@ -1,0 +1,22 @@
+node_modules/
+.env
+.env.*
+
+# generated oracle snapshot
+oracle/root.json
+
+# circuit build artifacts and ceremony output
+circuits/build/
+*.zkey
+*.r1cs
+*.wasm
+*.ptau
+
+# per-user proof and challenge files (may carry session nonces)
+proof.json
+challenge.json
+*.proof.json
+
+# editor and OS noise
+.DS_Store
+*.log

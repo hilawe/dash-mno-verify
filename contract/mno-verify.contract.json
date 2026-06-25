@@ -1,0 +1,45 @@
+{
+  "dmlRoot": {
+    "type": "object",
+    "properties": {
+      "height": { "type": "integer", "minimum": 0, "position": 0 },
+      "root": { "type": "array", "byteArray": true, "minItems": 32, "maxItems": 32, "position": 1 },
+      "treeDepth": { "type": "integer", "minimum": 1, "maximum": 32, "position": 2 }
+    },
+    "indices": [
+      { "name": "byHeight", "properties": [{ "height": "desc" }], "unique": true }
+    ],
+    "required": ["height", "root", "treeDepth"],
+    "additionalProperties": false
+  },
+  "nullifier": {
+    "type": "object",
+    "properties": {
+      "epoch": { "type": "integer", "minimum": 0, "position": 0 },
+      "contextHash": { "type": "array", "byteArray": true, "minItems": 32, "maxItems": 32, "position": 1 },
+      "nf": { "type": "array", "byteArray": true, "minItems": 32, "maxItems": 32, "position": 2 }
+    },
+    "indices": [
+      {
+        "name": "uniqueSpend",
+        "properties": [{ "epoch": "asc" }, { "contextHash": "asc" }, { "nf": "asc" }],
+        "unique": true
+      }
+    ],
+    "required": ["epoch", "contextHash", "nf"],
+    "additionalProperties": false
+  },
+  "membersRoot": {
+    "type": "object",
+    "properties": {
+      "season": { "type": "integer", "minimum": 0, "position": 0 },
+      "root": { "type": "array", "byteArray": true, "minItems": 32, "maxItems": 32, "position": 1 },
+      "size": { "type": "integer", "minimum": 0, "position": 2 }
+    },
+    "indices": [
+      { "name": "bySeason", "properties": [{ "season": "desc" }], "unique": true }
+    ],
+    "required": ["season", "root"],
+    "additionalProperties": false
+  }
+}
