@@ -10,7 +10,7 @@ import { execFileSync } from "node:child_process";
 import { writeFile } from "node:fs/promises";
 import { parseArgs } from "node:util";
 import { buildPoseidon } from "circomlibjs";
-import bs58check from "bs58check";
+import { votingAddressToLeaf } from "../common/dml.js";
 
 const TREE_DEPTH = 16; // up to 65536 leaves; raise if the network grows past that
 const EMPTY_LEAF = 0n;
@@ -21,13 +21,6 @@ const { values } = parseArgs({
 
 const dashCli = (args) =>
   JSON.parse(execFileSync("dash-cli", args, { encoding: "utf8" }));
-
-// votingAddress is base58check(version || hash160(votingPubKey)).
-// Drop the 1-byte version prefix, keep 20 bytes, read big-endian.
-function votingAddressToLeaf(address) {
-  const hash160 = bs58check.decode(address).slice(1);
-  return BigInt("0x" + Buffer.from(hash160).toString("hex"));
-}
 
 const poseidon = await buildPoseidon();
 const F = poseidon.F;

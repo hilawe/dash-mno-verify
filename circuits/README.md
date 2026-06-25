@@ -3,6 +3,13 @@
 `mno_membership.circom` proves knowledge of a voting private key whose `hash160`
 is a leaf in the published DML Merkle root, and emits an epoch-rotating nullifier.
 
+## Files
+
+- `merkle.circom` the Poseidon Merkle inclusion template, shared by every circuit so the tree hashing cannot drift.
+- `lib.circom` the `CompressAndHash160` template plus the heavy includes (secp256k1, SHA-256, RIPEMD160).
+- `mno_membership.circom` the single-tier proof, run every epoch. This is the default.
+- `mno_registration.circom` and `mno_members.circom` the two-tier optimization path, not wired into the default build. Use only if a compiled single-tier proof is too slow per epoch. The registration proof does the secp256k1 and hash160 work once per season; the members proof is a cheap Poseidon-only membership run every epoch. See `docs/DESIGN.md`.
+
 ## Dependencies
 
 The circuit pulls in three external sources. Install them under a path your Circom

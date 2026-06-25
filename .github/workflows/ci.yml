@@ -1,0 +1,34 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+      - run: npm ci
+
+      - name: Syntax check every tracked JS file
+        run: |
+          for f in $(git ls-files '*.js'); do node --check "$f"; done
+
+      - name: Validate JSON
+        run: |
+          node -e "for (const f of ['package.json','contract/mno-verify.contract.json']) JSON.parse(require('fs').readFileSync(f,'utf8'));"
+
+      - name: Unit tests
+        run: npm test
+
+  # The circuit compile is intentionally not a job yet. It needs the circom binary plus
+  # circomlib, circom-ecdsa, and a vetted RIPEMD160 template, and that template is the
+  # one dependency not yet vendored (see circuits/README.md). Add a compile-and-witness
+  # job here once it is in place, so CI also pins the in-circuit hash160 against the same
+  # generator vector that test/hash160.test.js pins on the JavaScript side.

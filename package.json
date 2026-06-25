@@ -12,7 +12,9 @@
     "oracle": "node oracle/oracle.js",
     "gateway": "node core/gateway.js",
     "bot": "node adapters/discord/bot.js",
-    "prove": "node prover/prover.js"
+    "web": "node adapters/web/server.js",
+    "prove": "node prover/prover.js",
+    "test": "node --test"
   },
   "dependencies": {
     "@noble/curves": "^1.4.0",

@@ -10,10 +10,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { parseArgs } from "node:util";
 import * as snarkjs from "snarkjs";
 import { buildPoseidon } from "circomlibjs";
-import { secp256k1 } from "@noble/curves/secp256k1";
-import { ripemd160 } from "@noble/hashes/ripemd160";
-import { sha256 } from "@noble/hashes/sha256";
-import bs58check from "bs58check";
+import { wifToPriv, leafFromPriv } from "../common/dml.js";
 
 const TREE_DEPTH = 16;
 const WASM = "circuits/build/mno_membership_js/mno_membership.wasm";
@@ -27,21 +24,6 @@ const { values } = parseArgs({
     out: { type: "string", default: "proof.json" },
   },
 });
-
-// Dash WIF to a 32-byte private key. Drop the version byte, drop the trailing
-// compression flag if present, keep the 32 key bytes.
-function wifToPriv(wif) {
-  const payload = bs58check.decode(wif).slice(1);
-  return Uint8Array.from(payload.slice(0, 32));
-}
-
-// hash160 of the compressed public key, as a big-endian BigInt. This must match the
-// in-circuit CompressAndHash160 output and the oracle leaf encoding.
-function leafFromPriv(priv) {
-  const pub = secp256k1.getPublicKey(priv, true); // 33-byte compressed
-  const h = ripemd160(sha256(pub));
-  return BigInt("0x" + Buffer.from(h).toString("hex"));
-}
 
 // secp256k1 scalar to circom-ecdsa limb layout: k=4 limbs of n=64 bits, little-endian.
 function privToLimbs(priv) {
