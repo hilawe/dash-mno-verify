@@ -59,8 +59,10 @@ const F = poseidon.F;
 
 const height = await call("getblockcount", []);
 
-// masternodelist json returns a map keyed by "txid-index"; keep the ENABLED nodes and read
-// each one's voting address. Sorting by the key gives every honest oracle the same tree.
+// masternodelist json returns a map keyed by "txid-index" with every node. The only other
+// status is POSE_BANNED, so keeping status === "ENABLED" is the valid-masternode filter,
+// the same set as `protx list valid`. Evonodes are included and carry a votingaddress too.
+// Read each node's voting address. Sorting by the key gives every honest oracle the same tree.
 const list = await call("masternodelist", ["json"]);
 const entries = Object.entries(list).filter(([, m]) => m.status === "ENABLED");
 entries.sort(([a], [b]) => (a < b ? -1 : 1));

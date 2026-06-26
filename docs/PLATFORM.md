@@ -10,9 +10,11 @@ gateways cannot double-grant even under a race.
 ## What is on Platform
 
 The data contract is `contract/mno-verify.contract.json`. The type that matters is
-`nullifier`, with the unique index `uniqueSpend` over (epoch, contextHash, nf). The `dmlRoot`
-and `membersRoot` types let an oracle publish roots on Platform too, so gateways can read the
-current root from the same place.
+`nullifier`, with the unique index `uniqueSpend` over (epoch, contextHash, nf). The nullifier
+documents are marked immutable and non-deletable, so a recorded tag cannot be edited or
+removed. That is what makes the consensus dedup safe: no one can clear a spent tag and reuse
+a proof. The `dmlRoot` and `membersRoot` types are immutable too and let an oracle publish
+roots on Platform, so gateways can read the current root from the same place.
 
 ## Turning it on
 

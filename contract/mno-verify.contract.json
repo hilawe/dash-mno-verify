@@ -10,7 +10,8 @@
       { "name": "byHeight", "properties": [{ "height": "desc" }], "unique": true }
     ],
     "required": ["height", "root", "treeDepth"],
-    "additionalProperties": false
+    "additionalProperties": false,
+    "documentsMutable": false
   },
   "nullifier": {
     "type": "object",
@@ -27,7 +28,9 @@
       }
     ],
     "required": ["epoch", "contextHash", "nf"],
-    "additionalProperties": false
+    "additionalProperties": false,
+    "documentsMutable": false,
+    "canBeDeleted": false
   },
   "membersRoot": {
     "type": "object",
@@ -39,7 +42,8 @@
     "indices": [
       { "name": "bySeason", "properties": [{ "season": "desc" }], "unique": true }
     ],
-    "required": ["season", "root"],
-    "additionalProperties": false
+    "required": ["season", "root", "size"],
+    "additionalProperties": false,
+    "documentsMutable": false
   }
 }
