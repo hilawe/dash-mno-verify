@@ -86,6 +86,8 @@ references:
 - `docs/PLATFORM.md`: sharing the spent set across gateways on Dash Platform.
 - `adapters/README.md` and `prover/README.md`: the platform adapters and the provers.
 
+Known issues and the planned work are tracked in `TODO.md`.
+
 ## License
 
 MIT. See `LICENSE`.
