@@ -14,7 +14,7 @@ import { wifToPriv, leafFromPriv } from "../common/dml.js";
 
 const TREE_DEPTH = 16;
 const WASM = "circuits/build/mno_membership_js/mno_membership.wasm";
-const ZKEY = "circuits/build/circuit_final.zkey";
+const ZKEY = "circuits/build/mno_membership.zkey"; // PLONK proving key
 
 const { values } = parseArgs({
   options: {
@@ -95,6 +95,6 @@ const input = {
   signalHash: challenge.signalHash,
 };
 
-const { proof, publicSignals } = await snarkjs.groth16.fullProve(input, WASM, ZKEY);
+const { proof, publicSignals } = await snarkjs.plonk.fullProve(input, WASM, ZKEY);
 await writeFile(values.out, JSON.stringify({ nonce: challenge.nonce, proof, publicSignals }, null, 2));
 console.log(`Wrote ${values.out}. Submit it through your adapter. Your voting key never left this machine.`);

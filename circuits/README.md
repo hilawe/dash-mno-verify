@@ -16,7 +16,7 @@ is a leaf in the published DML Merkle root, and emits an epoch-rotating nullifie
 Install these under a path your Circom include flags can see (`-l`).
 
 1. `circomlib` (Poseidon, SHA-256, bitify). Well established, a dev dependency in `package.json`.
-2. `circom-ecdsa` from 0xPARC (secp256k1, the `ECDSAPrivToPub` template), needed only by the full single-tier `mno_membership.circom`. Not needed for the hash160 or members circuits.
+2. `circom-ecdsa` from 0xPARC (secp256k1, the `ECDSAPrivToPub` template), needed only by the full single-tier `mno_membership.circom`, not by the hash160 or members circuits. It is GPL-3.0, so it is not vendored here. `scripts/setup_circom_ecdsa.sh` clones it into `circuits/.deps` (gitignored) and symlinks it to this repo's circomlib. A circuit compiled against it inherits GPL-3.0, so treat the built `mno_membership` artifacts as GPL-3.0.
 
 RIPEMD-160 is no longer an external dependency. It is written in-repo and validated, since no vetted Circom template could be found.
 
@@ -41,20 +41,29 @@ against the generated `public.json` and keep `core/verifier.js` in sync.
 
 ## Compile and set up
 
-The example below uses Groth16. For a community tool, prefer a transparent setup
-(PLONK or halo2) over Groth16 so there is no per-circuit toxic-waste ceremony to run.
+The full single-tier circuit needs circom-ecdsa, fetched as an external build dependency.
+The proving system is PLONK, so the setup is transparent: it reuses the public Hermez
+Powers of Tau universal SRS, with no per-circuit ceremony.
 
 ```bash
-circom mno_membership.circom --r1cs --wasm --sym -o build -l <path-to-includes>
+# 1. fetch circom-ecdsa (clones to circuits/.deps, symlinks this repo's circomlib)
+bash scripts/setup_circom_ecdsa.sh
 
-# Groth16 example (universal SRS from the public Powers of Tau, then per-circuit keys)
-snarkjs groth16 setup build/mno_membership.r1cs pot_final.ptau build/circuit_0.zkey
-snarkjs zkey contribute build/circuit_0.zkey build/circuit_final.zkey -e="text"
-snarkjs zkey export verificationkey build/circuit_final.zkey build/verification_key.json
+# 2. compile (about 174k r1cs constraints, roughly 10s)
+circom circuits/mno_membership.circom --r1cs --wasm -o circuits/build \
+  -l node_modules -l circuits/.deps
+
+# 3. PLONK expands this to about 635k constraints, so it needs a 2^20 universal SRS
+curl -fsSL https://storage.googleapis.com/zkevm/ptau/powersOfTau28_hez_final_20.ptau -o pot20.ptau
+snarkjs plonk setup circuits/build/mno_membership.r1cs pot20.ptau circuits/build/mno_membership.zkey
+snarkjs zkey export verificationkey circuits/build/mno_membership.zkey circuits/build/verification_key.json
 ```
 
-The gateway reads `build/verification_key.json`. The prover reads
-`build/mno_membership_js/mno_membership.wasm` and `build/circuit_final.zkey`.
+The gateway reads `circuits/build/verification_key.json`, which is small and committed so
+the gateway boots out of the box. The prover reads
+`circuits/build/mno_membership_js/mno_membership.wasm` and the PLONK proving key
+`circuits/build/mno_membership.zkey`, which is large and not committed, so distribute it
+separately.
 
 ## Cost note
 

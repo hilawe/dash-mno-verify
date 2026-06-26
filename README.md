@@ -45,13 +45,14 @@ No party links a platform identity to an on-chain address. That is the property 
 
 ## Status
 
-Early and experimental, but the hardest correctness question is settled. RIPEMD-160 is implemented in-repo, and the full in-circuit hash160 is validated against a known vector on every push by the CI `circuits` job (also runnable with `scripts/check_circuits.sh`), so the in-circuit leaf provably equals the off-chain one.
+Early but runnable end to end. The full single-tier `mno_membership.circom` compiles (about 174k constraints) against `circom-ecdsa`, fetched as an external build dependency by `scripts/setup_circom_ecdsa.sh`. The proving system is PLONK over the public Hermez Powers of Tau, a transparent universal setup with no per-circuit ceremony. The verification key is committed, so the gateway boots out of the box.
+
+The CI `circuits` job compiles every circuit on each push, the full membership circuit included, and validates the in-circuit hash160 against a known vector, so the in-circuit leaf provably equals the off-chain one.
 
 What remains before gating anything of value:
 
-1. Wire `circom-ecdsa` into the build so the full single-tier `mno_membership.circom` compiles end to end. The in-circuit hash160 it depends on is already validated.
-2. Use a transparent trusted setup (PLONK or halo2), or run a proper Groth16 ceremony.
-3. Confirm the public-signal order against the compiled `public.json` and keep `core/verifier.js` in sync.
+1. Build and distribute the PLONK proving key and the circuit wasm to provers. The proving key is about 2 GB and is not in the repo. Build it per `circuits/README.md`.
+2. Harden the operational pieces: run the oracle against a real Dash node, choose single-tier versus two-tier from measured proving time, and move the root and nullifier state onto the Platform contract if you want several gateways to share it.
 
 ## Quickstart
 

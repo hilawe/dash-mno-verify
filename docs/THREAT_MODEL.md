@@ -27,11 +27,13 @@ design exists to provide.
 
 ## Before any real deployment
 
-Done: RIPEMD-160 is implemented in-repo, and the full in-circuit hash160 is validated
-against the generator vector on every push by the CI `circuits` job.
+Done: RIPEMD-160 is implemented in-repo and the in-circuit hash160 is validated against the
+generator vector on every push. The full `mno_membership.circom` compiles against
+circom-ecdsa, and the proving system is PLONK over the public Hermez Powers of Tau, a
+transparent universal setup with no per-circuit ceremony. The verification key is committed
+and the gateway boots with it.
 
 Still required:
 
-1. Wire `circom-ecdsa` in so the full single-tier `mno_membership.circom` compiles end to end. The in-circuit hash160 it depends on is already validated.
-2. Use a transparent trusted setup (PLONK or halo2) or run a proper Groth16 ceremony.
-3. Confirm the public-signal order against the compiled circuit's `public.json`.
+1. Build and distribute the PLONK proving key (about 2 GB) and the circuit wasm to provers.
+2. Run the oracle against a real Dash node, and decide single-tier versus two-tier from measured proving time.

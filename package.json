@@ -15,7 +15,7 @@
     "telegram": "node adapters/telegram/bot.js",
     "web": "node adapters/web/server.js",
     "prove": "node prover/prover.js",
-    "test": "node --test"
+    "test": "node --test 'test/**/*.test.js'"
   },
   "dependencies": {
     "@noble/curves": "^1.4.0",

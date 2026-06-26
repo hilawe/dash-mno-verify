@@ -58,8 +58,10 @@ export async function verifyMembership({ vkey, proof, publicSignals, expected, n
   if (nullifiers.has(s.epoch, s.contextHash, s.nullifier))
     return { ok: false, reason: "already-used" };
 
-  // 6) the zero-knowledge proof itself
-  const valid = await snarkjs.groth16.verify(vkey, publicSignals, proof);
+  // 6) the zero-knowledge proof itself. PLONK, so the verification key comes from a
+  // transparent universal setup (the public Hermez Powers of Tau), with no per-circuit
+  // ceremony.
+  const valid = await snarkjs.plonk.verify(vkey, publicSignals, proof);
   if (!valid) return { ok: false, reason: "invalid-proof" };
 
   nullifiers.add(s.epoch, s.contextHash, s.nullifier);

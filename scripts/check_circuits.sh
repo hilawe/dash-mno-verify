@@ -35,5 +35,10 @@ echo "--- compile mno_members (Poseidon recurring circuit) ---"
 "$CIRCOM" circuits/mno_members.circom --r1cs --wasm -o "$BUILD" -l node_modules >/dev/null
 echo "  compiled"
 
+echo "--- compile full mno_membership (fetches circom-ecdsa) ---"
+bash scripts/setup_circom_ecdsa.sh >/dev/null 2>&1
+"$CIRCOM" circuits/mno_membership.circom --r1cs --wasm -o "$BUILD" -l node_modules -l circuits/.deps >/dev/null
+echo "  compiled"
+
 rm -rf "$BUILD"
 echo "ALL CIRCUIT CHECKS PASSED"
