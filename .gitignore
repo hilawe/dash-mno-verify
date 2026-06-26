@@ -17,6 +17,11 @@ proof.json
 challenge.json
 *.proof.json
 
+# transient witness inputs written by circuit make_input helpers
+input.json
+expected.txt
+witness.json
+
 # editor and OS noise
 .DS_Store
 *.log
