@@ -13,6 +13,7 @@
     "gateway": "node core/gateway.js",
     "bot": "node adapters/discord/bot.js",
     "telegram": "node adapters/telegram/bot.js",
+    "matrix": "node adapters/matrix/bot.js",
     "web": "node adapters/web/server.js",
     "prove": "node prover/prover.js",
     "register": "node prover/two_tier.js register",

@@ -28,19 +28,25 @@ has to trust a downloaded multi-GB blob.
 
 The build needs about 3 GB of disk, a 1.15 GB SRS download, and several minutes.
 
-## Optional: host the artifacts for convenience
+## Downloading the prebuilt artifacts
 
-Rebuilding is the trustless default, but it is heavy to ask of every prover. An operator
-may host the prebuilt `mno_membership.zkey` and the wasm so clients can download instead of
-rebuild. Two things make that safe:
+Rebuilding is the trustless default, but it is heavy to ask of every prover, especially for
+the cheap per-epoch members proof on a small device. The hostable artifacts, the members
+proving key and the three circuit wasms, are published on a GitHub release and listed with
+their sha256 in `keys.manifest.json`. Fetch and verify them with:
 
-1. Publish the sha256 of the hosted files, and have clients check it.
-2. Either way, the client confirms correctness the same way the build script does, by proving a witness and verifying against the committed verification key.
+```bash
+bash scripts/fetch_keys.sh
+```
 
-One practical note on hosting. A GitHub release asset is capped at 2 GB, and the proving
-key is larger, so it cannot be a single release asset. The options are to split it into
-parts under 2 GB and recombine, or to host it on object storage (S3, R2, or similar) or on
-IPFS.
+It downloads each file, checks its sha256 against the manifest, and places it under
+`circuits/build/`. Point `MNO_KEYS_BASE_URL` at a different host if you mirror them.
+
+The two large proving keys, membership and registration, are about 2.3 GB each, over the
+GitHub 2 GB asset limit, so they are not on the release. Rebuild them with
+`scripts/build_proving_key.sh`, or host them yourself on object storage (S3, R2) or IPFS and
+add them to `keys.manifest.json` with their sha256. Whatever the source, the build script's
+check still applies: prove a witness and verify it against the committed verification key.
 
 ## What the prover expects
 

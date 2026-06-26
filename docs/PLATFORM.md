@@ -27,8 +27,25 @@ export MNO_PLATFORM_CONTRACT_ID="<the registered contract id>"
 npm run gateway
 ```
 
-To register the contract once, deploy `contract/mno-verify.contract.json` with the Dash SDK
-under a funded identity, then use the returned contract id above.
+## Deploying to Platform
+
+1. Install the SDK: `npm install dash` (it is an optional dependency).
+2. Create and fund a Platform identity. On testnet this means generating a wallet, getting testnet DASH from a faucet, and creating an identity, which costs a little credit. Follow the current Dash Platform tutorials for this, since the exact steps and the faucet move over time.
+3. Register the contract once with your funded wallet:
+
+```bash
+MNO_PLATFORM_NETWORK=testnet MNO_PLATFORM_MNEMONIC="your funded wallet" \
+  node scripts/register_contract.mjs
+```
+
+It deploys `contract/mno-verify.contract.json` and prints the contract id. Set that as
+`MNO_PLATFORM_CONTRACT_ID` along with the env above, and the gateway runs on Platform.
+
+A note from testing here: the SDK installs and loads, and the store and registration code are
+written to the documented SDK API, but the live path was not exercised end to end. A
+read-only testnet connect returned "no available addresses", which means the default DAPI
+endpoints need configuring for your network. Treat the live write path as wired but unproven
+until you run it against a funded identity with working DAPI access.
 
 ## What is verified, and what is not
 
