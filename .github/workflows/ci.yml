@@ -27,8 +27,23 @@ jobs:
       - name: Unit tests
         run: npm test
 
-  # The circuit compile is intentionally not a job yet. It needs the circom binary plus
-  # circomlib, circom-ecdsa, and a vetted RIPEMD160 template, and that template is the
-  # one dependency not yet vendored (see circuits/README.md). Add a compile-and-witness
-  # job here once it is in place, so CI also pins the in-circuit hash160 against the same
-  # generator vector that test/hash160.test.js pins on the JavaScript side.
+  circuits:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+      - run: npm ci
+      - name: Install circom
+        run: |
+          curl -fsSL https://github.com/iden3/circom/releases/download/v2.2.3/circom-linux-amd64 -o "$RUNNER_TEMP/circom"
+          chmod +x "$RUNNER_TEMP/circom"
+          "$RUNNER_TEMP/circom" --version
+      - name: Compile circuits and validate hash160 against the generator vector
+        run: CIRCOM="$RUNNER_TEMP/circom" bash scripts/check_circuits.sh
+
+  # Not yet a job: compiling the full single-tier mno_membership.circom needs circom-ecdsa
+  # (ECDSAPrivToPub) wired in, and the deployment also needs a transparent trusted setup.
+  # The in-circuit hash160, the part unique to this project, is already validated above.

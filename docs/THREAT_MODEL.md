@@ -27,7 +27,11 @@ design exists to provide.
 
 ## Before any real deployment
 
-1. Vet the RIPEMD160 Circom template.
-2. Validate the in-circuit hash160 bit ordering against one real vector.
-3. Use a transparent trusted setup or run a proper ceremony.
-4. Confirm the public-signal order against the compiled circuit's `public.json`.
+Done: RIPEMD-160 is implemented in-repo, and the full in-circuit hash160 is validated
+against the generator vector on every push by the CI `circuits` job.
+
+Still required:
+
+1. Wire `circom-ecdsa` in so the full single-tier `mno_membership.circom` compiles end to end. The in-circuit hash160 it depends on is already validated.
+2. Use a transparent trusted setup (PLONK or halo2) or run a proper Groth16 ceremony.
+3. Confirm the public-signal order against the compiled circuit's `public.json`.

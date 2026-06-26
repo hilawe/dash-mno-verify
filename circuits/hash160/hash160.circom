@@ -2,15 +2,16 @@ pragma circom 2.1.6;
 
 include "circomlib/circuits/bitify.circom";
 include "circomlib/circuits/sha256/sha256.circom";
-include "circom-ecdsa/circuits/ecdsa.circom";   // ECDSAPrivToPub(n, k)
-include "ripemd160/ripemd160.circom";            // community template, must be vetted
-include "./merkle.circom";
+include "../ripemd160/ripemd160.circom";
 
-// Compressed pubkey -> hash160, returned as one field element (matches the oracle leaf
-// and common/dml.js leafFromPubkey, which is pinned by test/hash160.test.js).
+// Compressed pubkey -> hash160, returned as one field element. Matches the oracle leaf
+// and common/dml.js leafFromPubkey, pinned by test/hash160.test.js on the JS side and by
+// test/hash160 on the circuit side.
 //
-// VALIDATE the bit ordering against one real vector before trusting any proof: the
-// generator key 0279be66...f81798 must hash to 0x751e76e8199196d454941c45d1b3a323f1433bd6.
+// Inputs x and y are the secp256k1 coordinates in circom-ecdsa register layout (k limbs
+// of n bits, little-endian, register 0 least significant), so this drops straight onto
+// ECDSAPrivToPub. The validated vector is the generator point, which must hash to
+// 0x751e76e8199196d454941c45d1b3a323f1433bd6.
 template CompressAndHash160(n, k) {
     signal input x[k];
     signal input y[k];

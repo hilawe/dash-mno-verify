@@ -13,7 +13,9 @@ pragma circom 2.1.6;
 // revoked individually. Membership re-anchors to current ownership only at each season
 // boundary. See docs/DESIGN.md.
 include "circomlib/circuits/poseidon.circom";
-include "./lib.circom";
+include "circom-ecdsa/circuits/ecdsa.circom";   // ECDSAPrivToPub(n, k)
+include "./hash160/hash160.circom";              // CompressAndHash160
+include "./merkle.circom";                       // MerkleInclusion
 
 template MnoRegistration(treeDepth, n, k) {
     // private witness

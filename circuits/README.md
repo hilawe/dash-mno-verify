@@ -6,23 +6,38 @@ is a leaf in the published DML Merkle root, and emits an epoch-rotating nullifie
 ## Files
 
 - `merkle.circom` the Poseidon Merkle inclusion template, shared by every circuit so the tree hashing cannot drift.
-- `lib.circom` the `CompressAndHash160` template plus the heavy includes (secp256k1, SHA-256, RIPEMD160).
+- `ripemd160/ripemd160.circom` a single-block RIPEMD-160 written from the spec for this repo, validated against a known answer (see Validation below).
+- `hash160/hash160.circom` the `CompressAndHash160` template (compressed pubkey to hash160), built on SHA-256 and the RIPEMD-160 above.
 - `mno_membership.circom` the single-tier proof, run every epoch. This is the default.
 - `mno_registration.circom` and `mno_members.circom` the two-tier optimization path, not wired into the default build. Use only if a compiled single-tier proof is too slow per epoch. The registration proof does the secp256k1 and hash160 work once per season; the members proof is a cheap Poseidon-only membership run every epoch. See `docs/DESIGN.md`.
 
 ## Dependencies
 
-The circuit pulls in three external sources. Install them under a path your Circom
-include flags can see (`-l`).
+Install these under a path your Circom include flags can see (`-l`).
 
-1. `circomlib` (Poseidon, SHA-256, bitify). Well established.
-2. `circom-ecdsa` from 0xPARC (secp256k1, the `ECDSAPrivToPub` template). Well established.
-3. A RIPEMD160 Circom template. This is the one piece not from a well-worn library. Source it and test it before trusting any output.
+1. `circomlib` (Poseidon, SHA-256, bitify). Well established, a dev dependency in `package.json`.
+2. `circom-ecdsa` from 0xPARC (secp256k1, the `ECDSAPrivToPub` template), needed only by the full single-tier `mno_membership.circom`. Not needed for the hash160 or members circuits.
 
-## Two things to validate before trusting a proof
+RIPEMD-160 is no longer an external dependency. It is written in-repo and validated, since no vetted Circom template could be found.
 
-1. Bit ordering in `CompressAndHash160`. The limb and bit endianness of circom-ecdsa, the SHA-256 output order in circomlib, and the RIPEMD160 output order all have to line up. Validate against one real vector: take a test voting key, compute its `votingAddress` with `dash-cli`, and confirm the template output equals `BigInt('0x' + hash160hex)`. If that single vector passes, the assembly is correct.
-2. Public-signal order. snarkjs orders public signals as the circuit's public outputs first, then its public inputs in declaration order. For this circuit that is `[nullifier, root, epoch, contextHash, signalHash]`. Confirm against the generated `public.json` and keep `core/verifier.js` in sync.
+## Validation
+
+Both bit-ordering risks that used to be open are now pinned by `scripts/check_circuits.sh`,
+which the CI `circuits` job runs on every push. Run it locally with a circom binary:
+
+```bash
+CIRCOM=/path/to/circom bash scripts/check_circuits.sh
+```
+
+It compiles and witnesses two circuits and asserts the result:
+
+1. `ripemd160/ripemd160.circom` against the known hash160 of the secp256k1 generator, `0x751e76e8199196d454941c45d1b3a323f1433bd6`.
+2. `hash160/hash160.circom` (the full SHA-256 plus byte assembly plus RIPEMD-160 path) against the same generator vector, which is also the value `test/hash160.test.js` pins on the JavaScript side. When both pass, the in-circuit hash160 provably equals the off-chain leaf.
+
+One thing still to confirm by hand when you wire the full membership circuit: snarkjs orders
+public signals as the circuit's outputs first, then its inputs in declaration order, so for
+`mno_membership.circom` that is `[nullifier, root, epoch, contextHash, signalHash]`. Check it
+against the generated `public.json` and keep `core/verifier.js` in sync.
 
 ## Compile and set up
 

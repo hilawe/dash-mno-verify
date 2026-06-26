@@ -4,7 +4,9 @@ pragma circom 2.1.6;
 // correct design, and a sold node is evicted within one epoch. If per-epoch proving is
 // too slow, see mno_registration.circom and mno_members.circom for the two-tier path.
 include "circomlib/circuits/poseidon.circom";
-include "./lib.circom";   // CompressAndHash160, MerkleInclusion, plus the heavy includes
+include "circom-ecdsa/circuits/ecdsa.circom";   // ECDSAPrivToPub(n, k)
+include "./hash160/hash160.circom";              // CompressAndHash160
+include "./merkle.circom";                       // MerkleInclusion
 
 template MnoMembership(treeDepth, n, k) {
     // private witness

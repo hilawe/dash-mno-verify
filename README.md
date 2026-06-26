@@ -45,12 +45,13 @@ No party links a platform identity to an on-chain address. That is the property 
 
 ## Status
 
-Early and experimental. The cryptography is standard, but two pieces must be vetted before any real deployment, and both are called out where they live.
+Early and experimental, but the hardest correctness question is settled. RIPEMD-160 is implemented in-repo, and the full in-circuit hash160 is validated against a known vector on every push by the CI `circuits` job (also runnable with `scripts/check_circuits.sh`), so the in-circuit leaf provably equals the off-chain one.
 
-1. The RIPEMD160 Circom template is the one dependency not from a well-worn library. It must be sourced and tested.
-2. The in-circuit hash160 bit ordering must be validated against one real vector, a known voting key whose `votingAddress` matches the circuit output, before any proof is trusted.
+What remains before gating anything of value:
 
-Do not gate anything of value on this until those two checks pass and the circuit has a proper trusted setup.
+1. Wire `circom-ecdsa` into the build so the full single-tier `mno_membership.circom` compiles end to end. The in-circuit hash160 it depends on is already validated.
+2. Use a transparent trusted setup (PLONK or halo2), or run a proper Groth16 ceremony.
+3. Confirm the public-signal order against the compiled `public.json` and keep `core/verifier.js` in sync.
 
 ## Quickstart
 
