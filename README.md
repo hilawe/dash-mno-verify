@@ -52,7 +52,7 @@ The CI `circuits` job compiles every circuit on each push, the full membership c
 What remains before gating anything of value:
 
 1. Build or distribute the PLONK proving key and the circuit wasm to provers. The key is reproducible from public inputs with `scripts/build_proving_key.sh`, which checks the rebuilt key against the committed verification key, so it does not need hosting. See `docs/PROVING_KEY.md`.
-2. Harden the operational pieces: run the oracle against a real Dash node, choose single-tier versus two-tier from measured proving time, and move the root and nullifier state onto the Platform contract if you want several gateways to share it.
+2. Harden the operational pieces: run the oracle against a real Dash node, and move the root and nullifier state onto the Platform contract if you want several gateways to share it. The single-tier versus two-tier choice is now measured (about 63x faster per-epoch with two-tier, 6.7s versus minutes) and both are wired, so pick `MNO_MODE` per deployment.
 
 ## Quickstart
 

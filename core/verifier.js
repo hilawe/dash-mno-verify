@@ -67,3 +67,42 @@ export async function verifyMembership({ vkey, proof, publicSignals, expected, n
   nullifiers.add(s.epoch, s.contextHash, s.nullifier);
   return { ok: true, nullifier: s.nullifier, epoch: s.epoch };
 }
+
+// Public-signal layout for mno_registration: outputs first (commitment, regNullifier),
+// then inputs (root, season, contextHash). Confirm against the compiled public.json.
+export const REG_SIGNAL_INDEX = {
+  commitment: 0,
+  regNullifier: 1,
+  root: 2,
+  season: 3,
+  contextHash: 4,
+};
+
+// Verify a two-tier registration proof. On success it appends the member commitment to the
+// members tree, so one masternode registers exactly one commitment per season and context.
+export async function verifyRegistration({ vkey, proof, publicSignals, expected, regNullifiers, membersTree }) {
+  const s = {
+    commitment: publicSignals[REG_SIGNAL_INDEX.commitment],
+    regNullifier: publicSignals[REG_SIGNAL_INDEX.regNullifier],
+    root: publicSignals[REG_SIGNAL_INDEX.root],
+    season: publicSignals[REG_SIGNAL_INDEX.season],
+    contextHash: publicSignals[REG_SIGNAL_INDEX.contextHash],
+  };
+
+  // 1) the DML root must be one the oracle published recently
+  if (!expected.rootStore.isRecent(s.root)) return { ok: false, reason: "stale-or-unknown-root" };
+  // 2) the season must be the one being registered
+  if (String(s.season) !== String(expected.season)) return { ok: false, reason: "wrong-season" };
+  // 3) the proof must be scoped to this community, platform, and role
+  if (String(s.contextHash) !== String(expected.contextHash)) return { ok: false, reason: "wrong-context" };
+  // 4) one masternode registers once per season and context
+  if (regNullifiers.has(s.season, s.contextHash, s.regNullifier)) return { ok: false, reason: "already-registered" };
+
+  // 5) the proof itself
+  const valid = await snarkjs.plonk.verify(vkey, publicSignals, proof);
+  if (!valid) return { ok: false, reason: "invalid-proof" };
+
+  regNullifiers.add(s.season, s.contextHash, s.regNullifier);
+  const index = membersTree.append(s.commitment);
+  return { ok: true, commitment: s.commitment, index, membersRoot: membersTree.root() };
+}

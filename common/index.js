@@ -35,3 +35,9 @@ export function signalHash(nonce) {
 export function epochNow(epochSeconds, nowSeconds) {
   return Math.floor(nowSeconds / epochSeconds);
 }
+
+// Season index for the two-tier flow. Registration is valid for one season, after which
+// members re-register against the then-current masternode list.
+export function seasonNow(seasonSeconds, nowSeconds) {
+  return Math.floor(nowSeconds / seasonSeconds);
+}

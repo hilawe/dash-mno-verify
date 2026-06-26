@@ -20,6 +20,15 @@ export const config = {
   oracleSource: process.env.MNO_ORACLE_SOURCE ?? "oracle/root.json",
   oracleRefreshSeconds: Number(process.env.MNO_ORACLE_REFRESH ?? 30),
 
-  // Groth16 verification key produced from the compiled circuit's setup.
+  // PLONK verification key for the single-tier membership circuit.
   verificationKeyPath: process.env.MNO_VKEY ?? "circuits/build/verification_key.json",
+
+  // "single" runs the one-tier membership proof every epoch. "two-tier" splits it into a
+  // heavy seasonal registration plus a cheap per-epoch members proof.
+  mode: process.env.MNO_MODE ?? "single",
+
+  // Two-tier keys and season length.
+  registrationVkeyPath: process.env.MNO_REG_VKEY ?? "circuits/build/mno_registration_vkey.json",
+  membersVkeyPath: process.env.MNO_MEMBERS_VKEY ?? "circuits/build/mno_members_vkey.json",
+  seasonSeconds: Number(process.env.MNO_SEASON_SECONDS ?? 90 * 24 * 3600),
 };

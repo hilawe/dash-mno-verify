@@ -36,15 +36,25 @@ the owner specifically.
 
 ## Single-tier versus two-tier
 
-The version in this repo is single-tier: the full proof runs every epoch. It is the
-simplest correct design, and a sold node is evicted within one epoch.
+The single-tier design runs the full proof every epoch. It is the simplest correct design,
+and a sold node is evicted within one epoch.
 
-If per-epoch proving is too slow, split into two tiers. A one-time-per-season registration
-proof does the expensive secp256k1 and hash160 work once and adds a fresh commitment to a
-members tree. Per-epoch proofs then become cheap Poseidon-only membership in that tree.
-The cost is coarser freshness: because member commitments are unlinkable to nodes, a sold
-node cannot be revoked individually, so membership only re-anchors to current ownership at
-each season boundary.
+The reason to split into two tiers is proving cost. Measured on a 16 GB laptop, the
+single-tier membership proof takes minutes (the PLONK proving key is about 2.3 GB to load
+and the circuit is roughly 174k constraints), while the cheap members proof takes about 7
+seconds. When proving runs on a member's own machine every epoch, that gap is the whole
+argument. The two-tier flow does the expensive secp256k1 and hash160 work once per season
+in a registration proof that adds a fresh commitment to a members tree, then every epoch
+runs only a Poseidon-only membership proof in that tree. The cost is coarser freshness:
+because member commitments are unlinkable to nodes, a sold node cannot be revoked
+individually, so membership re-anchors to current ownership only at each season boundary.
+
+Both tiers are wired. With `MNO_MODE=two-tier` the gateway loads the registration and
+members keys, keeps a members tree, and exposes `POST /v1/register` (verify a registration
+proof, append the commitment) plus `GET /v1/members` (so a prover can fetch the tree and
+build its path). The per-epoch challenge and verify then run against the members-tree root
+instead of the DML root. `scripts/two_tier_demo.mjs` runs the whole flow, register then
+per-epoch prove, through the real verify functions.
 
 ## Platform-neutral by construction
 
