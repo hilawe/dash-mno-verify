@@ -9,10 +9,14 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DST="$ROOT/circuits/.deps/circom-ecdsa"
 
+# Pinned for reproducible builds, so everyone derives the same r1cs and the same keys.
+REF="${CIRCOM_ECDSA_REF:-d87eb7068cb35c951187093abe966275c1839ead}"
+
 mkdir -p "$ROOT/circuits/.deps"
 if [ ! -d "$DST/.git" ]; then
-  git clone --depth 1 https://github.com/0xPARC/circom-ecdsa "$DST"
+  git clone https://github.com/0xPARC/circom-ecdsa "$DST"
 fi
+git -C "$DST" checkout -q "$REF"
 
 # Point circom-ecdsa at THIS repo's circomlib so the compiled circuit has a single
 # circomlib. Without this, circom-ecdsa's own copy and ours would both be pulled into one

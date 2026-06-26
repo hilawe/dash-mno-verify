@@ -43,7 +43,9 @@ jobs:
           "$RUNNER_TEMP/circom" --version
       - name: Compile circuits and validate hash160 against the generator vector
         run: CIRCOM="$RUNNER_TEMP/circom" bash scripts/check_circuits.sh
+      - name: PLONK prove-and-verify the members circuit end to end
+        run: CIRCOM="$RUNNER_TEMP/circom" bash scripts/prove_members.sh
 
-  # Not yet a job: compiling the full single-tier mno_membership.circom needs circom-ecdsa
-  # (ECDSAPrivToPub) wired in, and the deployment also needs a transparent trusted setup.
-  # The in-circuit hash160, the part unique to this project, is already validated above.
+  # The full single-tier mno_membership PLONK setup needs a 2^20 SRS (about 1.15 GB) and is
+  # too heavy for CI. It is reproducible offline via scripts/build_proving_key.sh, which
+  # verifies the rebuilt key against the committed verification key. See docs/PROVING_KEY.md.

@@ -41,7 +41,7 @@ No party links a platform identity to an on-chain address. That is the property 
 - `adapters/discord/` the first platform adapter.
 - `prover/` the client-side proof generator that runs on the member's machine.
 - `contract/` an optional Dash Platform data contract for decentralizing the root and nullifier state.
-- `docs/` the design writeup and the threat model.
+- `docs/` the design writeup, the threat model, and proving-key distribution.
 
 ## Status
 
@@ -51,7 +51,7 @@ The CI `circuits` job compiles every circuit on each push, the full membership c
 
 What remains before gating anything of value:
 
-1. Build and distribute the PLONK proving key and the circuit wasm to provers. The proving key is about 2 GB and is not in the repo. Build it per `circuits/README.md`.
+1. Build or distribute the PLONK proving key and the circuit wasm to provers. The key is reproducible from public inputs with `scripts/build_proving_key.sh`, which checks the rebuilt key against the committed verification key, so it does not need hosting. See `docs/PROVING_KEY.md`.
 2. Harden the operational pieces: run the oracle against a real Dash node, choose single-tier versus two-tier from measured proving time, and move the root and nullifier state onto the Platform contract if you want several gateways to share it.
 
 ## Quickstart
