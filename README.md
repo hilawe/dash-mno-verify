@@ -57,7 +57,7 @@ What remains before gating anything of value:
 ## Quickstart
 
 ```bash
-npm install
+npm install                          # add --omit=optional for an oracle/gateway-only install
 
 # 1) publish a root from a synced Dash Core node
 npm run oracle                       # writes oracle/root.json

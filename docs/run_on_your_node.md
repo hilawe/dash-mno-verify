@@ -31,8 +31,11 @@ is a single command.
 ```bash
 git clone https://github.com/hilawe/dash-mno-verify
 cd dash-mno-verify
-npm ci
+npm ci --omit=optional
 ```
+
+The `--omit=optional` flag skips the Discord and Telegram adapter libraries, which the
+oracle does not need. Leave it off if you also want to run an adapter.
 
 2. Run the oracle. Pick the line that matches how you reach your node.
 

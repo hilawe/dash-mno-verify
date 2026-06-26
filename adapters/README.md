@@ -12,6 +12,10 @@ anywhere else in the repo.
 Three different access actions (a role, a web session, an invite link), one gateway
 contract. That is the platform-neutral seam working.
 
+The Discord and Telegram adapters need their client libraries, which are optional
+dependencies. Install with a plain `npm install`, not `npm install --omit=optional`. The
+web adapter needs no extra dependency, since it uses only `node:http`.
+
 Planned, same gateway contract, different platform glue:
 
 - `matrix/` gate a Matrix room.
