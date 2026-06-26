@@ -5,12 +5,15 @@ output and the access action (assign a role, add to a group, set a flag), and de
 every decision to the gateway over two HTTP calls. Nothing platform-specific belongs
 anywhere else in the repo.
 
-- `discord/` the first adapter, grants a server role.
-- `web/` a browser gate for a token-gated site, grants a session. The clearest proof that the core is platform-neutral, since its access action is nothing like Discord's yet the gateway calls are identical.
+- `discord/` grants a server role.
+- `web/` a browser gate for a token-gated site, grants a session.
+- `telegram/` gates a group with a single-use invite link.
+
+Three different access actions (a role, a web session, an invite link), one gateway
+contract. That is the platform-neutral seam working.
 
 Planned, same gateway contract, different platform glue:
 
-- `telegram/` gate a Telegram group.
 - `matrix/` gate a Matrix room.
 
 Each adapter uses a distinct `platform` string in its gateway calls. Because the context

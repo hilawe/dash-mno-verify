@@ -12,6 +12,7 @@
     "oracle": "node oracle/oracle.js",
     "gateway": "node core/gateway.js",
     "bot": "node adapters/discord/bot.js",
+    "telegram": "node adapters/telegram/bot.js",
     "web": "node adapters/web/server.js",
     "prove": "node prover/prover.js",
     "test": "node --test"
@@ -22,6 +23,7 @@
     "bs58check": "^3.0.1",
     "circomlibjs": "^0.1.7",
     "discord.js": "^14.15.0",
+    "grammy": "^1.44.0",
     "snarkjs": "^0.7.4"
   },
   "devDependencies": {
