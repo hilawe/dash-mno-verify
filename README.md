@@ -74,6 +74,18 @@ npm run prove -- --challenge challenge.json --voting-key <WIF>
 
 Compiling the circuit and producing the proving and verification keys is a separate step documented in `circuits/README.md`.
 
+## Documentation
+
+To actually run this, start with **`docs/DEPLOY.md`**, the front-to-back guide for an
+operator standing up a gated community and for a member getting into one. The deeper
+references:
+
+- `docs/DESIGN.md` and `docs/THREAT_MODEL.md`: how it works, and what it does and does not protect.
+- `docs/run_on_your_node.md`: pointing the oracle at your own Dash node.
+- `circuits/README.md` and `docs/PROVING_KEY.md`: building and distributing the circuit keys.
+- `docs/PLATFORM.md`: sharing the spent set across gateways on Dash Platform.
+- `adapters/README.md` and `prover/README.md`: the platform adapters and the provers.
+
 ## License
 
 MIT. See `LICENSE`.
