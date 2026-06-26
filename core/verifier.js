@@ -55,7 +55,7 @@ export async function verifyMembership({ vkey, proof, publicSignals, expected, n
     return { ok: false, reason: "wrong-signal" };
 
   // 5) one masternode, one membership per epoch
-  if (nullifiers.has(s.epoch, s.contextHash, s.nullifier))
+  if (await nullifiers.has(s.epoch, s.contextHash, s.nullifier))
     return { ok: false, reason: "already-used" };
 
   // 6) the zero-knowledge proof itself. PLONK, so the verification key comes from a
@@ -64,7 +64,10 @@ export async function verifyMembership({ vkey, proof, publicSignals, expected, n
   const valid = await snarkjs.plonk.verify(vkey, publicSignals, proof);
   if (!valid) return { ok: false, reason: "invalid-proof" };
 
-  nullifiers.add(s.epoch, s.contextHash, s.nullifier);
+  // Record the tag. With a shared store, a duplicate here means another gateway recorded it
+  // first in a race, so treat it as already used.
+  const dup = await nullifiers.add(s.epoch, s.contextHash, s.nullifier);
+  if (dup && dup.duplicate) return { ok: false, reason: "already-used" };
   return { ok: true, nullifier: s.nullifier, epoch: s.epoch };
 }
 
@@ -96,13 +99,14 @@ export async function verifyRegistration({ vkey, proof, publicSignals, expected,
   // 3) the proof must be scoped to this community, platform, and role
   if (String(s.contextHash) !== String(expected.contextHash)) return { ok: false, reason: "wrong-context" };
   // 4) one masternode registers once per season and context
-  if (regNullifiers.has(s.season, s.contextHash, s.regNullifier)) return { ok: false, reason: "already-registered" };
+  if (await regNullifiers.has(s.season, s.contextHash, s.regNullifier)) return { ok: false, reason: "already-registered" };
 
   // 5) the proof itself
   const valid = await snarkjs.plonk.verify(vkey, publicSignals, proof);
   if (!valid) return { ok: false, reason: "invalid-proof" };
 
-  regNullifiers.add(s.season, s.contextHash, s.regNullifier);
+  const dup = await regNullifiers.add(s.season, s.contextHash, s.regNullifier);
+  if (dup && dup.duplicate) return { ok: false, reason: "already-registered" };
   const index = membersTree.append(s.commitment);
   return { ok: true, commitment: s.commitment, index, membersRoot: membersTree.root() };
 }

@@ -28,25 +28,44 @@ const twoTier = config.mode === "two-tier";
 const nowSec = () => Math.floor(Date.now() / 1000);
 
 const challenges = new ChallengeStore(config.challengeTtlSeconds);
-const nullifiers = new NullifierStore();
+
+// The spent-nullifier set. Shared across gateways via the Dash Platform contract when
+// MNO_STORE=platform, otherwise in memory for a single gateway.
+let nullifiers, regNullifiers;
+if (config.store === "platform") {
+  const { connectPlatform, DocumentNullifierStore } = await import("./platform_store.js");
+  const backend = await connectPlatform({
+    network: config.platform.network,
+    mnemonic: config.platform.mnemonic,
+    contractId: config.platform.contractId,
+    appName: config.platform.appName,
+  });
+  nullifiers = new DocumentNullifierStore(backend);
+  regNullifiers = new DocumentNullifierStore(backend);
+  console.log(`[gateway] shared nullifier state on Dash Platform (${config.platform.contractId})`);
+} else {
+  nullifiers = new NullifierStore();
+  regNullifiers = new NullifierStore();
+}
 
 // The DML root, fed by the oracle. Used by single-tier verify and by two-tier registration.
 const dmlRoots = new RootStore(config.rootWindow);
+let latestDml = null; // the full oracle snapshot, so provers can fetch leaves and build paths
 async function refreshRoots() {
   try {
     const o = await loadOracle(config.oracleSource);
     dmlRoots.update([{ height: o.height, root: o.root, ts: o.ts ?? nowSec() }]);
+    latestDml = o;
   } catch (err) {
     console.error("[gateway] root refresh failed:", err.message);
   }
 }
 
-let vkey, regVkey, membersVkey, membersTree, regNullifiers, membersRoots;
+let vkey, regVkey, membersVkey, membersTree, membersRoots;
 if (twoTier) {
   regVkey = await loadVerificationKey(config.registrationVkeyPath);
   membersVkey = await loadVerificationKey(config.membersVkeyPath);
   membersTree = await MembersTree.create();
-  regNullifiers = new NullifierStore();
   membersRoots = new RootStore(config.rootWindow);
   membersRoots.update([{ height: 0, root: membersTree.root(), ts: nowSec() }]);
 } else {
@@ -140,6 +159,16 @@ const server = createServer(async (req, res) => {
 
     if (twoTier && req.method === "GET" && req.url === "/v1/members") {
       return send(res, 200, { membersRoot: membersTree.root(), size: membersTree.size(), commitments: membersTree.commitments });
+    }
+
+    if (req.method === "GET" && req.url === "/v1/dml") {
+      // public DML snapshot so a prover can find its leaf and build a Merkle path
+      return send(res, 200, {
+        root: latestDml?.root ?? null,
+        height: latestDml?.height ?? null,
+        depth: latestDml?.depth ?? 16,
+        leaves: latestDml?.leaves ?? [],
+      });
     }
 
     if (req.method === "GET" && req.url === "/v1/health") {

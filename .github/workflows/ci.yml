@@ -14,7 +14,7 @@ jobs:
         with:
           node-version: "20"
           cache: npm
-      - run: npm ci
+      - run: npm ci --omit=optional
 
       - name: Syntax check every tracked JS file
         run: |
@@ -35,7 +35,7 @@ jobs:
         with:
           node-version: "20"
           cache: npm
-      - run: npm ci
+      - run: npm ci --omit=optional
       - name: Install circom
         run: |
           curl -fsSL https://github.com/iden3/circom/releases/download/v2.2.3/circom-linux-amd64 -o "$RUNNER_TEMP/circom"

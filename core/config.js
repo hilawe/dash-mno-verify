@@ -31,4 +31,14 @@ export const config = {
   registrationVkeyPath: process.env.MNO_REG_VKEY ?? "circuits/build/mno_registration_vkey.json",
   membersVkeyPath: process.env.MNO_MEMBERS_VKEY ?? "circuits/build/mno_members_vkey.json",
   seasonSeconds: Number(process.env.MNO_SEASON_SECONDS ?? 90 * 24 * 3600),
+
+  // Where the spent-nullifier set lives. "memory" is a single gateway. "platform" shares it
+  // across gateways via the Dash Platform contract's unique index. See docs/PLATFORM.md.
+  store: process.env.MNO_STORE ?? "memory",
+  platform: {
+    network: process.env.MNO_PLATFORM_NETWORK ?? "testnet",
+    mnemonic: process.env.MNO_PLATFORM_MNEMONIC,
+    contractId: process.env.MNO_PLATFORM_CONTRACT_ID,
+    appName: process.env.MNO_PLATFORM_APP ?? "mnoVerify",
+  },
 };

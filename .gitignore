@@ -18,6 +18,10 @@ proof.json
 challenge.json
 *.proof.json
 
+# a member's two-tier secret, never commit
+*.secret.json
+member.secret*
+
 # transient witness inputs written by circuit make_input helpers
 input.json
 expected.txt
