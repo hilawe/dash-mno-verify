@@ -5,14 +5,19 @@ This is a working prototype and is not audited. Do not gate anything of real val
 least the P0 items are done and the system has had an audit.
 
 The full adversarial review of 2026-06-26 is the source of truth, committed at
-`REVIEW_FINDINGS_dash-mno-verify_2026-06-26.md`. The remaining open pre-deploy blocker it raises is
-account binding (B1, the proof binds to the nonce, not the requesting account). The full fix binds
-the account into the circuit signal, which changes the committed proving and verification keys, so
-it is held for a circom-equipped machine and the owner's anchor choice. The adapter-side mitigation,
-rejecting unless the proof's account equals the submitter, needs no re-setup and is tracked below. A
-skipped test in `test/gateway_http.test.js` documents B1 in the suite. Context-scoped members roots
-(B2, one registration grants every community in a season) are now fixed gateway-side with one
-members tree per (season, context) and no circuit change (see the P0 section).
+`REVIEW_FINDINGS_dash-mno-verify_2026-06-26.md`. The B1 relay path (a valid proof relayed by a
+stranger granted the stranger) is closed for the supported adapter flow: the gateway binds the
+requesting account into the signal hash the proof commits to, and `/v1/verify` rejects with
+`account-mismatch`, before the proof verify and nullifier spend, unless the submitted account equals
+the one the challenge was minted for. Both account values are still adapter-supplied, so this closes
+the relay through the adapters but is not yet an authoritative gateway identity boundary against a
+direct unauthenticated HTTP caller. Making it authoritative needs adapter-to-gateway authentication
+(the "Authenticate the gateway" P1 item, which also derives the account from the authenticated
+adapter). None of this needs a circuit change, because the signal hash is a public input mixed
+outside the circuit. B2 (one registration grants every community in a season) is fixed gateway-side
+with one members tree per (season, context). The remaining circuit-level hardening is M1, the
+nullifier is malleable under a non-canonical private key, which does need a circom recompile and a
+key re-setup (see the P1 item).
 
 ## P0, the two-tier state model (one redesign, three symptoms)
 
@@ -34,7 +39,7 @@ follow-up below.
 
 ## P1, before any non-local or public deployment
 
-- [ ] B1 adapter-side mitigation (no re-setup). Every adapter must reject a verify result unless `out.account` equals the account that actually submitted the request, then grant `out.account`, so a valid `(nonce, proof)` relayed by a stranger cannot grant the stranger. The gateway already returns the bound account from `/v1/verify`; no adapter compares it today. This is the interim guard until the full fix binds the account into the circuit signal (which needs circom and a re-setup). (`adapters/discord/bot.js`, `adapters/telegram/bot.js`, `adapters/matrix/bot.js`, `adapters/web/server.js`)
+- [x] Close the B1 adapter relay path. The gateway binds the requesting account into the signal hash (`signalHash(nonce, account)` in `common/index.js`), so a proof committed for one account's challenge cannot satisfy another's. `/v1/verify` takes the submitter `account` and rejects with `account-mismatch` unless it equals the account the challenge was minted for, checked before the proof verify and the nullifier spend, so a proof relayed through an adapter can neither grant the relayer nor burn the real owner's epoch. The check lives in the gateway, and each adapter passes the account it authenticated the submitter as. The remaining gap is that both account values are adapter-supplied, so a direct unauthenticated HTTP caller is not yet bound; the "Authenticate the gateway" item below closes that. No circuit change. (`common/index.js`, `core/gateway.js`, all four adapters, `prover/two_tier.js`)
 - [ ] Idempotent grants. The nullifier is spent before the adapter grants the role, invite, or session, so an adapter failure strands the user until the next epoch. Add a grant record keyed by account, context hash, and epoch, so a re-verify by the same account re-grants instead of failing as already used. (`core/verifier.js`, `core/gateway.js`, adapters)
 - [ ] Authenticate the gateway (the remaining half of review finding M5). Per-client rate limiting on `/v1/challenge`, `/v1/verify`, and `/v1/register`, plus a pending-challenge cap, are now in place (`RateLimiter` in `core/stores.js`, the `MNO_RATE_*` and `MNO_MAX_PENDING_CHALLENGES` knobs), which bounds what one source can spend but does not stop a distributed flood or vouch for the submitting account. Add adapter-only shared-secret auth so the `account` is authenticated rather than caller-supplied (this also closes the supply side of B1), and document the reverse-proxy expectation (`MNO_TRUST_PROXY`). (`core/gateway.js`)
 - [x] Harden the oracle-root path at the gateway (review finding M3, the consistency and freshness half). The gateway recomputes the DML root from the published leaves and rejects a snapshot whose root does not hash from them, requires https for a URL source with a fetch timeout and a streaming size cap, and drops an accepted root once its snapshot ages past `MNO_ORACLE_MAX_AGE` (so a stalled, replayed, or inconsistent source stops admitting members). This catches a corrupted or inconsistent snapshot, not a compromised source. (`core/dml_root.js`, `refreshRoots` in `core/gateway.js`, `loadOracle` in `core/stores.js`)

@@ -113,10 +113,11 @@ const server = createServer(async (req, res) => {
 
     if (req.method === "POST" && req.url === "/api/submit") {
       const payload = await readBody(req); // { nonce, proof, publicSignals }
+      // Submit the session id as the account. The gateway binds the verify to it (review B1).
       const r = await fetch(`${GATEWAY}/v1/verify`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({ ...payload, account: sid }),
       });
       const out = await r.json();
       if (out.ok) sessions.set(sid, { verifiedUntil: out.expiresAt });

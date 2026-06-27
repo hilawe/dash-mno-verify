@@ -23,7 +23,7 @@ const secret = "987654321"; // a real member draws this randomly and keeps it
 const season = "1";
 const epoch = "1";
 const ctx = contextHash({ platform: "demo", communityId: "demo", roleId: "member" }).toString();
-const sig = signalHash("demo-nonce").toString();
+const sig = signalHash("demo-nonce", "demo-account").toString();
 
 const poseidon = await buildPoseidon();
 const F = poseidon.F;

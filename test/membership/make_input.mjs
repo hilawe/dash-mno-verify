@@ -52,7 +52,7 @@ const input = {
   root,
   epoch: "1",
   contextHash: contextHash({ platform: "test", communityId: "test", roleId: "test" }).toString(),
-  signalHash: signalHash("test-nonce").toString(),
+  signalHash: signalHash("test-nonce", "test-account").toString(),
 };
 
 writeFileSync(join(outDir, "input.json"), JSON.stringify(input));

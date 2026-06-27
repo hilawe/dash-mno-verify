@@ -87,10 +87,11 @@ client.on("interactionCreate", async (i) => {
       return i.editReply("That attachment is not a readable proof.json. Run `/verify` to start over.");
     }
 
+    // Submit the account this user is identified by. The gateway binds the verify to it (review B1).
     const res = await fetch(`${GATEWAY}/v1/verify`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(payload),
+      body: JSON.stringify({ ...payload, account: i.user.id }),
     });
     const out = await res.json();
     if (!out.ok)

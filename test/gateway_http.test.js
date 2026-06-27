@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { makeDmlRootHasher } from "../core/dml_root.js";
+import { signalHash } from "../common/index.js";
 
 // A real, self-consistent snapshot: the root is the recompute of these leaves, so it passes the
 // gateway's M3 root check. ts is stamped fresh per write so the freshness check passes.
@@ -107,17 +108,27 @@ test("missing fields are rejected", async () => {
 });
 
 test("an unknown nonce is rejected", async () => {
-  const v = await post(gw.base, "/v1/verify", { nonce: randomUUID(), proof: {}, publicSignals: ["1", "2", "3", "4", "5"] });
+  const v = await post(gw.base, "/v1/verify", { nonce: randomUUID(), proof: {}, publicSignals: ["1", "2", "3", "4", "5"], account: "alice" });
   assert.equal(v.status, 410);
   assert.equal(v.body.reason, "unknown-or-expired-challenge");
+});
+
+test("a verify with a mismatched submitter account is rejected before the proof or nullifier (B1)", async () => {
+  const ch = await challenge(gw.base); // minted for alice
+  // A stranger relays alice's challenge but submits under their own account. The gateway returns
+  // account-mismatch, and because that check runs before verifyMembership, no nullifier is spent,
+  // so a relay cannot even burn alice's epoch.
+  const v = await post(gw.base, "/v1/verify", { nonce: ch.nonce, proof: {}, publicSignals: signalsFor(ch), account: "mallory" });
+  assert.equal(v.body.ok, false);
+  assert.equal(v.body.reason, "account-mismatch");
 });
 
 test("a replayed nonce is rejected (the challenge is one-time)", async () => {
   const ch = await challenge(gw.base);
   // The first verify fails policy (wrong root) but still consumes the one-time nonce.
-  const first = await post(gw.base, "/v1/verify", { nonce: ch.nonce, proof: {}, publicSignals: signalsFor(ch, { root: "999" }) });
+  const first = await post(gw.base, "/v1/verify", { nonce: ch.nonce, proof: {}, publicSignals: signalsFor(ch, { root: "999" }), account: "alice" });
   assert.equal(first.body.reason, "stale-or-unknown-root");
-  const second = await post(gw.base, "/v1/verify", { nonce: ch.nonce, proof: {}, publicSignals: signalsFor(ch, { root: "999" }) });
+  const second = await post(gw.base, "/v1/verify", { nonce: ch.nonce, proof: {}, publicSignals: signalsFor(ch, { root: "999" }), account: "alice" });
   assert.equal(second.status, 410);
   assert.equal(second.body.reason, "unknown-or-expired-challenge");
 });
@@ -130,7 +141,7 @@ test("tampered public signals are rejected by the policy layer, before any proof
     ["signal", { signalHash: "0" }, "wrong-signal"],
   ]) {
     const ch = await challenge(gw.base);
-    const v = await post(gw.base, "/v1/verify", { nonce: ch.nonce, proof: {}, publicSignals: signalsFor(ch, over) });
+    const v = await post(gw.base, "/v1/verify", { nonce: ch.nonce, proof: {}, publicSignals: signalsFor(ch, over), account: "alice" });
     assert.equal(v.body.ok, false, `tampered ${name} should be rejected`);
     assert.equal(v.body.reason, reason, `tampered ${name}`);
   }
@@ -153,7 +164,7 @@ test("an expired nonce is rejected", async () => {
   try {
     const ch = await challenge(short.base);
     await delay(1300);
-    const v = await post(short.base, "/v1/verify", { nonce: ch.nonce, proof: {}, publicSignals: signalsFor(ch) });
+    const v = await post(short.base, "/v1/verify", { nonce: ch.nonce, proof: {}, publicSignals: signalsFor(ch), account: "alice" });
     assert.equal(v.status, 410);
     assert.equal(v.body.reason, "unknown-or-expired-challenge");
   } finally {
@@ -161,16 +172,19 @@ test("an expired nonce is rejected", async () => {
   }
 });
 
-// Documents blocker B1 (proof not bound to the requesting account). The gateway returns the
-// account the challenge was minted for, but the proof binds only to the nonce, and no adapter
-// compares out.account to the submitter, so a valid (nonce, proof) relayed by a stranger grants
-// the stranger. This cannot be enforced at the gateway today (no authenticated submitter, M5).
-// Enable once the account is bound into the circuit signal (see REVIEW_FINDINGS B1, Lens 3 idea 1).
-test(
-  "a proof relayed for a different submitter is denied",
-  { skip: "documents B1: proof binds to the nonce, not the account; enable when the account is in the signal" },
-  () => {},
-);
+// B1: the gateway binds the requesting account into the signal hash, so a proof committed for one
+// account's challenge cannot satisfy another account's challenge (the signal hashes differ). The
+// adapters then grant out.account and reject a mismatched submitter, which is what closes the relay.
+test("the challenge binds the account into the signal hash (B1)", async () => {
+  const res = await post(gw.base, "/v1/challenge", { platform: "p", communityId: "c", roleId: "r", account: "alice" });
+  assert.equal(res.status, 200);
+  assert.equal(res.body.signalHash, signalHash(res.body.nonce, "alice").toString(), "signal hash must bind nonce and account");
+  assert.notEqual(
+    signalHash(res.body.nonce, "alice").toString(),
+    signalHash(res.body.nonce, "bob").toString(),
+    "a different account yields a different signal hash for the same nonce",
+  );
+});
 
 // M3: the gateway recomputes the DML root from the published leaves and refuses a snapshot whose
 // root does not match. With no usable root, the challenge endpoint reports none available rather

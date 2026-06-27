@@ -7,7 +7,8 @@
 // Single mode (MNO_MODE=single):
 //   POST /v1/challenge  { platform, communityId, roleId, account }
 //        -> { nonce, signalHash, epoch, root, contextHash, epochSeconds }
-//   POST /v1/verify     { nonce, proof, publicSignals }  -> { ok, account, epoch, expiresAt }
+//   POST /v1/verify     { nonce, proof, publicSignals, account }  -> { ok, account, epoch, expiresAt }
+//        account is the submitter; it must equal the account the challenge was minted for (B1).
 //
 // Two-tier mode (MNO_MODE=two-tier) adds a heavy seasonal registration and makes the
 // per-epoch challenge and verify run against the cheap members tree:
@@ -253,7 +254,7 @@ const server = createServer(async (req, res) => {
 
       const nonce = randomUUID();
       const epoch = epochNow(config.epochSeconds, nowSec());
-      const sig = signalHash(nonce).toString();
+      const sig = signalHash(nonce, account).toString();
       if (!challenges.put(nonce, { account, signalHash: sig, epoch, contextHash: ctx }))
         return send(res, 429, { error: "too many pending challenges" });
       return send(res, 200, { nonce, signalHash: sig, epoch, root: cur.root, contextHash: ctx, epochSeconds: config.epochSeconds });
@@ -261,10 +262,17 @@ const server = createServer(async (req, res) => {
 
     if (req.method === "POST" && path === "/v1/verify") {
       if (!verifyLimiter.allow(clientKey(req))) return send(res, 429, { error: "rate limited" });
-      const { nonce, proof, publicSignals } = await readBody(req);
-      if (!nonce || !proof || !publicSignals) return send(res, 400, { error: "missing fields" });
+      const { nonce, proof, publicSignals, account } = await readBody(req);
+      if (!nonce || !proof || !publicSignals || !account) return send(res, 400, { error: "missing fields" });
       const pending = challenges.take(nonce);
       if (!pending) return send(res, 410, { ok: false, reason: "unknown-or-expired-challenge" });
+
+      // The submitted account must equal the account the challenge was minted for, checked here
+      // before the proof verify and the nullifier spend, so a proof relayed through an adapter cannot
+      // grant the relayer or burn the real owner's epoch (review finding B1). Both account values are
+      // still adapter-supplied; binding a direct unauthenticated caller needs adapter-to-gateway auth
+      // (see TODO.md "Authenticate the gateway").
+      if (String(account) !== String(pending.account)) return send(res, 200, { ok: false, reason: "account-mismatch" });
 
       // The proof is checked against the root window of the same context the challenge was minted
       // for, in the current season. A season rollover since the challenge resets that window, so a

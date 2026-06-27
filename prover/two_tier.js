@@ -141,7 +141,7 @@ async function prove(a) {
     `${B}/mno_members.zkey`
   );
 
-  const res = await post(`${a.gateway}/v1/verify`, { nonce: ch.nonce, proof, publicSignals });
+  const res = await post(`${a.gateway}/v1/verify`, { nonce: ch.nonce, proof, publicSignals, account });
   if (!res.ok) {
     console.error("verification failed:", res.reason);
     process.exit(1);

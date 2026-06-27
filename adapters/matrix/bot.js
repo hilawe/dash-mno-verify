@@ -63,10 +63,11 @@ async function handle(roomId, sender, body) {
   }
   if (!payload?.nonce || !payload?.proof || !payload?.publicSignals) return;
 
+  // Submit the account this sender is identified by. The gateway binds the verify to it (review B1).
   const res = await fetch(`${GATEWAY}/v1/verify`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify(payload),
+    body: JSON.stringify({ ...payload, account: sender }),
   });
   const out = await res.json();
   if (!out.ok) return sendText(roomId, `Verification failed (${out.reason ?? "unknown"}). Send !verify to start over.`);

@@ -28,7 +28,7 @@ Copy the two handlers and re-point them at the target platform. The contract wit
 gateway never changes:
 
 - Call `POST /v1/challenge` with `{ platform, communityId, roleId, account }` and relay the result to the member.
-- Call `POST /v1/verify` with `{ nonce, proof, publicSignals }` and act on `ok`.
+- Call `POST /v1/verify` with `{ nonce, proof, publicSignals, account }` and act on `ok`. The `account` must be the platform-authenticated submitter (the same id the challenge was minted for), not a value read from the member's `proof.json`. The gateway rejects with `account-mismatch` if it differs, which is what stops a relayed proof (review finding B1).
 
 Use a distinct `platform` string per adapter (for example `telegram`, `matrix`, `web`).
 Because the context hash includes that string, the same voting key produces unlinkable

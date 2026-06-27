@@ -62,10 +62,11 @@ bot.on("message:document", async (ctx) => {
     return ctx.reply("That file is not a readable proof.json. Run /verify to start over.");
   }
 
+  // Submit the account this user is identified by. The gateway binds the verify to it (review B1).
   const res = await fetch(`${GATEWAY}/v1/verify`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify(payload),
+    body: JSON.stringify({ ...payload, account: String(ctx.from.id) }),
   });
   const out = await res.json();
   if (!out.ok) return ctx.reply(`Verification failed (${out.reason ?? "unknown"}). Run /verify to start over.`);

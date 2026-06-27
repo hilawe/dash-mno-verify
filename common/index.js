@@ -24,9 +24,12 @@ export function contextHash({ platform, communityId, roleId, version = "v1" }) {
   );
 }
 
-// Bind a proof to one challenge so it cannot be replayed on another account.
-export function signalHash(nonce) {
-  return hashToField(`dash-mno-verify:signal:${nonce}`);
+// Bind a proof to one challenge AND to the account it was issued for. The proof commits to this
+// value (Circom's signal trick), and the gateway checks the committed value against the one it minted
+// for the account, so a valid proof issued for one account cannot be relayed to grant another (review
+// finding B1). The account is mixed in here, outside the circuit, so this needs no circuit change.
+export function signalHash(nonce, account) {
+  return hashToField(`dash-mno-verify:signal:${nonce}:${account}`);
 }
 
 // Epoch index. Time-based by default so an adapter does not need its own Dash node.
