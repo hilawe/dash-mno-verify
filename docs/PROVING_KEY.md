@@ -24,9 +24,15 @@ CIRCOM=/path/to/circom bash scripts/build_proving_key.sh
 This compiles the circuit, downloads the SRS, runs the PLONK setup, then proves a test
 witness with the rebuilt key and verifies it against the committed verification key. A
 passing check means the locally built proving key is the canonical one, so a prover never
-has to trust a downloaded multi-GB blob.
+has to trust a downloaded multi-GB blob. Pass `mno_registration` as an argument to rebuild the
+two-tier registration key the same way.
 
-The build needs about 3 GB of disk, a 1.15 GB SRS download, and several minutes.
+After an intentional circuit change (for example the M1 `d < n` constraint), the committed
+verification key must change too. Run `scripts/rebuild_proving_keys.sh`, which rebuilds both
+key-bearing circuits in promote mode (`MNO_PROMOTE_VKEY=1`), so the freshly proved verification
+keys overwrite the committed ones instead of being checked against them.
+
+The build needs about 3 GB of disk, a 1.15 GB SRS download, and several minutes per circuit.
 
 ## Downloading the prebuilt artifacts
 

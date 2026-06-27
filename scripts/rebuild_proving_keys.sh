@@ -10,6 +10,10 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# Promote mode: this is the explicit update path after an intentional circuit change, so the
+# rebuilt verification keys overwrite the committed ones. A plain build_proving_key.sh run instead
+# verifies a rebuild against the committed key without touching it.
+export MNO_PROMOTE_VKEY=1
 bash "$ROOT/scripts/build_proving_key.sh" mno_membership
 bash "$ROOT/scripts/build_proving_key.sh" mno_registration
 

@@ -46,20 +46,37 @@ fi
 echo "--- PLONK setup (several minutes, ~12 GB heap) ---"
 "$SNARKJS" plonk setup "$OUT/$CIRCUIT.r1cs" "$PTAU" "$OUT/$CIRCUIT.zkey" >/dev/null
 
-# Export the verification key to a temp path and prove and verify a real witness against it. The
-# committed key is overwritten only after that check passes, so a failed setup never leaves a
-# half-updated verification key behind. Both circuits are checked end to end.
-echo "--- export verification key (temp, promoted after the witness check) ---"
-"$SNARKJS" zkey export verificationkey "$OUT/$CIRCUIT.zkey" "$OUT/$VKEY.tmp" >/dev/null
-
-echo "--- integrity: prove a test witness and verify it against the new key ---"
+# Prove a real witness with the rebuilt zkey, then check it two ways depending on intent.
+#
+# Default (reproducibility): verify the proof against the COMMITTED verification key and do not
+# touch it. PLONK setup is deterministic, so a faithful rebuild produces a proof the committed key
+# accepts; a drifted compiler, circuit, or dependency produces one it rejects, which fails here.
+# This is the guarantee a deployed gateway relies on, that a locally rebuilt proving key matches the
+# committed verification key.
+#
+# Promote (MNO_PROMOTE_VKEY=1, used by rebuild_proving_keys.sh after an intentional circuit change):
+# export the new verification key to a temp, verify the proof against it, then overwrite the
+# committed key, so a failed run never leaves a half-updated key behind.
+echo "--- integrity: prove a test witness ---"
 node "$MK" "$OUT" >/dev/null
 "$SNARKJS" plonk fullprove "$OUT/input.json" "$OUT/${CIRCUIT}_js/$CIRCUIT.wasm" \
   "$OUT/$CIRCUIT.zkey" "$OUT/proof.json" "$OUT/public.json" >/dev/null
-"$SNARKJS" plonk verify "$OUT/$VKEY.tmp" "$OUT/public.json" "$OUT/proof.json"
 
-mv "$OUT/$VKEY.tmp" "$OUT/$VKEY"
-echo "    verification key promoted to $OUT/$VKEY"
+if [ "${MNO_PROMOTE_VKEY:-}" = "1" ]; then
+  echo "--- promote: export the new verification key and overwrite the committed one ---"
+  "$SNARKJS" zkey export verificationkey "$OUT/$CIRCUIT.zkey" "$OUT/$VKEY.tmp" >/dev/null
+  "$SNARKJS" plonk verify "$OUT/$VKEY.tmp" "$OUT/public.json" "$OUT/proof.json"
+  mv "$OUT/$VKEY.tmp" "$OUT/$VKEY"
+  echo "    verification key updated at $OUT/$VKEY"
+else
+  echo "--- reproducibility: verify against the committed $VKEY (no overwrite) ---"
+  if [ ! -f "$OUT/$VKEY" ]; then
+    echo "no committed $OUT/$VKEY to verify against; rerun with MNO_PROMOTE_VKEY=1 to create it" >&2
+    exit 1
+  fi
+  "$SNARKJS" plonk verify "$OUT/$VKEY" "$OUT/public.json" "$OUT/proof.json"
+  echo "    the rebuilt key reproduces the committed $VKEY"
+fi
 
 echo
 echo "Artifacts ready in $OUT:"
