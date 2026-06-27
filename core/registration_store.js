@@ -14,12 +14,14 @@
 // A Dash Platform backend that shares records across gateways follows the same interface and is
 // wired in platform_store.js once the file path is proven; see docs/PLATFORM.md.
 //
-// Leaf order: forSeason returns a season's records in insertion order, which is the order the
-// members tree is built over and the order /v1/members exposes, so a prover's leaf index (the
-// position of its commitment in that list) matches the gateway's root. A FileBackend is a single
-// writer, so insertion order is total and stable across restarts. A multi-gateway Platform
-// backend must impose its own deterministic total order (for example sorted by regNullifier) so
-// every gateway rebuilds the identical tree.
+// Leaf order: forSeasonContext returns one (season, contextHash) bucket's records in insertion
+// order, which is the order the members tree for that context is built over and the order
+// /v1/members exposes, so a prover's leaf index (the position of its commitment in that list)
+// matches the gateway's root. Records and their leaf index are scoped to (season, contextHash), so
+// a registration for one community never appears in another community's tree (review finding B2).
+// A FileBackend is a single writer, so insertion order is total and stable across restarts. A
+// multi-gateway Platform backend must impose its own deterministic total order (for example sorted
+// by regNullifier) so every gateway rebuilds the identical tree.
 import { open, readFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 
@@ -27,9 +29,9 @@ import { dirname } from "node:path";
 //   has({season, contextHash, regNullifier})    -> Promise<boolean>
 //   append({season, contextHash, regNullifier, commitment})
 //                                                -> Promise<{ duplicate, index }>
-//   forSeason(season)                            -> Promise<record[]>  (insertion order)
+//   forSeasonContext(season, contextHash)        -> Promise<record[]>  (insertion order)
 // where `duplicate` is true when the unique key rejected the insert, and `index` is the leaf
-// position assigned within the season.
+// position assigned within the (season, contextHash) bucket.
 export class RegistrationStore {
   constructor(backend) {
     this.backend = backend;
@@ -52,21 +54,27 @@ export class RegistrationStore {
       commitment: String(commitment),
     });
   }
-  forSeason(season) {
-    return this.backend.forSeason(Number(season));
+  forSeasonContext(season, contextHash) {
+    return this.backend.forSeasonContext(Number(season), String(contextHash));
   }
 }
 
+// The unique key spends one registration nullifier per (season, contextHash). The bucket key is
+// that same scope minus the nullifier, and groups the records whose commitments form one context's
+// members tree.
 function keyOf(d) {
   return `${d.season}:${d.contextHash}:${d.regNullifier}`;
 }
+function bucketOf(d) {
+  return `${d.season}:${d.contextHash}`;
+}
 
-// In-memory backend that enforces the same unique key and per-season indexing, for tests and
-// ephemeral single-gateway use. Not durable: a restart loses every record.
+// In-memory backend that enforces the same unique key and per-(season, context) indexing, for tests
+// and ephemeral single-gateway use. Not durable: a restart loses every record.
 export class MemoryRegistrationBackend {
   constructor() {
     this.seen = new Set();
-    this.bySeason = new Map(); // season -> records[] in insertion order
+    this.byBucket = new Map(); // "season:contextHash" -> records[] in insertion order
   }
   async has(d) {
     return this.seen.has(keyOf(d));
@@ -74,7 +82,8 @@ export class MemoryRegistrationBackend {
   async append(d) {
     const k = keyOf(d);
     if (this.seen.has(k)) return { duplicate: true };
-    const recs = this.bySeason.get(d.season) ?? [];
+    const b = bucketOf(d);
+    const recs = this.byBucket.get(b) ?? [];
     const index = recs.length;
     const record = {
       season: d.season,
@@ -85,11 +94,11 @@ export class MemoryRegistrationBackend {
     };
     this.seen.add(k);
     recs.push(record);
-    this.bySeason.set(d.season, recs);
+    this.byBucket.set(b, recs);
     return { duplicate: false, index };
   }
-  async forSeason(season) {
-    return [...(this.bySeason.get(season) ?? [])];
+  async forSeasonContext(season, contextHash) {
+    return [...(this.byBucket.get(`${season}:${contextHash}`) ?? [])];
   }
 }
 
@@ -99,7 +108,7 @@ export class FileBackend {
   constructor(path) {
     this.path = path;
     this.seen = new Set();
-    this.bySeason = new Map();
+    this.byBucket = new Map(); // "season:contextHash" -> records[] in insertion order
     this._loading = null; // memoized load, so concurrent first-callers share one read
     this._tail = Promise.resolve(); // append mutex, see append()
   }
@@ -128,9 +137,10 @@ export class FileBackend {
 
   #remember(record) {
     this.seen.add(keyOf(record));
-    const recs = this.bySeason.get(record.season) ?? [];
+    const b = bucketOf(record);
+    const recs = this.byBucket.get(b) ?? [];
     recs.push(record);
-    this.bySeason.set(record.season, recs);
+    this.byBucket.set(b, recs);
   }
 
   async has(d) {
@@ -154,7 +164,7 @@ export class FileBackend {
     await this.ready();
     const k = keyOf(d);
     if (this.seen.has(k)) return { duplicate: true };
-    const recs = this.bySeason.get(d.season) ?? [];
+    const recs = this.byBucket.get(bucketOf(d)) ?? [];
     const index = recs.length;
     const record = {
       season: d.season,
@@ -174,8 +184,8 @@ export class FileBackend {
     return { duplicate: false, index };
   }
 
-  async forSeason(season) {
+  async forSeasonContext(season, contextHash) {
     await this.ready();
-    return [...(this.bySeason.get(season) ?? [])];
+    return [...(this.byBucket.get(`${season}:${contextHash}`) ?? [])];
   }
 }

@@ -122,7 +122,8 @@ async function prove(a) {
     process.exit(1);
   }
 
-  const members = await get(`${a.gateway}/v1/members`);
+  // Fetch the members tree for this challenge's context, since each community has its own tree.
+  const members = await get(`${a.gateway}/v1/members?context=${encodeURIComponent(ch.contextHash)}`);
   const poseidon = await buildPoseidon();
   const F = poseidon.F;
   const commitment = F.toObject(poseidon([F.e(BigInt(secret))])).toString();

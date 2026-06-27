@@ -386,6 +386,55 @@ test("the registration endpoint is rate-limited in two-tier mode", async () => {
   }
 });
 
+// B2: the two-tier members endpoint is per-context. It requires a context and serves only that
+// context's tree, so a prover fetches the leaves for its own community.
+test("two-tier /v1/members requires a context and serves that context's tree", async () => {
+  const oracle = join(dir, "root.json");
+  const gw2 = await startGateway({
+    MNO_MODE: "two-tier",
+    MNO_STORE: "memory",
+    MNO_REG_PATH: join(dir, "reg-members.jsonl"),
+    MNO_ORACLE_SOURCE: oracle,
+    MNO_ORACLE_REFRESH: "3600",
+  });
+  try {
+    assert.equal((await fetch(gw2.base + "/v1/members")).status, 400, "context is required");
+    // A non-canonical context (decimal but >= the field prime) is rejected before any tree work.
+    const FIELD_PRIME = "21888242871839275222246405745257275088548364400416034343698204186575808495617";
+    assert.equal((await fetch(gw2.base + `/v1/members?context=${FIELD_PRIME}`)).status, 400, "noncanonical context rejected");
+    const res = await fetch(gw2.base + "/v1/members?context=42");
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.size, 0, "a fresh context starts empty");
+    assert.deepEqual(body.commitments, []);
+    assert.ok(body.membersRoot, "an empty tree still has a root (served without building one)");
+  } finally {
+    gw2.proc.kill();
+  }
+});
+
+// B2 DoS guard: /v1/members is rate-limited, since its context is unauthenticated client input and
+// an empty context is served from the shared empty root without building a tree.
+test("two-tier /v1/members is rate-limited per client", async () => {
+  const oracle = join(dir, "root.json");
+  const gw2 = await startGateway({
+    MNO_MODE: "two-tier",
+    MNO_STORE: "memory",
+    MNO_REG_PATH: join(dir, "reg-members-rl.jsonl"),
+    MNO_ORACLE_SOURCE: oracle,
+    MNO_ORACLE_REFRESH: "3600",
+    MNO_RATE_MEMBERS: "3",
+  });
+  try {
+    const codes = [];
+    for (let i = 0; i < 5; i++) codes.push((await fetch(gw2.base + `/v1/members?context=${i + 1}`)).status);
+    assert.equal(codes.slice(0, 3).every((c) => c === 200), true, "first three within the limit");
+    assert.equal(codes.slice(3).every((c) => c === 429), true, "the rest are rate limited");
+  } finally {
+    gw2.proc.kill();
+  }
+});
+
 // M5: pending challenges are capped, so one client cannot grow the challenge map without bound.
 test("the pending-challenge map is capped", async () => {
   const oracle = join(dir, "root.json");

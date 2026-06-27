@@ -13,9 +13,9 @@
 // per-epoch challenge and verify run against the cheap members tree:
 //   POST /v1/register   { platform, communityId, roleId, proof, publicSignals }
 //        -> { ok, index, membersRoot, size }
-//   GET  /v1/members    -> { membersRoot, size, commitments }   (so provers can build paths)
+//   GET  /v1/members?context=<hash> -> { membersRoot, size, commitments }  (per-context, for paths)
 //
-//   GET  /v1/health     -> { ok, mode, root, dmlRoot, season }
+//   GET  /v1/health     -> { ok, mode, root, dmlRoot, season, contexts? }
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
 import { config } from "./config.js";
@@ -34,6 +34,7 @@ const challenges = new ChallengeStore(config.challengeTtlSeconds, config.maxPend
 const challengeLimiter = new RateLimiter({ windowSeconds: config.rateWindowSeconds, max: config.challengeRateMax });
 const verifyLimiter = new RateLimiter({ windowSeconds: config.rateWindowSeconds, max: config.verifyRateMax });
 const registerLimiter = new RateLimiter({ windowSeconds: config.rateWindowSeconds, max: config.registerRateMax });
+const membersLimiter = new RateLimiter({ windowSeconds: config.rateWindowSeconds, max: config.membersRateMax });
 // The client key for rate limiting. With MNO_TRUST_PROXY set, the gateway is assumed to sit behind
 // exactly one trusted reverse proxy, which appends the connecting client to X-Forwarded-For. The
 // LAST hop is the address that proxy observed, so it is the one entry the client cannot forge (the
@@ -186,7 +187,10 @@ if (twoTier) {
   registrationStore = new RegistrationStore(new FileBackend(config.registrationStorePath));
   await registrationStore.ready();
   console.log(`[gateway] durable registration records at ${config.registrationStorePath}`);
-  seasonMembers = new SeasonMembers({ store: registrationStore, rootWindow: config.rootWindow, nowSec });
+  // The empty members root, computed once via the fast hasher (instant), so an empty context never
+  // forces a 2**16 tree build (see SeasonMembers).
+  const emptyMembersRoot = dmlRootFromLeaves([]);
+  seasonMembers = new SeasonMembers({ store: registrationStore, rootWindow: config.rootWindow, nowSec, emptyRoot: emptyMembersRoot });
   await seasonMembers.ensure(seasonNow(config.seasonSeconds, nowSec()));
 } else {
   vkey = await loadVerificationKey(config.verificationKeyPath);
@@ -195,7 +199,7 @@ if (twoTier) {
 await refreshRoots();
 setInterval(refreshRoots, config.oracleRefreshSeconds * 1000);
 setInterval(() => challenges.sweep(), 60_000);
-setInterval(() => { challengeLimiter.sweep(); verifyLimiter.sweep(); registerLimiter.sweep(); }, 60_000);
+setInterval(() => { challengeLimiter.sweep(); verifyLimiter.sweep(); registerLimiter.sweep(); membersLimiter.sweep(); }, 60_000);
 // Roll the members tree over at a season boundary even when no request arrives to trigger it.
 if (twoTier) setInterval(() => seasonMembers.ensure(seasonNow(config.seasonSeconds, nowSec())).catch(() => {}), 60_000);
 
@@ -227,38 +231,56 @@ const server = createServer(async (req, res) => {
     // Enforce DML freshness on every request, so a refresh interval longer than the freshness bound
     // cannot serve a root that aged out since the last tick.
     enforceDmlFreshness();
-    if (req.method === "POST" && req.url === "/v1/challenge") {
+    const url = new URL(req.url, "http://localhost");
+    const path = url.pathname;
+
+    if (req.method === "POST" && path === "/v1/challenge") {
       if (!challengeLimiter.allow(clientKey(req))) return send(res, 429, { error: "rate limited" });
       const { platform, communityId, roleId, account } = await readBody(req);
       if (!platform || !communityId || !roleId || !account) return send(res, 400, { error: "missing fields" });
-      if (twoTier) await seasonMembers.ensure(seasonNow(config.seasonSeconds, nowSec()));
-      const cur = twoTier ? seasonMembers.rootCurrent() : dmlRoots.current();
+      const ctx = contextHash({ platform, communityId, roleId }).toString();
+      // Two-tier challenges run against this context's own members tree (review finding B2), so a
+      // member registered for another community cannot prove here.
+      let cur;
+      if (twoTier) {
+        const season = seasonNow(config.seasonSeconds, nowSec());
+        await seasonMembers.ensureContext(season, ctx);
+        cur = seasonMembers.rootCurrent(ctx);
+      } else {
+        cur = dmlRoots.current();
+      }
       if (!cur) return send(res, 503, { error: "no root available yet" });
 
       const nonce = randomUUID();
       const epoch = epochNow(config.epochSeconds, nowSec());
-      const ctx = contextHash({ platform, communityId, roleId }).toString();
       const sig = signalHash(nonce).toString();
       if (!challenges.put(nonce, { account, signalHash: sig, epoch, contextHash: ctx }))
         return send(res, 429, { error: "too many pending challenges" });
       return send(res, 200, { nonce, signalHash: sig, epoch, root: cur.root, contextHash: ctx, epochSeconds: config.epochSeconds });
     }
 
-    if (req.method === "POST" && req.url === "/v1/verify") {
+    if (req.method === "POST" && path === "/v1/verify") {
       if (!verifyLimiter.allow(clientKey(req))) return send(res, 429, { error: "rate limited" });
       const { nonce, proof, publicSignals } = await readBody(req);
       if (!nonce || !proof || !publicSignals) return send(res, 400, { error: "missing fields" });
-      if (twoTier) await seasonMembers.ensure(seasonNow(config.seasonSeconds, nowSec()));
       const pending = challenges.take(nonce);
       if (!pending) return send(res, 410, { ok: false, reason: "unknown-or-expired-challenge" });
 
+      // The proof is checked against the root window of the same context the challenge was minted
+      // for, in the current season. A season rollover since the challenge resets that window, so a
+      // proof against the stale root is rejected as stale-or-unknown-root.
+      let rootStore = dmlRoots;
+      if (twoTier) {
+        await seasonMembers.ensureContext(seasonNow(config.seasonSeconds, nowSec()), pending.contextHash);
+        rootStore = seasonMembers.rootStore(pending.contextHash);
+      }
       const result = await verifyMembership({
         vkey: twoTier ? membersVkey : vkey,
         proof,
         publicSignals,
         nullifiers,
         expected: {
-          rootStore: twoTier ? seasonMembers.rootStore() : dmlRoots,
+          rootStore,
           epoch: pending.epoch,
           contextHash: pending.contextHash,
           signalHash: pending.signalHash,
@@ -269,7 +291,7 @@ const server = createServer(async (req, res) => {
       return send(res, 200, { ok: true, account: pending.account, epoch: result.epoch, expiresAt });
     }
 
-    if (twoTier && req.method === "POST" && req.url === "/v1/register") {
+    if (twoTier && req.method === "POST" && path === "/v1/register") {
       if (!registerLimiter.allow(clientKey(req))) return send(res, 429, { error: "rate limited" });
       const { platform, communityId, roleId, proof, publicSignals } = await readBody(req);
       if (!platform || !communityId || !roleId || !proof || !publicSignals) return send(res, 400, { error: "missing fields" });
@@ -284,10 +306,10 @@ const server = createServer(async (req, res) => {
         expected: { rootStore: dmlRoots, season, contextHash: ctx },
         registrationStore,
         // The durable record and the members-tree mirror happen together inside the season
-        // serialization, re-checking the season so a rollover during the proof verify above
-        // cannot publish a stale-season root (the M2 race).
+        // serialization, re-checking the season so a rollover during the proof verify above cannot
+        // publish a stale-season root (the M2 race). The commit targets this context's tree.
         commit: ({ season: s, commitment, contextHash: c, regNullifier: n }) =>
-          seasonMembers.commit(s, commitment, () =>
+          seasonMembers.commit(s, c, commitment, () =>
             registrationStore.append({ season: s, contextHash: c, regNullifier: n, commitment }),
           ),
       });
@@ -295,12 +317,19 @@ const server = createServer(async (req, res) => {
       return send(res, 200, { ok: true, index: result.index, membersRoot: result.membersRoot, size: result.size });
     }
 
-    if (twoTier && req.method === "GET" && req.url === "/v1/members") {
-      await seasonMembers.ensure(seasonNow(config.seasonSeconds, nowSec()));
-      return send(res, 200, { membersRoot: seasonMembers.root(), size: seasonMembers.size(), commitments: seasonMembers.commitments() });
+    if (twoTier && req.method === "GET" && path === "/v1/members") {
+      // Per-context members tree, so a prover fetches the leaves and root for its own community. The
+      // context comes straight from the client here, so it is rate-limited and validated as a
+      // canonical field element, and an empty context serves the shared empty root without building
+      // a tree (so varying the context cannot force expensive tree builds).
+      if (!membersLimiter.allow(clientKey(req))) return send(res, 429, { error: "rate limited" });
+      const ctx = url.searchParams.get("context");
+      if (!ctx || !isCanonicalField(ctx)) return send(res, 400, { error: "context must be a canonical field element" });
+      await seasonMembers.ensureContext(seasonNow(config.seasonSeconds, nowSec()), ctx);
+      return send(res, 200, { membersRoot: seasonMembers.root(ctx), size: seasonMembers.size(ctx), commitments: seasonMembers.commitments(ctx) });
     }
 
-    if (req.method === "GET" && req.url === "/v1/dml") {
+    if (req.method === "GET" && path === "/v1/dml") {
       // public DML snapshot so a prover can find its leaf and build a Merkle path
       return send(res, 200, {
         root: latestDml?.root ?? null,
@@ -310,14 +339,17 @@ const server = createServer(async (req, res) => {
       });
     }
 
-    if (req.method === "GET" && req.url === "/v1/health") {
-      const cur = twoTier ? seasonMembers.rootCurrent() : dmlRoots.current();
+    if (req.method === "GET" && path === "/v1/health") {
+      // Two-tier has no single members root (one per context), so health reports the count of
+      // active context trees instead, alongside the shared DML root.
+      const dmlRoot = dmlRoots.current()?.root ?? null;
       return send(res, 200, {
         ok: true,
         mode: config.mode,
-        root: cur?.root ?? null,
-        dmlRoot: dmlRoots.current()?.root ?? null,
+        root: twoTier ? null : dmlRoot,
+        dmlRoot,
         season: seasonNow(config.seasonSeconds, nowSec()),
+        ...(twoTier ? { contexts: seasonMembers.contextCount() } : {}),
       });
     }
 

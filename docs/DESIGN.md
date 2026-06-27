@@ -52,12 +52,14 @@ individually, so membership re-anchors to current ownership only at each season 
 Both tiers are wired. With `MNO_MODE=two-tier` the gateway loads the registration and
 members keys and exposes `POST /v1/register` (verify a registration proof, then write one
 durable record holding the season, context, registration nullifier, and member commitment)
-plus `GET /v1/members` (so a prover can fetch the tree and build its path). The members tree
-is a season-scoped cache rebuilt from those records, so it survives a gateway restart and
+plus `GET /v1/members?context=<hash>` (so a prover can fetch its community's tree and build
+its path). There is one members tree per (season, context), each a cache rebuilt from that
+bucket's records, so a member registered for one community is absent from another community's
+tree and cannot prove there (review finding B2). Each tree survives a gateway restart and
 starts empty at each season boundary, which is what forces a sold node to lose access once
-its season ends. The per-epoch challenge and verify then run against the members-tree root
-instead of the DML root. `scripts/two_tier_demo.mjs` runs the whole flow, register then
-per-epoch prove, through the real verify functions.
+its season ends. The per-epoch challenge and verify then run against that context's
+members-tree root instead of the DML root. `scripts/two_tier_demo.mjs` runs the whole flow,
+register then per-epoch prove, through the real verify functions.
 
 ## Platform-neutral by construction
 
@@ -74,7 +76,7 @@ consensus itself reject a double spend, so several gateways can share one tamper
 spent set. `registration` plays the same role for the two-tier flow, with a unique index on
 `(season, contextHash, regNullifier)` so one masternode registers once per season and
 context, and each gateway rebuilds the members tree from those records. `dmlRoot` gives
-every verifier a tamper-evident published root, and `membersRoot` publishes the per-season
+every verifier a tamper-evident published root, and `membersRoot` publishes a per-context
 members-tree root. Platform is an integrity and availability layer, not a privacy layer.
 Privacy comes entirely from the zero-knowledge proof, and members never touch a Platform
 identity.

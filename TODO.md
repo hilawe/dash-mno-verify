@@ -5,11 +5,14 @@ This is a working prototype and is not audited. Do not gate anything of real val
 least the P0 items are done and the system has had an audit.
 
 The full adversarial review of 2026-06-26 is the source of truth, committed at
-`REVIEW_FINDINGS_dash-mno-verify_2026-06-26.md`. The open pre-deploy blockers it raises are account
-binding (B1, the proof binds to the nonce, not the requesting account) and context-scoped members
-roots (B2, one registration grants every community in a season). Both change the committed proving
-and verification keys, so they are held for the owner to decide the anchor choices before any
-re-setup. A skipped test in `test/gateway_http.test.js` documents B1 in the suite.
+`REVIEW_FINDINGS_dash-mno-verify_2026-06-26.md`. The remaining open pre-deploy blocker it raises is
+account binding (B1, the proof binds to the nonce, not the requesting account). The full fix binds
+the account into the circuit signal, which changes the committed proving and verification keys, so
+it is held for a circom-equipped machine and the owner's anchor choice. The adapter-side mitigation,
+rejecting unless the proof's account equals the submitter, needs no re-setup and is tracked below. A
+skipped test in `test/gateway_http.test.js` documents B1 in the suite. Context-scoped members roots
+(B2, one registration grants every community in a season) are now fixed gateway-side with one
+members tree per (season, context) and no circuit change (see the P0 section).
 
 ## P0, the two-tier state model (one redesign, three symptoms)
 
@@ -23,6 +26,7 @@ follow-up below.
 - [x] Make registration state durable. The tree survives a restart because it is rebuilt from persisted records, so a restart no longer strands every member. File-backed now (`FileBackend` in `core/registration_store.js`). The shared cross-gateway Platform backend is the follow-up below.
 - [x] Record each registration atomically. One durable record holds the season, context hash, registration nullifier, commitment, and index, deduped by a unique key, so a crash can no longer spend the nullifier without recording the commitment. (`core/verifier.js`, `core/registration_store.js`, the `registration` type in `contract/mno-verify.contract.json`)
 - [x] Close the season-rollover race (review finding M2). Rollovers and member commits run on one serialized queue in `SeasonMembers`, and a commit re-checks the season before it appends, so a rollover during the proof verify can never publish a stale-season root or append to a stale tree. The durable write and the tree mirror happen together inside that section, so the durable index and the leaf position are always assigned in step. The proof verify stays outside the queue, so it never stalls challenges and per-epoch verifies. (`core/season.js`, `core/verifier.js`, `core/gateway.js`)
+- [x] Context-scope the members tree (review finding B2). There is one members tree per (season, contextHash), not one per season, so a member registered for one community is absent from another community's tree and cannot prove there. The registration store indexes records per (season, context), the gateway serves a per-context root from `/v1/challenge`, `/v1/verify`, and `GET /v1/members?context=`, and the prover fetches its own context's tree. A gateway and state change, no circuit change, so the committed keys stay valid. (`core/season.js`, `core/registration_store.js`, `core/gateway.js`, `prover/two_tier.js`)
 
 ### P0 follow-up, the shared Dash Platform registration backend
 
@@ -30,6 +34,7 @@ follow-up below.
 
 ## P1, before any non-local or public deployment
 
+- [ ] B1 adapter-side mitigation (no re-setup). Every adapter must reject a verify result unless `out.account` equals the account that actually submitted the request, then grant `out.account`, so a valid `(nonce, proof)` relayed by a stranger cannot grant the stranger. The gateway already returns the bound account from `/v1/verify`; no adapter compares it today. This is the interim guard until the full fix binds the account into the circuit signal (which needs circom and a re-setup). (`adapters/discord/bot.js`, `adapters/telegram/bot.js`, `adapters/matrix/bot.js`, `adapters/web/server.js`)
 - [ ] Idempotent grants. The nullifier is spent before the adapter grants the role, invite, or session, so an adapter failure strands the user until the next epoch. Add a grant record keyed by account, context hash, and epoch, so a re-verify by the same account re-grants instead of failing as already used. (`core/verifier.js`, `core/gateway.js`, adapters)
 - [ ] Authenticate the gateway (the remaining half of review finding M5). Per-client rate limiting on `/v1/challenge`, `/v1/verify`, and `/v1/register`, plus a pending-challenge cap, are now in place (`RateLimiter` in `core/stores.js`, the `MNO_RATE_*` and `MNO_MAX_PENDING_CHALLENGES` knobs), which bounds what one source can spend but does not stop a distributed flood or vouch for the submitting account. Add adapter-only shared-secret auth so the `account` is authenticated rather than caller-supplied (this also closes the supply side of B1), and document the reverse-proxy expectation (`MNO_TRUST_PROXY`). (`core/gateway.js`)
 - [x] Harden the oracle-root path at the gateway (review finding M3, the consistency and freshness half). The gateway recomputes the DML root from the published leaves and rejects a snapshot whose root does not hash from them, requires https for a URL source with a fetch timeout and a streaming size cap, and drops an accepted root once its snapshot ages past `MNO_ORACLE_MAX_AGE` (so a stalled, replayed, or inconsistent source stops admitting members). This catches a corrupted or inconsistent snapshot, not a compromised source. (`core/dml_root.js`, `refreshRoots` in `core/gateway.js`, `loadOracle` in `core/stores.js`)
@@ -42,10 +47,16 @@ follow-up below.
 - [ ] Bind the prover's fetched members root to the challenge root, so the challenge root is enforced rather than advisory. (`prover/two_tier.js`)
 - [ ] Add size guards before the adapters fetch and parse attached proof files. (`adapters/discord/bot.js`, `adapters/telegram/bot.js`)
 - [ ] Use `node:util` parseArgs in the two-tier prover instead of the positional flag parser. (`prover/two_tier.js`)
+- [ ] Use an incremental Merkle tree for the members trees, so a registration is O(log n) instead of rebuilding a full 2**16 tree, and bound the number of cached per-context trees per season (an LRU or a per-season cap). Per-context trees (B2) made each registration build its own tree, so the full-rebuild cost now scales with the number of active communities. The unauthenticated denial-of-service path is already closed (an empty context serves the shared empty root without building), so this is a throughput and footprint improvement, not a security fix. (`core/season.js`, `core/members_tree.js`)
 - [ ] Pull the oracle snapshot lifecycle (load, validate, canonicalize, recompute, freshness, monotonic-height) behind one `SnapshotStore` boundary, with a `parseSnapshot` that returns canonically-typed `{ height, depth, ts, root, leaves }`. This removes the validate-here, recompute-there, store-raw split in `core/gateway.js` and makes snapshot handling unit-testable without booting the gateway. (`core/gateway.js`)
 - [ ] Support a configured trusted-proxy hop count for the rate-limit client key, so a multi-proxy chain resolves the real client instead of assuming a single trusted reverse proxy. (`clientKey` in `core/gateway.js`)
 - [ ] Return a `Retry-After` hint on a 429 so adapters can back off cleanly instead of treating every rate-limit response the same. (`core/gateway.js`, `RateLimiter` in `core/stores.js`)
 - [ ] Add `MNO_PLATFORM_IDENTITY_ID` so identity selection is explicit, not the first identity in the wallet. (`core/platform_store.js`, `scripts/register_contract.mjs`)
+
+## P3, ergonomics
+
+- [ ] Let `/v1/members` accept `platform`, `community`, and `role` and hash the context server-side, as an alternative to the raw `context` param, so a client need not compute the context hash itself. (`core/gateway.js`)
+- [ ] On a registration-store load, warn if a record's stored `index` does not match its position within the (season, context) bucket. After B2 the index is per-context; old per-season files still load correctly (the prover uses commitment order, not the stored index), so this is an upgrade-clarity check, not a fix. (`core/registration_store.js`)
 
 ## P3, docs
 

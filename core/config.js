@@ -61,6 +61,8 @@ export const config = {
   // Registration (two-tier) runs the heaviest proof verify and is a once-per-season action, so it
   // gets the tightest limit.
   registerRateMax: intEnv("MNO_RATE_REGISTER", 30),
+  // /v1/members is an unauthenticated read whose context comes from the client, so it is limited too.
+  membersRateMax: intEnv("MNO_RATE_MEMBERS", 120),
   maxPendingChallenges: intEnv("MNO_MAX_PENDING_CHALLENGES", 100_000),
   // Honor the first X-Forwarded-For hop for the client key. Only enable behind a trusted proxy,
   // otherwise a client can spoof the header to dodge the limit.

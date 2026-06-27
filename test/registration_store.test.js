@@ -10,9 +10,9 @@ import {
 } from "../core/registration_store.js";
 import { MembersTree } from "../core/members_tree.js";
 
-// The registration store is where the two-tier P0 fix lives: one atomic, durable, season-scoped
-// record per registration, with the members tree rebuilt from records. These tests pin the
-// behavior the gateway relies on, against both backends.
+// The registration store is where the two-tier P0 fix lives: one atomic, durable, season- and
+// context-scoped record per registration, with the members tree rebuilt from records. These tests
+// pin the behavior the gateway relies on, against both backends.
 
 async function withTempFile(run) {
   const dir = await mkdtemp(join(tmpdir(), "mno-reg-"));
@@ -42,7 +42,7 @@ for (const [name, makeStore] of [
     const dup = await store.append({ season: 1, contextHash: "ctx", regNullifier: "nf1", commitment: "c-other" });
     assert.equal(dup.duplicate, true);
 
-    const recs = await store.forSeason(1);
+    const recs = await store.forSeasonContext(1, "ctx");
     assert.equal(recs.length, 1);
     assert.equal(recs[0].commitment, "c1");
   });
@@ -56,7 +56,7 @@ for (const [name, makeStore] of [
     assert.equal(await store.has(1, "ctx", "nf2"), false); // different node
   });
 
-  test(`${name}: indexes are per-season and assigned in insertion order`, async () => {
+  test(`${name}: indexes are per (season, context) and assigned in insertion order`, async () => {
     const { store } = await makeStore();
     await store.ready();
     const a = await store.append({ season: 5, contextHash: "ctx", regNullifier: "a", commitment: "ca" });
@@ -64,11 +64,16 @@ for (const [name, makeStore] of [
     const c = await store.append({ season: 6, contextHash: "ctx", regNullifier: "c", commitment: "cc" });
     assert.deepEqual([a.index, b.index, c.index], [0, 1, 0]);
 
-    const s5 = await store.forSeason(5);
+    // A different community in the same season is a separate bucket, indexed from 0 (review B2).
+    const d = await store.append({ season: 5, contextHash: "ctx2", regNullifier: "d", commitment: "cd" });
+    assert.equal(d.index, 0);
+
+    const s5 = await store.forSeasonContext(5, "ctx");
     assert.deepEqual(s5.map((r) => r.commitment), ["ca", "cb"]);
-    const s6 = await store.forSeason(6);
+    const s6 = await store.forSeasonContext(6, "ctx");
     assert.deepEqual(s6.map((r) => r.commitment), ["cc"]);
-    assert.deepEqual(await store.forSeason(99), []); // a fresh season starts empty
+    assert.deepEqual(await store.forSeasonContext(5, "ctx2"), [{ season: 5, contextHash: "ctx2", regNullifier: "d", commitment: "cd", index: 0 }]);
+    assert.deepEqual(await store.forSeasonContext(99, "ctx"), []); // a fresh season starts empty
   });
 }
 
@@ -84,7 +89,7 @@ test("file: registrations survive a restart (durability)", async () => {
     await reopened.ready();
     assert.equal(await reopened.has(3, "ctx", "n1"), true);
     assert.equal(await reopened.has(3, "ctx", "n2"), true);
-    const recs = await reopened.forSeason(3);
+    const recs = await reopened.forSeasonContext(3, "ctx");
     assert.deepEqual(recs.map((r) => r.commitment), ["c1", "c2"]);
 
     // and the spend set is enforced after the restart, so no member registers twice
@@ -107,7 +112,7 @@ test("a tree rebuilt from records matches sequential registration (no member is 
     }
 
     // tree as a restart rebuilds it from the durable records, in the persisted order
-    const recs = await store.forSeason(7);
+    const recs = await store.forSeasonContext(7, "ctx");
     const rebuilt = await MembersTree.fromCommitments(recs.map((r) => r.commitment));
 
     assert.equal(rebuilt.root(), live.root());
@@ -125,15 +130,15 @@ test("file: concurrent first use loads the records exactly once", async () => {
 
     const fresh = new RegistrationStore(new FileBackend(path));
     const [recs, has1] = await Promise.all([
-      fresh.forSeason(2),
+      fresh.forSeasonContext(2, "ctx"),
       fresh.has(2, "ctx", "n1"),
       fresh.ready(),
-      fresh.forSeason(2),
+      fresh.forSeasonContext(2, "ctx"),
     ]);
     // a double-load would have pushed each record twice
     assert.equal(recs.length, 2);
     assert.equal(has1, true);
-    assert.deepEqual((await fresh.forSeason(2)).map((r) => r.index), [0, 1]);
+    assert.deepEqual((await fresh.forSeasonContext(2, "ctx")).map((r) => r.index), [0, 1]);
   });
 });
 
@@ -143,7 +148,7 @@ test("a different season rebuilds an empty tree (stale-season access cannot carr
     await store.ready();
     await store.append({ season: 10, contextHash: "ctx", regNullifier: "n", commitment: "c" });
 
-    const next = await MembersTree.fromCommitments((await store.forSeason(11)).map((r) => r.commitment));
+    const next = await MembersTree.fromCommitments((await store.forSeasonContext(11, "ctx")).map((r) => r.commitment));
     const empty = await MembersTree.create();
     assert.equal(next.size(), 0);
     assert.equal(next.root(), empty.root());
