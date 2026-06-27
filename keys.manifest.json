@@ -1,6 +1,6 @@
 {
-  "tag": "circuit-keys-v1",
-  "note": "Hostable circuit artifacts for dash-mno-verify, matching the current circuit build. The membership and registration proving keys are ~2.3GB each, over the GitHub 2GB asset limit, so host them elsewhere or rebuild with scripts/build_proving_key.sh.",
+  "tag": "circuit-keys-v2",
+  "note": "Hostable circuit artifacts for dash-mno-verify, matching the current circuit build. The membership and registration proving keys are ~2.3GB each, over the GitHub 2GB asset limit, so host them elsewhere or rebuild with scripts/build_proving_key.sh. The membership and registration wasms changed with the M1 d<n constraint, so the circuit-keys-v2 release must be published with the rebuilt artifacts before fetch_keys.sh can install them; until then, rebuild locally. mno_members is unchanged by M1.",
   "files": [
     {
       "name": "mno_members.zkey",
@@ -17,14 +17,14 @@
     {
       "name": "mno_membership.wasm",
       "dest": "circuits/build/mno_membership_js/mno_membership.wasm",
-      "sha256": "dfce1d00791e3459c59957f064796a0f69aef49950ea4cb91071cc4d60969de2",
-      "bytes": 8306018
+      "sha256": "cdb041b33d57c1d9e1dcfdade6b70072a8112ee3b15795b0309221314d01b0f7",
+      "bytes": 8315007
     },
     {
       "name": "mno_registration.wasm",
       "dest": "circuits/build/mno_registration_js/mno_registration.wasm",
-      "sha256": "f68d286ccee5b289df2626a1a331f8a929a4090ba896b3f120ac100b57dbc7b4",
-      "bytes": 8531371
+      "sha256": "9a638627aa6ac76928072694aae560c45057189267def767eb05ea1b813e858d",
+      "bytes": 8540367
     }
   ]
 }

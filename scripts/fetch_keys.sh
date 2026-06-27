@@ -25,10 +25,18 @@ node -e "for (const f of require('./keys.manifest.json').files) console.log(f.na
 while IFS=$'\t' read -r name dest sha; do
   mkdir -p "$(dirname "$dest")"
   echo "  $name ..."
-  curl -fsSL "$BASE/$name" -o "$dest"
+  if ! curl -fsSL "$BASE/$name" -o "$dest"; then
+    echo "  could not download $name from $BASE"
+    echo "  The '$TAG' release may not be published yet (it is re-cut whenever a circuit changes,"
+    echo "  for example the M1 d<n constraint). Publish it with the rebuilt artifacts, point"
+    echo "  MNO_KEYS_BASE_URL at where they live, or rebuild locally with"
+    echo "  scripts/rebuild_proving_keys.sh (membership + registration) and scripts/prove_members.sh."
+    exit 1
+  fi
   got=$(sha256_of "$dest")
   if [ "$got" != "$sha" ]; then
-    echo "  CHECKSUM MISMATCH for $name (expected $sha, got $got)"
+    echo "  CHECKSUM MISMATCH for $name (expected $sha, got $got). The hosted artifact does not"
+    echo "  match keys.manifest.json; the release for tag '$TAG' is likely stale. Rebuild or re-publish."
     exit 1
   fi
 done

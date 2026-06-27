@@ -15,9 +15,12 @@ direct unauthenticated HTTP caller. Making it authoritative needs adapter-to-gat
 (the "Authenticate the gateway" P1 item, which also derives the account from the authenticated
 adapter). None of this needs a circuit change, because the signal hash is a public input mixed
 outside the circuit. B2 (one registration grants every community in a season) is fixed gateway-side
-with one members tree per (season, context). The remaining circuit-level hardening is M1, the
-nullifier is malleable under a non-canonical private key, which does need a circom recompile and a
-key re-setup (see the P1 item).
+with one members tree per (season, context). M1 (the nullifier was malleable under a non-canonical
+private key) is fixed in the circuits: both `mno_membership` and `mno_registration` now constrain
+`d < n` (the secp256k1 group order), so `d + n` is rejected and one node yields one nullifier per
+epoch. The proving and verification keys were regenerated for the new constraint
+(`scripts/rebuild_proving_keys.sh`), and `check_circuits.sh` fails if a key `>= n` is ever accepted
+again.
 
 ## P0, the two-tier state model (one redesign, three symptoms)
 
@@ -56,6 +59,8 @@ follow-up below.
 - [ ] Pull the oracle snapshot lifecycle (load, validate, canonicalize, recompute, freshness, monotonic-height) behind one `SnapshotStore` boundary, with a `parseSnapshot` that returns canonically-typed `{ height, depth, ts, root, leaves }`. This removes the validate-here, recompute-there, store-raw split in `core/gateway.js` and makes snapshot handling unit-testable without booting the gateway. (`core/gateway.js`)
 - [ ] Support a configured trusted-proxy hop count for the rate-limit client key, so a multi-proxy chain resolves the real client instead of assuming a single trusted reverse proxy. (`clientKey` in `core/gateway.js`)
 - [ ] Return a `Retry-After` hint on a 429 so adapters can back off cleanly instead of treating every rate-limit response the same. (`core/gateway.js`, `RateLimiter` in `core/stores.js`)
+- [ ] Generate `keys.manifest.json` from the built artifacts (compute each `sha256` and byte size, refuse to leave stale entries) so a circuit rebuild cannot silently drift the manifest from the hosted wasms. (`scripts/`, `keys.manifest.json`)
+- [ ] Factor the canonical-scalar check (`get_secp256k1_order` + `BigLessThan` + `dlt.out === 1`) into a shared `Secp256k1CanonicalScalar(n, k)` circom template used by both key-bearing circuits, so the M1 invariant cannot be applied to one circuit but not the other. Changes the r1cs, so it needs a key re-setup. (`circuits/`)
 - [ ] Add `MNO_PLATFORM_IDENTITY_ID` so identity selection is explicit, not the first identity in the wallet. (`core/platform_store.js`, `scripts/register_contract.mjs`)
 
 ## P3, ergonomics

@@ -5,6 +5,7 @@ pragma circom 2.1.6;
 // too slow, see mno_registration.circom and mno_members.circom for the two-tier path.
 include "circomlib/circuits/poseidon.circom";
 include "circom-ecdsa/circuits/ecdsa.circom";   // ECDSAPrivToPub(n, k)
+include "circom-ecdsa/circuits/bigint.circom";  // BigLessThan(n, k)
 include "./hash160/hash160.circom";              // CompressAndHash160
 include "./merkle.circom";                       // MerkleInclusion
 
@@ -40,7 +41,18 @@ template MnoMembership(treeDepth, n, k) {
     }
     incl.root === root;
 
-    // 4) nullifier = Poseidon( Poseidon(privkey), epoch, contextHash )
+    // 4) constrain the private key d below the secp256k1 group order n, so it is the canonical
+    //    scalar in [0, n). Without this, d and d + n give the same public key (the same DML leaf at
+    //    step 2) but a different Poseidon(privkey), letting one node mint two non-colliding
+    //    nullifiers in the same epoch (review finding M1). The nullifier stays derived from the
+    //    private key, NOT from the public hash160 leaf, so it remains unlinkable to the published
+    //    leaf set (a leaf-derived nullifier would be brute-forceable over the public leaves).
+    var order[100] = get_secp256k1_order(n, k);
+    component dlt = BigLessThan(n, k);
+    for (var i = 0; i < k; i++) { dlt.a[i] <== privkey[i]; dlt.b[i] <== order[i]; }
+    dlt.out === 1;
+
+    // 5) nullifier = Poseidon( Poseidon(privkey), epoch, contextHash )
     component kh = Poseidon(k);
     for (var i = 0; i < k; i++) kh.inputs[i] <== privkey[i];
     component nf = Poseidon(3);
@@ -49,7 +61,7 @@ template MnoMembership(treeDepth, n, k) {
     nf.inputs[2] <== contextHash;
     nullifier <== nf.out;
 
-    // 5) bind the proof to this challenge (Semaphore's signal trick)
+    // 6) bind the proof to this challenge (Semaphore's signal trick)
     signal sq;
     sq <== signalHash * signalHash;
 }

@@ -14,6 +14,7 @@ pragma circom 2.1.6;
 // boundary. See docs/DESIGN.md.
 include "circomlib/circuits/poseidon.circom";
 include "circom-ecdsa/circuits/ecdsa.circom";   // ECDSAPrivToPub(n, k)
+include "circom-ecdsa/circuits/bigint.circom";  // BigLessThan(n, k)
 include "./hash160/hash160.circom";              // CompressAndHash160
 include "./merkle.circom";                       // MerkleInclusion
 
@@ -52,6 +53,16 @@ template MnoRegistration(treeDepth, n, k) {
     component c = Poseidon(1);
     c.inputs[0] <== secret;
     commitment <== c.out;
+
+    // constrain the private key d below the secp256k1 group order n, so it is the canonical scalar
+    // in [0, n). Without this, d and d + n give the same public key (the same DML leaf) but a
+    // different Poseidon(privkey), letting one node register twice per (season, context) with two
+    // non-colliding registration nullifiers (review finding M1). The nullifier stays derived from
+    // the private key, NOT the public hash160 leaf, so it remains unlinkable to the published leaves.
+    var order[100] = get_secp256k1_order(n, k);
+    component dlt = BigLessThan(n, k);
+    for (var i = 0; i < k; i++) { dlt.a[i] <== privkey[i]; dlt.b[i] <== order[i]; }
+    dlt.out === 1;
 
     // registration nullifier tied to the voting key
     component kh = Poseidon(k);

@@ -31,7 +31,7 @@ the owner specifically.
 ## The nullifier does three jobs
 
 - Epoch-rotating freshness. One fresh nullifier per epoch. Sell the node and you cannot produce next epoch's proof, so access lapses within one epoch.
-- Sybil resistance. For a fixed epoch and context, one key yields one nullifier, so one masternode maps to one membership.
+- Sybil resistance. For a fixed epoch and context, one key yields one nullifier, so one masternode maps to one membership. The circuit constrains the private key `d` below the secp256k1 group order `n`, so `d` is the canonical scalar in `[0, n)`. Without that, `d` and `d + n` share a public key (the same leaf) but hash to different nullifiers, which would let one node mint two memberships per epoch (review finding M1). The nullifier is derived from `d`, not from the public `hash160(Q)` leaf, so it stays unlinkable to the published leaf set.
 - Cross-context unlinkability. The context hash scopes the nullifier to one platform, community, and role, so the same key produces unrelated nullifiers elsewhere.
 
 ## Single-tier versus two-tier
