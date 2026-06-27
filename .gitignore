@@ -22,6 +22,9 @@ challenge.json
 *.secret.json
 member.secret*
 
+# durable registration records written at runtime by the gateway
+data/
+
 # transient witness inputs written by circuit make_input helpers
 input.json
 expected.txt

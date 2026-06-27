@@ -50,9 +50,12 @@ because member commitments are unlinkable to nodes, a sold node cannot be revoke
 individually, so membership re-anchors to current ownership only at each season boundary.
 
 Both tiers are wired. With `MNO_MODE=two-tier` the gateway loads the registration and
-members keys, keeps a members tree, and exposes `POST /v1/register` (verify a registration
-proof, append the commitment) plus `GET /v1/members` (so a prover can fetch the tree and
-build its path). The per-epoch challenge and verify then run against the members-tree root
+members keys and exposes `POST /v1/register` (verify a registration proof, then write one
+durable record holding the season, context, registration nullifier, and member commitment)
+plus `GET /v1/members` (so a prover can fetch the tree and build its path). The members tree
+is a season-scoped cache rebuilt from those records, so it survives a gateway restart and
+starts empty at each season boundary, which is what forces a sold node to lose access once
+its season ends. The per-epoch challenge and verify then run against the members-tree root
 instead of the DML root. `scripts/two_tier_demo.mjs` runs the whole flow, register then
 per-epoch prove, through the real verify functions.
 
@@ -65,9 +68,13 @@ memberships never correlate across platforms.
 
 ## The optional Dash Platform contract
 
-`contract/mno-verify.contract.json` defines three document types. The one that earns its
+`contract/mno-verify.contract.json` defines four document types. The one that earns its
 place is `nullifier`, whose unique index on `(epoch, contextHash, nf)` makes Platform
 consensus itself reject a double spend, so several gateways can share one tamper-evident
-spent set. `dmlRoot` gives every verifier a tamper-evident published root. Platform is an
-integrity and availability layer, not a privacy layer: privacy comes entirely from the
-zero-knowledge proof, and members never touch a Platform identity.
+spent set. `registration` plays the same role for the two-tier flow, with a unique index on
+`(season, contextHash, regNullifier)` so one masternode registers once per season and
+context, and each gateway rebuilds the members tree from those records. `dmlRoot` gives
+every verifier a tamper-evident published root, and `membersRoot` publishes the per-season
+members-tree root. Platform is an integrity and availability layer, not a privacy layer.
+Privacy comes entirely from the zero-knowledge proof, and members never touch a Platform
+identity.

@@ -45,5 +45,27 @@
     "required": ["season", "root", "size"],
     "additionalProperties": false,
     "documentsMutable": false
+  },
+  "registration": {
+    "type": "object",
+    "properties": {
+      "season": { "type": "integer", "minimum": 0, "position": 0 },
+      "contextHash": { "type": "array", "byteArray": true, "minItems": 32, "maxItems": 32, "position": 1 },
+      "regNullifier": { "type": "array", "byteArray": true, "minItems": 32, "maxItems": 32, "position": 2 },
+      "commitment": { "type": "array", "byteArray": true, "minItems": 32, "maxItems": 32, "position": 3 },
+      "index": { "type": "integer", "minimum": 0, "position": 4 }
+    },
+    "indices": [
+      {
+        "name": "uniqueRegistration",
+        "properties": [{ "season": "asc" }, { "contextHash": "asc" }, { "regNullifier": "asc" }],
+        "unique": true
+      },
+      { "name": "bySeasonIndex", "properties": [{ "season": "asc" }, { "index": "asc" }] }
+    ],
+    "required": ["season", "contextHash", "regNullifier", "commitment", "index"],
+    "additionalProperties": false,
+    "documentsMutable": false,
+    "canBeDeleted": false
   }
 }

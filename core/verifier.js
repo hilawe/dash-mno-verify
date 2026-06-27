@@ -81,9 +81,21 @@ export const REG_SIGNAL_INDEX = {
   contextHash: 4,
 };
 
-// Verify a two-tier registration proof. On success it appends the member commitment to the
-// members tree, so one masternode registers exactly one commitment per season and context.
-export async function verifyRegistration({ vkey, proof, publicSignals, expected, regNullifiers, membersTree }) {
+// Verify a two-tier registration proof. On success it commits one durable registration record,
+// so one masternode registers exactly one commitment per season and context, and mirrors that
+// commitment into the in-memory members tree.
+//
+// The policy checks and the proof verify run here, with no lock held. The state mutation is
+// delegated to `commit`, which the caller serializes against a season rollover (see
+// core/season.js): commit writes the durable record (the commit point that spends the
+// registration nullifier and records the member commitment in one atomic, deduped write) and
+// appends the same commitment to the members tree, in one critical section, so the durable index
+// and the tree position are assigned together and a rollover cannot land between them. The members
+// tree is only a cache rebuilt from records, so a crash right after the durable write re-derives
+// the member on the next rebuild instead of stranding them for the season.
+//
+// commit({ season, contextHash, regNullifier, commitment }) -> { ok, reason?, index?, membersRoot?, size? }
+export async function verifyRegistration({ vkey, proof, publicSignals, expected, registrationStore, commit }) {
   const s = {
     commitment: publicSignals[REG_SIGNAL_INDEX.commitment],
     regNullifier: publicSignals[REG_SIGNAL_INDEX.regNullifier],
@@ -98,15 +110,20 @@ export async function verifyRegistration({ vkey, proof, publicSignals, expected,
   if (String(s.season) !== String(expected.season)) return { ok: false, reason: "wrong-season" };
   // 3) the proof must be scoped to this community, platform, and role
   if (String(s.contextHash) !== String(expected.contextHash)) return { ok: false, reason: "wrong-context" };
-  // 4) one masternode registers once per season and context
-  if (await regNullifiers.has(s.season, s.contextHash, s.regNullifier)) return { ok: false, reason: "already-registered" };
+  // 4) one masternode registers once per season and context. A cheap read so an obvious replay is
+  //    rejected before the expensive proof verify; the durable append in commit is the authority.
+  if (await registrationStore.has(s.season, s.contextHash, s.regNullifier)) return { ok: false, reason: "already-registered" };
 
   // 5) the proof itself
   const valid = await snarkjs.plonk.verify(vkey, publicSignals, proof);
   if (!valid) return { ok: false, reason: "invalid-proof" };
 
-  const dup = await regNullifiers.add(s.season, s.contextHash, s.regNullifier);
-  if (dup && dup.duplicate) return { ok: false, reason: "already-registered" };
-  const index = membersTree.append(s.commitment);
-  return { ok: true, commitment: s.commitment, index, membersRoot: membersTree.root() };
+  // 6) the atomic, season-serialized commit. expected.season is the gateway's authoritative season
+  //    (equal to s.season by check 2), used for the season re-check inside commit.
+  return commit({
+    season: expected.season,
+    contextHash: s.contextHash,
+    regNullifier: s.regNullifier,
+    commitment: s.commitment,
+  });
 }

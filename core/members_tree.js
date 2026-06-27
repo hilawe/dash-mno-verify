@@ -20,6 +20,16 @@ export class MembersTree {
     return new MembersTree(await buildPoseidon());
   }
 
+  // Rebuild a tree from a season's persisted commitments, in the order they were registered.
+  // Used at boot and at a season boundary so the in-memory tree is a cache of the durable
+  // registration records, never the source of truth.
+  static async fromCommitments(commitments = []) {
+    const t = new MembersTree(await buildPoseidon());
+    for (const c of commitments) t.commitments.push(String(c));
+    t._levels = null;
+    return t;
+  }
+
   size() {
     return this.commitments.length;
   }

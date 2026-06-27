@@ -12,6 +12,7 @@ import { leafFromPriv } from "../common/dml.js";
 import { contextHash, signalHash } from "../common/index.js";
 import { MembersTree } from "../core/members_tree.js";
 import { RootStore, NullifierStore } from "../core/stores.js";
+import { RegistrationStore, MemoryRegistrationBackend } from "../core/registration_store.js";
 import { verifyRegistration, verifyMembership } from "../core/verifier.js";
 
 const TREE_DEPTH = 16;
@@ -62,7 +63,7 @@ console.log(`   registration proof generated in ${((Date.now() - tReg) / 1000).t
 
 const dmlRoots = new RootStore(8);
 dmlRoots.update([{ height: 1, root: dmlRoot, ts: 0 }]);
-const regNullifiers = new NullifierStore();
+const registrationStore = new RegistrationStore(new MemoryRegistrationBackend());
 const membersTree = await MembersTree.create();
 
 const regResult = await verifyRegistration({
@@ -70,8 +71,14 @@ const regResult = await verifyRegistration({
   proof: reg.proof,
   publicSignals: reg.publicSignals,
   expected: { rootStore: dmlRoots, season, contextHash: ctx },
-  regNullifiers,
-  membersTree,
+  registrationStore,
+  // Linear demo, no season rollover: the durable record and the tree mirror just run together.
+  commit: async ({ season: s, contextHash: c, regNullifier: n, commitment }) => {
+    const res = await registrationStore.append({ season: s, contextHash: c, regNullifier: n, commitment });
+    if (res.duplicate) return { ok: false, reason: "already-registered" };
+    membersTree.append(commitment);
+    return { ok: true, index: res.index, membersRoot: membersTree.root(), size: membersTree.size() };
+  },
 });
 console.log("   verifyRegistration:", regResult.ok ? `OK, commitment at index ${regResult.index}` : `FAIL ${regResult.reason}`);
 if (!regResult.ok) process.exit(1);

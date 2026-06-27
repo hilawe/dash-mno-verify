@@ -21,7 +21,7 @@ import { randomUUID } from "node:crypto";
 import { config } from "./config.js";
 import { RootStore, NullifierStore, ChallengeStore, loadOracle } from "./stores.js";
 import { loadVerificationKey, verifyMembership, verifyRegistration } from "./verifier.js";
-import { MembersTree } from "./members_tree.js";
+import { SeasonMembers } from "./season.js";
 import { contextHash, signalHash, epochNow, seasonNow } from "../common/index.js";
 
 const twoTier = config.mode === "two-tier";
@@ -29,9 +29,22 @@ const nowSec = () => Math.floor(Date.now() / 1000);
 
 const challenges = new ChallengeStore(config.challengeTtlSeconds);
 
-// The spent-nullifier set. Shared across gateways via the Dash Platform contract when
-// MNO_STORE=platform, otherwise in memory for a single gateway.
-let nullifiers, regNullifiers;
+// The shared Platform registration store is the follow-up to the file-backed path. Fail loudly
+// here, before any Platform connection or key load, rather than fall back to a non-shared store and
+// silently double-grant. Checking up front means a missing optional dependency or incomplete
+// Platform config cannot mask this with an earlier, more confusing error.
+if (twoTier && config.store === "platform") {
+  throw new Error(
+    "MNO_MODE=two-tier with MNO_STORE=platform is not wired yet. Use the durable file-backed " +
+      "registration store (unset MNO_STORE or set MNO_STORE=memory); Platform-backed " +
+      "registration records are the next step. See core/registration_store.js and docs/PLATFORM.md.",
+  );
+}
+
+// The per-epoch spent-nullifier set for the membership verify. Shared across gateways via the
+// Dash Platform contract when MNO_STORE=platform, otherwise in memory for a single gateway.
+// The per-season registration spend lives in the registration store, not here.
+let nullifiers;
 if (config.store === "platform") {
   const { connectPlatform, DocumentNullifierStore } = await import("./platform_store.js");
   const backend = await connectPlatform({
@@ -41,11 +54,9 @@ if (config.store === "platform") {
     appName: config.platform.appName,
   });
   nullifiers = new DocumentNullifierStore(backend);
-  regNullifiers = new DocumentNullifierStore(backend);
   console.log(`[gateway] shared nullifier state on Dash Platform (${config.platform.contractId})`);
 } else {
   nullifiers = new NullifierStore();
-  regNullifiers = new NullifierStore();
 }
 
 // The DML root, fed by the oracle. Used by single-tier verify and by two-tier registration.
@@ -61,13 +72,22 @@ async function refreshRoots() {
   }
 }
 
-let vkey, regVkey, membersVkey, membersTree, membersRoots;
+// Two-tier state. SeasonMembers owns the season-scoped members tree (a cache rebuilt from the
+// durable registration records, so a restart never loses a registration and a season boundary
+// starts a fresh empty tree) and serializes rollovers and member commits on one queue, which is
+// what closes the season-rollover race. See core/season.js.
+let vkey, regVkey, membersVkey, registrationStore, seasonMembers;
+
 if (twoTier) {
+  // The two-tier + Platform-store combination is rejected up front (see the guard near the top).
   regVkey = await loadVerificationKey(config.registrationVkeyPath);
   membersVkey = await loadVerificationKey(config.membersVkeyPath);
-  membersTree = await MembersTree.create();
-  membersRoots = new RootStore(config.rootWindow);
-  membersRoots.update([{ height: 0, root: membersTree.root(), ts: nowSec() }]);
+  const { RegistrationStore, FileBackend } = await import("./registration_store.js");
+  registrationStore = new RegistrationStore(new FileBackend(config.registrationStorePath));
+  await registrationStore.ready();
+  console.log(`[gateway] durable registration records at ${config.registrationStorePath}`);
+  seasonMembers = new SeasonMembers({ store: registrationStore, rootWindow: config.rootWindow, nowSec });
+  await seasonMembers.ensure(seasonNow(config.seasonSeconds, nowSec()));
 } else {
   vkey = await loadVerificationKey(config.verificationKeyPath);
 }
@@ -75,6 +95,8 @@ if (twoTier) {
 await refreshRoots();
 setInterval(refreshRoots, config.oracleRefreshSeconds * 1000);
 setInterval(() => challenges.sweep(), 60_000);
+// Roll the members tree over at a season boundary even when no request arrives to trigger it.
+if (twoTier) setInterval(() => seasonMembers.ensure(seasonNow(config.seasonSeconds, nowSec())).catch(() => {}), 60_000);
 
 function send(res, code, body) {
   res.writeHead(code, { "content-type": "application/json" });
@@ -104,7 +126,8 @@ const server = createServer(async (req, res) => {
     if (req.method === "POST" && req.url === "/v1/challenge") {
       const { platform, communityId, roleId, account } = await readBody(req);
       if (!platform || !communityId || !roleId || !account) return send(res, 400, { error: "missing fields" });
-      const cur = twoTier ? membersRoots.current() : dmlRoots.current();
+      if (twoTier) await seasonMembers.ensure(seasonNow(config.seasonSeconds, nowSec()));
+      const cur = twoTier ? seasonMembers.rootCurrent() : dmlRoots.current();
       if (!cur) return send(res, 503, { error: "no root available yet" });
 
       const nonce = randomUUID();
@@ -118,6 +141,7 @@ const server = createServer(async (req, res) => {
     if (req.method === "POST" && req.url === "/v1/verify") {
       const { nonce, proof, publicSignals } = await readBody(req);
       if (!nonce || !proof || !publicSignals) return send(res, 400, { error: "missing fields" });
+      if (twoTier) await seasonMembers.ensure(seasonNow(config.seasonSeconds, nowSec()));
       const pending = challenges.take(nonce);
       if (!pending) return send(res, 410, { ok: false, reason: "unknown-or-expired-challenge" });
 
@@ -127,7 +151,7 @@ const server = createServer(async (req, res) => {
         publicSignals,
         nullifiers,
         expected: {
-          rootStore: twoTier ? membersRoots : dmlRoots,
+          rootStore: twoTier ? seasonMembers.rootStore() : dmlRoots,
           epoch: pending.epoch,
           contextHash: pending.contextHash,
           signalHash: pending.signalHash,
@@ -144,21 +168,28 @@ const server = createServer(async (req, res) => {
 
       const ctx = contextHash({ platform, communityId, roleId }).toString();
       const season = seasonNow(config.seasonSeconds, nowSec());
+      await seasonMembers.ensure(season);
       const result = await verifyRegistration({
         vkey: regVkey,
         proof,
         publicSignals,
         expected: { rootStore: dmlRoots, season, contextHash: ctx },
-        regNullifiers,
-        membersTree,
+        registrationStore,
+        // The durable record and the members-tree mirror happen together inside the season
+        // serialization, re-checking the season so a rollover during the proof verify above
+        // cannot publish a stale-season root (the M2 race).
+        commit: ({ season: s, commitment, contextHash: c, regNullifier: n }) =>
+          seasonMembers.commit(s, commitment, () =>
+            registrationStore.append({ season: s, contextHash: c, regNullifier: n, commitment }),
+          ),
       });
       if (!result.ok) return send(res, 200, result);
-      membersRoots.update([{ height: membersTree.size(), root: result.membersRoot, ts: nowSec() }]);
-      return send(res, 200, { ok: true, index: result.index, membersRoot: result.membersRoot, size: membersTree.size() });
+      return send(res, 200, { ok: true, index: result.index, membersRoot: result.membersRoot, size: result.size });
     }
 
     if (twoTier && req.method === "GET" && req.url === "/v1/members") {
-      return send(res, 200, { membersRoot: membersTree.root(), size: membersTree.size(), commitments: membersTree.commitments });
+      await seasonMembers.ensure(seasonNow(config.seasonSeconds, nowSec()));
+      return send(res, 200, { membersRoot: seasonMembers.root(), size: seasonMembers.size(), commitments: seasonMembers.commitments() });
     }
 
     if (req.method === "GET" && req.url === "/v1/dml") {
@@ -172,7 +203,7 @@ const server = createServer(async (req, res) => {
     }
 
     if (req.method === "GET" && req.url === "/v1/health") {
-      const cur = twoTier ? membersRoots.current() : dmlRoots.current();
+      const cur = twoTier ? seasonMembers.rootCurrent() : dmlRoots.current();
       return send(res, 200, {
         ok: true,
         mode: config.mode,

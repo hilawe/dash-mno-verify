@@ -32,6 +32,11 @@ export const config = {
   membersVkeyPath: process.env.MNO_MEMBERS_VKEY ?? "circuits/build/mno_members_vkey.json",
   seasonSeconds: Number(process.env.MNO_SEASON_SECONDS ?? 90 * 24 * 3600),
 
+  // Durable, season-scoped registration records for the two-tier flow. Append-only JSON lines on
+  // a single gateway, so registrations survive a restart and the members tree rebuilds from them.
+  // With MNO_STORE=platform the records live on Dash Platform instead (the next step).
+  registrationStorePath: process.env.MNO_REG_PATH ?? "data/registrations.jsonl",
+
   // Where the spent-nullifier set lives. "memory" is a single gateway. "platform" shares it
   // across gateways via the Dash Platform contract's unique index. See docs/PLATFORM.md.
   store: process.env.MNO_STORE ?? "memory",
