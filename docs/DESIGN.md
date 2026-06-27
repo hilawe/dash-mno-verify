@@ -24,9 +24,9 @@ the owner specifically.
 
 ## The three pieces
 
-1. Oracle. Reads the DML and publishes a Poseidon Merkle root over the voting-key hashes. Public input, deterministic function, so the root is reproducible and a dishonest oracle is publicly detectable.
+1. Oracle. Reads the DML and publishes a Poseidon Merkle root over the voting-key hashes, alongside the ordered real leaves. Public input, deterministic function, so the root is reproducible. The gateway recomputes the root from the published leaves and rejects any snapshot whose root does not hash from them, which catches an inconsistent or transport-corrupted snapshot. It does not yet authenticate the leaf set against Dash Core, so a compromised source can still publish a forged but self-consistent snapshot. Closing that needs a signed or Platform-published root, tracked as a follow-up. A URL source must be https, is fetched with a timeout and a streaming size cap, and an accepted root is dropped once its snapshot ages past `MNO_ORACLE_MAX_AGE`.
 2. Prover. Runs locally. Proves `Q = d.G`, that `hash160(Q)` is a leaf under the published root, and emits `nullifier = Poseidon(Poseidon(d), epoch, contextHash)`.
-3. Gateway. Verifies the proof against the current root, current epoch, the community context, and the one-time challenge, records the nullifier, and returns a grant. Adapters call it and never touch the cryptography.
+3. Gateway. Verifies the proof against the current root, current epoch, the community context, and the one-time challenge, records the nullifier, and returns a grant. The unauthenticated endpoints (`/v1/challenge`, `/v1/verify`, and `/v1/register`) are rate-limited per client and the pending-challenge map is capped, so one source cannot mint unlimited nonces or force unlimited PLONK verifies. Adapter-only authentication is the stronger follow-up. Adapters call the gateway and never touch the cryptography.
 
 ## The nullifier does three jobs
 

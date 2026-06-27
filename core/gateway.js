@@ -19,15 +19,34 @@
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
 import { config } from "./config.js";
-import { RootStore, NullifierStore, ChallengeStore, loadOracle } from "./stores.js";
+import { RootStore, NullifierStore, ChallengeStore, RateLimiter, loadOracle } from "./stores.js";
 import { loadVerificationKey, verifyMembership, verifyRegistration } from "./verifier.js";
 import { SeasonMembers } from "./season.js";
+import { makeDmlRootHasher, FIELD_PRIME } from "./dml_root.js";
 import { contextHash, signalHash, epochNow, seasonNow } from "../common/index.js";
 
 const twoTier = config.mode === "two-tier";
 const nowSec = () => Math.floor(Date.now() / 1000);
 
-const challenges = new ChallengeStore(config.challengeTtlSeconds);
+const challenges = new ChallengeStore(config.challengeTtlSeconds, config.maxPendingChallenges);
+
+// Per-client guards on the two unauthenticated endpoints (review finding M5).
+const challengeLimiter = new RateLimiter({ windowSeconds: config.rateWindowSeconds, max: config.challengeRateMax });
+const verifyLimiter = new RateLimiter({ windowSeconds: config.rateWindowSeconds, max: config.verifyRateMax });
+const registerLimiter = new RateLimiter({ windowSeconds: config.rateWindowSeconds, max: config.registerRateMax });
+// The client key for rate limiting. With MNO_TRUST_PROXY set, the gateway is assumed to sit behind
+// exactly one trusted reverse proxy, which appends the connecting client to X-Forwarded-For. The
+// LAST hop is the address that proxy observed, so it is the one entry the client cannot forge (the
+// left entries are client-supplied and spoofable). Without the flag the header is ignored entirely
+// and the socket address is used. A multi-proxy chain would need a configured trusted-hop count,
+// tracked in TODO.md.
+function clientKey(req) {
+  if (config.trustProxy) {
+    const xff = req.headers["x-forwarded-for"];
+    if (xff) return String(xff).split(",").pop().trim();
+  }
+  return req.socket.remoteAddress ?? "unknown";
+}
 
 // The shared Platform registration store is the follow-up to the file-backed path. Fail loudly
 // here, before any Platform connection or key load, rather than fall back to a non-shared store and
@@ -61,15 +80,96 @@ if (config.store === "platform") {
 
 // The DML root, fed by the oracle. Used by single-tier verify and by two-tier registration.
 const dmlRoots = new RootStore(config.rootWindow);
-let latestDml = null; // the full oracle snapshot, so provers can fetch leaves and build paths
+let latestDml = null; // the last verified oracle snapshot, so provers can fetch leaves and build paths
+const dmlRootFromLeaves = await makeDmlRootHasher(config.treeDepth);
+
+// A canonical field element is decimal digits whose value is in [0, FIELD_PRIME). A larger value
+// would be folded to a different element by the Poseidon reduction, so reject it as data-convention
+// drift rather than silently alias it.
+const isCanonicalField = (v) => /^\d+$/.test(String(v)) && BigInt(v) < FIELD_PRIME;
+
+// Reject a malformed or implausibly-timestamped snapshot before it can reach the verify path
+// (review finding M3). Shape, depth, and leaf field-elements are checked here, plus a bound on the
+// oracle's self-reported timestamp: too old to adopt, or too far in the future (which would
+// otherwise let a clock-skewed or replayed future-dated snapshot pose as fresh). The root recompute
+// in refreshRoots is the separate check that the leaves actually produce the claimed root.
+function validateSnapshot(o) {
+  if (!o || typeof o !== "object") throw new Error("snapshot is not an object");
+  if (!Number.isInteger(o.height) || o.height < 0) throw new Error("snapshot height invalid");
+  const depth = o.depth ?? config.treeDepth;
+  if (depth !== config.treeDepth) throw new Error(`snapshot depth ${depth} != expected ${config.treeDepth}`);
+  if (o.root == null || !isCanonicalField(o.root)) throw new Error("snapshot root is not a canonical field element");
+  if (!Array.isArray(o.leaves)) throw new Error("snapshot leaves missing");
+  if (o.leaves.length > 2 ** config.treeDepth) throw new Error("snapshot leaves exceed tree capacity");
+  for (const l of o.leaves) if (!isCanonicalField(l)) throw new Error("snapshot leaf is not a canonical field element");
+  if (config.oracleMaxAgeSeconds > 0) {
+    const ts = Number(o.ts);
+    if (!Number.isFinite(ts)) throw new Error("snapshot timestamp invalid");
+    if (nowSec() - ts > config.oracleMaxAgeSeconds) throw new Error("snapshot is too old");
+    if (ts - nowSec() > config.oracleFutureSkewSeconds) throw new Error("snapshot timestamp too far in the future");
+  }
+}
+
+// Enforce the freshness bound on EVERY root the window will still accept, not only the newest. Each
+// root carries its own oracle timestamp (bounded at adoption to no more than oracleFutureSkewSeconds
+// in the future), so dropping those older than the bound stops a removed node from proving against
+// an aged-out root that newer snapshots happened to keep in the window, and clears latestDml when
+// its own root ages out. Called on the refresh tick and at request time, so a refresh interval
+// longer than the bound cannot leave a stale root servable between ticks.
+function enforceDmlFreshness() {
+  if (config.oracleMaxAgeSeconds <= 0) return;
+  const cutoff = nowSec() - config.oracleMaxAgeSeconds;
+  dmlRoots.dropOlderThan(cutoff);
+  if (latestDml && Number(latestDml.ts) < cutoff) {
+    console.error(`[gateway] oracle snapshot stale (ts ${latestDml.ts}), dropping root until a fresh one arrives`);
+    latestDml = null;
+  }
+}
+
 async function refreshRoots() {
   try {
     const o = await loadOracle(config.oracleSource);
-    dmlRoots.update([{ height: o.height, root: o.root, ts: o.ts ?? nowSec() }]);
-    latestDml = o;
+    validateSnapshot(o);
+    // Always recompute the root from the published leaves and trust only a self-consistent snapshot,
+    // whether the root is new or a republish of the current one. The fast hasher is O(real leaves),
+    // so this runs every refresh cheaply, and a snapshot whose leaves do not hash to its root is
+    // rejected and does not renew freshness, so a corrupted or inconsistent source cannot keep a
+    // stale root alive. (Authenticating the leaf set against a compromised source that forges a
+    // self-consistent pair still needs the signed or Platform-published roots tracked in the TODO.)
+    const recomputed = dmlRootFromLeaves(o.leaves);
+    if (recomputed !== String(o.root)) {
+      // Reject the inconsistent snapshot, but do not early-return: the staleness check below must
+      // still run, or an aged-out accepted root would keep being served while the source is bad.
+      console.error(`[gateway] oracle root mismatch, snapshot rejected: claimed ${o.root}, recomputed ${recomputed}`);
+    } else if (latestDml && Number(o.height) < Number(latestDml.height)) {
+      // Height regressed below the accepted root. A masternode list height is the block count and
+      // only moves forward, so a lower height is a replayed old snapshot or a reorg, and the two are
+      // indistinguishable without the block hash (tracked with the leaf-authentication follow-up).
+      // The safe default for a security gate is to reject: adopting it would diverge latestDml from
+      // RootStore.current(), strand provers, and re-window a stale root a node may have been evicted
+      // from. If the lower height is a genuine sustained reorg, the old root ages out within
+      // oracleMaxAgeSeconds, enforceDmlFreshness clears latestDml, and the next lower-height snapshot
+      // is then accepted, so the gateway self-heals onto the canonical branch within the bound.
+      console.error(`[gateway] oracle height regressed (${o.height} < ${latestDml.height}), snapshot rejected`);
+    } else if (latestDml && Number(o.height) === Number(latestDml.height) && String(o.root) !== String(latestDml.root)) {
+      // Same height, different root: the list at a fixed height is deterministic, so this is
+      // inconsistent. Reject rather than flap the served root.
+      console.error(`[gateway] oracle root changed at height ${o.height}, snapshot rejected`);
+    } else {
+      // Height is at or above the accepted root, so this snapshot becomes (or stays) current and
+      // latestDml never diverges from RootStore.current(). Only a self-consistent snapshot reaches
+      // here, so the ts that drives expiry is verified-fresh.
+      latestDml = o;
+      dmlRoots.update([{ height: o.height, root: o.root, ts: o.ts ?? nowSec() }]);
+    }
   } catch (err) {
     console.error("[gateway] root refresh failed:", err.message);
   }
+  // Prune aged-out roots from the window. validateSnapshot only blocks adopting a stale snapshot;
+  // this stops serving ones already accepted, so a stalled, replayed, or inconsistent source cannot
+  // keep admitting members against a frozen root. Runs every tick, even when the fetch failed or the
+  // snapshot was rejected above, and again at request time (see the server handler).
+  enforceDmlFreshness();
 }
 
 // Two-tier state. SeasonMembers owns the season-scoped members tree (a cache rebuilt from the
@@ -95,6 +195,7 @@ if (twoTier) {
 await refreshRoots();
 setInterval(refreshRoots, config.oracleRefreshSeconds * 1000);
 setInterval(() => challenges.sweep(), 60_000);
+setInterval(() => { challengeLimiter.sweep(); verifyLimiter.sweep(); registerLimiter.sweep(); }, 60_000);
 // Roll the members tree over at a season boundary even when no request arrives to trigger it.
 if (twoTier) setInterval(() => seasonMembers.ensure(seasonNow(config.seasonSeconds, nowSec())).catch(() => {}), 60_000);
 
@@ -123,7 +224,11 @@ function readBody(req) {
 
 const server = createServer(async (req, res) => {
   try {
+    // Enforce DML freshness on every request, so a refresh interval longer than the freshness bound
+    // cannot serve a root that aged out since the last tick.
+    enforceDmlFreshness();
     if (req.method === "POST" && req.url === "/v1/challenge") {
+      if (!challengeLimiter.allow(clientKey(req))) return send(res, 429, { error: "rate limited" });
       const { platform, communityId, roleId, account } = await readBody(req);
       if (!platform || !communityId || !roleId || !account) return send(res, 400, { error: "missing fields" });
       if (twoTier) await seasonMembers.ensure(seasonNow(config.seasonSeconds, nowSec()));
@@ -134,11 +239,13 @@ const server = createServer(async (req, res) => {
       const epoch = epochNow(config.epochSeconds, nowSec());
       const ctx = contextHash({ platform, communityId, roleId }).toString();
       const sig = signalHash(nonce).toString();
-      challenges.put(nonce, { account, signalHash: sig, epoch, contextHash: ctx });
+      if (!challenges.put(nonce, { account, signalHash: sig, epoch, contextHash: ctx }))
+        return send(res, 429, { error: "too many pending challenges" });
       return send(res, 200, { nonce, signalHash: sig, epoch, root: cur.root, contextHash: ctx, epochSeconds: config.epochSeconds });
     }
 
     if (req.method === "POST" && req.url === "/v1/verify") {
+      if (!verifyLimiter.allow(clientKey(req))) return send(res, 429, { error: "rate limited" });
       const { nonce, proof, publicSignals } = await readBody(req);
       if (!nonce || !proof || !publicSignals) return send(res, 400, { error: "missing fields" });
       if (twoTier) await seasonMembers.ensure(seasonNow(config.seasonSeconds, nowSec()));
@@ -163,6 +270,7 @@ const server = createServer(async (req, res) => {
     }
 
     if (twoTier && req.method === "POST" && req.url === "/v1/register") {
+      if (!registerLimiter.allow(clientKey(req))) return send(res, 429, { error: "rate limited" });
       const { platform, communityId, roleId, proof, publicSignals } = await readBody(req);
       if (!platform || !communityId || !roleId || !proof || !publicSignals) return send(res, 400, { error: "missing fields" });
 
@@ -197,7 +305,7 @@ const server = createServer(async (req, res) => {
       return send(res, 200, {
         root: latestDml?.root ?? null,
         height: latestDml?.height ?? null,
-        depth: latestDml?.depth ?? 16,
+        depth: latestDml?.depth ?? config.treeDepth,
         leaves: latestDml?.leaves ?? [],
       });
     }
