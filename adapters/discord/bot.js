@@ -16,6 +16,7 @@ import {
   MessageFlags,
 } from "discord.js";
 import process from "node:process";
+import { proveInstructions } from "../../common/prover_instructions.js";
 
 const TOKEN = process.env.DISCORD_TOKEN;
 const APP_ID = process.env.DISCORD_APP_ID;
@@ -71,7 +72,7 @@ client.on("interactionCreate", async (i) => {
         "",
         "1. Download `challenge.json` below.",
         "2. On the machine holding your masternode voting key, run:",
-        "   `npm run prove -- --challenge challenge.json --voting-key <WIF>`",
+        ...proveInstructions(challenge.mode).map((l) => "   `" + l + "`"),
         "3. Run `/submit` here and attach the `proof.json` it produces.",
         "",
         "Your key, and which node you control, never leave your device. The bot learns only that some valid masternode vouched for you.",

@@ -11,6 +11,7 @@
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
 import process from "node:process";
+import { proveInstructions } from "../../common/prover_instructions.js";
 
 const PORT = Number(process.env.MNO_WEB_PORT ?? 8080);
 const GATEWAY = process.env.MNO_GATEWAY_URL ?? "http://127.0.0.1:8787";
@@ -68,8 +69,8 @@ button{font:inherit;padding:.5rem 1rem;cursor:pointer}code{background:#f0f0f0;pa
 <h1>Masternode-gated area</h1>
 <p>Prove you control a Dash masternode without revealing which one. Your voting key never leaves your machine.</p>
 <ol>
-<li><button id="start">1. Get challenge</button> downloads <code>challenge.json</code>.</li>
-<li>On the machine with your voting key, run:<br><code>npm run prove -- --challenge challenge.json --voting-key &lt;WIF&gt;</code></li>
+<li><button id="start">1. Get challenge</button> downloads <code>challenge.json</code> and shows the exact prover command.</li>
+<li>On the machine with your voting key, run the command shown below after step 1.</li>
 <li>Upload the resulting <code>proof.json</code>: <input type="file" id="proof"> <button id="submit">3. Submit</button></li>
 </ol>
 <p><a href="/members">Go to the members area</a></p>
@@ -79,10 +80,10 @@ const out = document.getElementById("out");
 document.getElementById("start").onclick = async () => {
   const r = await fetch("/api/start", { method: "POST" });
   if (!r.ok) { out.textContent = "Could not reach the verification service."; return; }
-  const ch = await r.json();
-  const url = URL.createObjectURL(new Blob([JSON.stringify(ch, null, 2)], { type: "application/json" }));
+  const data = await r.json();
+  const url = URL.createObjectURL(new Blob([JSON.stringify(data.challenge, null, 2)], { type: "application/json" }));
   const a = document.createElement("a"); a.href = url; a.download = "challenge.json"; a.click();
-  out.textContent = "Downloaded challenge.json. Run the prover, then submit proof.json.";
+  out.textContent = "Downloaded challenge.json. On the machine with your voting key, run:\\n  " + data.proverInstructions.join("\\n  ") + "\\nThen upload the proof.json it produces.";
 };
 document.getElementById("submit").onclick = async () => {
   const f = document.getElementById("proof").files[0];
@@ -112,7 +113,10 @@ const server = createServer(async (req, res) => {
         body: JSON.stringify({ platform: "web", communityId: COMMUNITY_ID, roleId: ROLE_ID, account: sid }),
       });
       if (!r.ok) return send(res, 502, { error: "gateway unavailable" }, setCookie);
-      return send(res, 200, await r.json(), setCookie);
+      const challenge = await r.json();
+      // Send the prover command(s) for the gateway's mode alongside the challenge, computed with the
+      // shared helper, so the page shows the right command without duplicating the logic in browser JS.
+      return send(res, 200, { challenge, proverInstructions: proveInstructions(challenge.mode) }, setCookie);
     }
 
     if (req.method === "POST" && req.url === "/api/submit") {

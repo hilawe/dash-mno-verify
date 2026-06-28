@@ -159,7 +159,7 @@ test("two-tier with the Platform store fails loud at boot, before any Platform c
 
 test("a malformed numeric config value fails loud at boot rather than disabling a guard", async () => {
   // A non-numeric cap must not become NaN (which would make every size check false and silently
-  // disable the pending-challenge cap); the gateway must refuse to start instead.
+  // disable the pending-challenge cap). The gateway must refuse to start instead.
   await assert.rejects(startGateway({ MNO_MAX_PENDING_CHALLENGES: "not-a-number" }), /must be an integer/);
 });
 
@@ -185,7 +185,7 @@ test("the account endpoints require the adapter secret when it is set", async ()
     assert.equal(await challenge({}), 401, "no token is rejected");
     assert.equal(await challenge({ authorization: "Bearer wrong" }), 401, "a wrong token is rejected");
     assert.equal(await challenge({ authorization: "Bearer s3cr3t" }), 200, "the correct token is accepted");
-    // verify is gated the same way; a public read is not.
+    // verify is gated the same way, but a public read is not.
     const verifyStatus = await fetch(sec.base + "/v1/verify", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -210,6 +210,14 @@ test("an expired nonce is rejected", async () => {
   } finally {
     short.proc.kill();
   }
+});
+
+// The challenge advertises the gateway mode, so each adapter renders the matching local prover
+// command (single-tier `npm run prove` vs two-tier `npm run prove-epoch`).
+test("the challenge advertises the gateway mode", async () => {
+  const res = await post(gw.base, "/v1/challenge", { platform: "p", communityId: "c", roleId: "r", account: "alice" });
+  assert.equal(res.status, 200);
+  assert.equal(res.body.mode, "single");
 });
 
 // B1: the gateway binds the requesting account into the signal hash, so a proof committed for one

@@ -8,6 +8,7 @@
 // users via link. Set TELEGRAM_GROUP_ID to that chat's id.
 import { Bot, InputFile } from "grammy";
 import process from "node:process";
+import { proveInstructions } from "../../common/prover_instructions.js";
 
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const GROUP_ID = process.env.TELEGRAM_GROUP_ID;
@@ -45,7 +46,7 @@ bot.command("verify", async (ctx) => {
     {
       caption: [
         "Step 1 of 2. On the machine holding your masternode voting key, run:",
-        "npm run prove -- --challenge challenge.json --voting-key <WIF>",
+        ...proveInstructions(challenge.mode),
         "Then send me the proof.json it produces.",
         "",
         "Your key, and which node you control, never leave your device.",

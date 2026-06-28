@@ -6,6 +6,7 @@
 // room. It uses the Matrix Client-Server API directly, so it needs no extra dependency.
 import process from "node:process";
 import { randomUUID } from "node:crypto";
+import { proveInstructions } from "../../common/prover_instructions.js";
 
 const HS = process.env.MATRIX_HOMESERVER; // e.g. https://matrix.org
 const TOKEN = process.env.MATRIX_ACCESS_TOKEN;
@@ -48,7 +49,8 @@ async function handle(roomId, sender, body) {
       roomId,
       [
         "Anonymous masternode verification, step 1 of 2.",
-        "On the machine holding your masternode voting key, run the prover with the challenge below,",
+        "On the machine holding your masternode voting key, save the challenge below as challenge.json and run:",
+        ...proveInstructions(challenge.mode),
         "then paste the resulting proof.json back into this room.",
         "Your key, and which node you control, never leave your device.",
         "",

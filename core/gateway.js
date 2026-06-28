@@ -11,9 +11,10 @@
 //
 // Single mode (MNO_MODE=single):
 //   POST /v1/challenge  { platform, communityId, roleId, account }
-//        -> { nonce, signalHash, epoch, root, contextHash, epochSeconds }
+//        -> { nonce, signalHash, epoch, root, contextHash, epochSeconds, mode }
+//        mode is "single" or "two-tier", so the adapter renders the matching local prover command.
 //   POST /v1/verify     { nonce, proof, publicSignals, account }  -> { ok, account, epoch, expiresAt }
-//        account is the submitter; it must equal the account the challenge was minted for (B1).
+//        account is the submitter, and must equal the account the challenge was minted for (B1).
 //
 // Two-tier mode (MNO_MODE=two-tier) adds a heavy seasonal registration and makes the
 // per-epoch challenge and verify run against the cheap members tree:
@@ -290,7 +291,7 @@ const server = createServer(async (req, res) => {
       const sig = signalHash(nonce, account).toString();
       if (!challenges.put(nonce, { account, signalHash: sig, epoch, contextHash: ctx }))
         return send(res, 429, { error: "too many pending challenges" });
-      return send(res, 200, { nonce, signalHash: sig, epoch, root: cur.root, contextHash: ctx, epochSeconds: config.epochSeconds });
+      return send(res, 200, { nonce, signalHash: sig, epoch, root: cur.root, contextHash: ctx, epochSeconds: config.epochSeconds, mode: config.mode });
     }
 
     if (req.method === "POST" && path === "/v1/verify") {
