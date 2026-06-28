@@ -14,8 +14,8 @@
 //   exists({epoch, contextHash, nf}) -> Promise<boolean>
 //   insert({epoch, contextHash, nf}) -> Promise<{ duplicate: boolean }>
 // where `duplicate` is true when the unique index rejected the insert (another gateway got
-// there first). The gateway awaits has() and add(), so this drops in for the in-memory
-// store.
+// there first). The gateway awaits has(), get(), and add(), so this drops in for the
+// in-memory store.
 export class DocumentNullifierStore {
   constructor(backend) {
     this.backend = backend;
@@ -23,7 +23,19 @@ export class DocumentNullifierStore {
   async has(epoch, contextHash, nf) {
     return this.backend.exists({ epoch: Number(epoch), contextHash: String(contextHash), nf: String(nf) });
   }
-  async add(epoch, contextHash, nf) {
+  // The granting account is deliberately not persisted on Platform: writing a platform user id, or
+  // anything derived from it, into a public document would link that user to "controls a masternode"
+  // for anyone reading the chain, the privacy regression the whole design avoids. So get() returns
+  // null and re-grant (idempotent grants) is a memory-mode property. A durable, privacy-preserving
+  // claim on Platform needs an account commitment under a shared cluster secret plus a contract
+  // field, a deliberate design step tracked in TODO.md, not a silent default.
+  async get() {
+    return null;
+  }
+  // The claim record's account is accepted for interface parity with the in-memory store but not
+  // written to Platform yet (see get()). The unique index on (epoch, contextHash, nf) still gives
+  // one spend per tag across gateways.
+  async add(epoch, contextHash, nf, _record = {}) {
     return this.backend.insert({ epoch: Number(epoch), contextHash: String(contextHash), nf: String(nf) });
   }
 }

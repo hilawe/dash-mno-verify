@@ -35,8 +35,33 @@ export function readSignals(publicSignals) {
 // chose or knows, never values taken from the proof. A proof can only assert the
 // nullifier and that some valid node authorized it; it can never talk the gateway into
 // accepting the wrong root, epoch, context, or challenge.
-export async function verifyMembership({ vkey, proof, publicSignals, expected, nullifiers }) {
+//
+// The nullifier store is also the claim store. Each spent tag records the account that first claimed
+// it, so when the tag is already spent, the only caller let through is that same account, re-verifying
+// because its adapter died after the spend but before it applied the grant (role, invite, session).
+// The re-grant still needs a fresh valid proof, so knowing the account is not enough, and a different
+// account is rejected, so one masternode still maps to one account per epoch and context. A store
+// whose get() returns null (the Platform-backed store, which does not persist the account) simply
+// never re-grants, so a spent tag is already-used there.
+//
+// verifyProof is injected so the proof check can be stubbed in unit tests. It defaults to PLONK,
+// whose verification key comes from a transparent universal setup (the public Hermez Powers of Tau)
+// with no per-circuit ceremony.
+export async function verifyMembership({
+  vkey,
+  proof,
+  publicSignals,
+  expected,
+  nullifiers,
+  verifyProof = (vk, ps, pf) => snarkjs.plonk.verify(vk, ps, pf),
+}) {
   const s = readSignals(publicSignals);
+
+  // 0) the caller must name the account this verify is for. The claim record keys idempotency on it,
+  //    so a missing account would record an ownerless claim that a later ownerless call could match.
+  //    The gateway always supplies pending.account (review finding B1); this guards direct callers.
+  if (typeof expected.account !== "string" || expected.account === "")
+    return { ok: false, reason: "missing-account" };
 
   // 1) the root must be one the oracle published recently
   if (!expected.rootStore.isRecent(s.root))
@@ -54,20 +79,30 @@ export async function verifyMembership({ vkey, proof, publicSignals, expected, n
   if (String(s.signalHash) !== String(expected.signalHash))
     return { ok: false, reason: "wrong-signal" };
 
-  // 5) one masternode, one membership per epoch
-  if (await nullifiers.has(s.epoch, s.contextHash, s.nullifier))
+  const claimedBySameAccount = async () => {
+    const prior = await nullifiers.get(s.epoch, s.contextHash, s.nullifier);
+    return prior != null && String(prior.account) === String(expected.account);
+  };
+
+  // 5) one masternode, one membership per epoch and context. An already-spent tag is only let through
+  //    as an idempotent re-grant for the account that first claimed it, and only with a fresh valid
+  //    proof. The has() check rejects an ordinary replay before the expensive proof verify.
+  if (await nullifiers.has(s.epoch, s.contextHash, s.nullifier)) {
+    if (!(await claimedBySameAccount())) return { ok: false, reason: "already-used" };
+    if (!(await verifyProof(vkey, publicSignals, proof))) return { ok: false, reason: "invalid-proof" };
+    return { ok: true, nullifier: s.nullifier, epoch: s.epoch, regranted: true };
+  }
+
+  // 6) first claim: verify the proof, then record the spend and the granting account together.
+  if (!(await verifyProof(vkey, publicSignals, proof))) return { ok: false, reason: "invalid-proof" };
+
+  // With a shared store, a duplicate here means another request recorded the spend first in a race.
+  // Re-grant only if that prior claim belongs to this same account, otherwise it is already used.
+  const dup = await nullifiers.add(s.epoch, s.contextHash, s.nullifier, { account: expected.account });
+  if (dup && dup.duplicate) {
+    if (await claimedBySameAccount()) return { ok: true, nullifier: s.nullifier, epoch: s.epoch, regranted: true };
     return { ok: false, reason: "already-used" };
-
-  // 6) the zero-knowledge proof itself. PLONK, so the verification key comes from a
-  // transparent universal setup (the public Hermez Powers of Tau), with no per-circuit
-  // ceremony.
-  const valid = await snarkjs.plonk.verify(vkey, publicSignals, proof);
-  if (!valid) return { ok: false, reason: "invalid-proof" };
-
-  // Record the tag. With a shared store, a duplicate here means another gateway recorded it
-  // first in a race, so treat it as already used.
-  const dup = await nullifiers.add(s.epoch, s.contextHash, s.nullifier);
-  if (dup && dup.duplicate) return { ok: false, reason: "already-used" };
+  }
   return { ok: true, nullifier: s.nullifier, epoch: s.epoch };
 }
 

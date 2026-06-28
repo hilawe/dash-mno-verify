@@ -220,6 +220,15 @@ test("the challenge advertises the gateway mode", async () => {
   assert.equal(res.body.mode, "single");
 });
 
+// A non-string account is normalized to a string at the challenge boundary, so the signal hash uses
+// the same form the string-typed verify expects. Otherwise a numeric account could mint a challenge
+// it could never satisfy.
+test("a numeric account is normalized so its challenge can verify", async () => {
+  const res = await post(gw.base, "/v1/challenge", { platform: "p", communityId: "c", roleId: "r", account: 98765 });
+  assert.equal(res.status, 200);
+  assert.equal(res.body.signalHash, signalHash(res.body.nonce, "98765").toString());
+});
+
 // B1: the gateway binds the requesting account into the signal hash, so a proof committed for one
 // account's challenge cannot satisfy another account's challenge (the signal hashes differ). The
 // adapters then grant out.account and reject a mismatched submitter, which is what closes the relay.

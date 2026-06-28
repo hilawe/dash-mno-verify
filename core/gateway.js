@@ -271,8 +271,12 @@ const server = createServer(async (req, res) => {
       // key and block the real adapter.
       if (!authorized(req)) return send(res, 401, { error: "unauthorized" });
       if (!challengeLimiter.allow(clientKey(req))) return send(res, 429, { error: "rate limited" });
-      const { platform, communityId, roleId, account } = await readBody(req);
-      if (!platform || !communityId || !roleId || !account) return send(res, 400, { error: "missing fields" });
+      const { platform, communityId, roleId, account: rawAccount } = await readBody(req);
+      if (!platform || !communityId || !roleId || !rawAccount) return send(res, 400, { error: "missing fields" });
+      // Normalize the account to a string here, the one place it enters, so the signal hash and the
+      // stored claim use the same form a numeric or other non-string account would otherwise mint a
+      // challenge that the string-typed verify (verifyMembership) could never satisfy.
+      const account = String(rawAccount);
       const ctx = contextHash({ platform, communityId, roleId }).toString();
       // Two-tier challenges run against this context's own members tree (review finding B2), so a
       // member registered for another community cannot prove here.
@@ -327,11 +331,14 @@ const server = createServer(async (req, res) => {
           epoch: pending.epoch,
           contextHash: pending.contextHash,
           signalHash: pending.signalHash,
+          account: pending.account,
         },
       });
       if (!result.ok) return send(res, 200, result);
       const expiresAt = (pending.epoch + 1) * config.epochSeconds;
-      return send(res, 200, { ok: true, account: pending.account, epoch: result.epoch, expiresAt });
+      // regranted is true when this was an idempotent re-verify of an already-spent tag by the same
+      // account (its adapter recovering from a failed first grant), so an adapter can log the recovery.
+      return send(res, 200, { ok: true, account: pending.account, epoch: result.epoch, expiresAt, regranted: result.regranted === true });
     }
 
     if (twoTier && req.method === "POST" && path === "/v1/register") {

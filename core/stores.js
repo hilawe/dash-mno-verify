@@ -136,19 +136,41 @@ export class RateLimiter {
   }
 }
 
-// One masternode maps to one membership per epoch. A repeat nullifier is rejected.
+// Nullifier (claim) store interface, shared with DocumentNullifierStore (core/platform_store.js) and
+// enforced by test/nullifier_store_contract.test.js. The verifier depends on all three:
+//   has(epoch, contextHash, nf)            -> boolean              whether the tag is spent
+//   get(epoch, contextHash, nf)            -> { account } | null   the claim record, or null when a
+//                                                                  store does not persist the account
+//                                                                  (no idempotent re-grant there)
+//   add(epoch, contextHash, nf, { account }) -> { duplicate }      record once, duplicate on a re-add
+//
+// One masternode maps to one membership per epoch and context. The store records the spent tag and,
+// with it, the account that first claimed it. That account, and only that account, may re-verify and
+// re-grant the same tag within the epoch if its adapter failed after the spend but before applying
+// the grant (idempotent grants). A different account that hits the same tag is rejected, so one
+// masternode still maps to one account per epoch and context. Keeping the spend and the account in
+// one record is the point: there is no second store that could fall out of step with this one. The
+// Platform-backed store (core/platform_store.js) shares the spent set across gateways; it does not
+// yet persist the account, so re-grant is a memory-mode property for now (see its get()).
 export class NullifierStore {
   constructor() {
-    this.spent = new Set();
+    this.claims = new Map(); // `epoch:contextHash:nf` -> { account }
   }
   #key(epoch, contextHash, nf) {
     return `${epoch}:${contextHash}:${nf}`;
   }
   has(epoch, contextHash, nf) {
-    return this.spent.has(this.#key(epoch, contextHash, nf));
+    return this.claims.has(this.#key(epoch, contextHash, nf));
   }
-  add(epoch, contextHash, nf) {
-    this.spent.add(this.#key(epoch, contextHash, nf));
+  // The claim record for a spent tag, or null. Carries the account that first claimed it.
+  get(epoch, contextHash, nf) {
+    return this.claims.get(this.#key(epoch, contextHash, nf)) ?? null;
+  }
+  add(epoch, contextHash, nf, record = {}) {
+    const key = this.#key(epoch, contextHash, nf);
+    if (this.claims.has(key)) return { duplicate: true };
+    this.claims.set(key, { account: record.account });
+    return { duplicate: false };
   }
 }
 

@@ -101,7 +101,7 @@ const memResult = await verifyMembership({
   vkey: JSON.parse(await readFile(`${B}/mno_members_vkey.json`, "utf8")),
   proof: mem.proof,
   publicSignals: mem.publicSignals,
-  expected: { rootStore: membersRoots, epoch, contextHash: ctx, signalHash: sig },
+  expected: { rootStore: membersRoots, epoch, contextHash: ctx, signalHash: sig, account: "demo-account" },
   nullifiers: new NullifierStore(),
 });
 console.log("   verifyMembership:", memResult.ok ? `OK, epoch nullifier ${memResult.nullifier.slice(0, 16)}...` : `FAIL ${memResult.reason}`);

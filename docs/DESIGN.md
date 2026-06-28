@@ -34,6 +34,12 @@ the owner specifically.
 - Sybil resistance. For a fixed epoch and context, one key yields one nullifier, so one masternode maps to one membership. The circuit constrains the private key `d` below the secp256k1 group order `n`, so `d` is the canonical scalar in `[0, n)`. Without that, `d` and `d + n` share a public key (the same leaf) but hash to different nullifiers, which would let one node mint two memberships per epoch (review finding M1). The nullifier is derived from `d`, not from the public `hash160(Q)` leaf, so it stays unlinkable to the published leaf set.
 - Cross-context unlinkability. The context hash scopes the nullifier to one platform, community, and role, so the same key produces unrelated nullifiers elsewhere.
 
+## Idempotent grants
+
+The gateway spends the membership nullifier before the adapter applies the grant (a role, an invite, a session). If the adapter dies in between, a naive design strands the member until the next epoch, because the nullifier is already spent. The nullifier store records the account that first spent each tag in the same record as the spend, so that same account can re-verify and re-grant within the epoch. The re-grant still needs a fresh valid proof, so knowing the account is not enough, and a different account that hits the same tag is rejected, so one masternode still maps to one membership per epoch and context. Keeping the spend and the account in one record means there is no second store to fall out of step with the spent set.
+
+The Platform-backed store shares the spent set across gateways but does not persist the account, because writing a platform user id (or anything derived from it) into a public document would link that user to masternode control on-chain, the disclosure this design exists to prevent. So re-grant is a memory-mode property for now. A durable, privacy-preserving claim on Platform (an account commitment under a shared cluster secret, plus a contract field) is a deliberate next step, not a silent default.
+
 ## Single-tier versus two-tier
 
 The single-tier design runs the full proof every epoch. It is the simplest correct design,
