@@ -29,6 +29,7 @@ gateway never changes:
 
 - Call `POST /v1/challenge` with `{ platform, communityId, roleId, account }` and relay the result to the member.
 - Call `POST /v1/verify` with `{ nonce, proof, publicSignals, account }` and act on `ok`. The `account` must be the platform-authenticated submitter (the same id the challenge was minted for), not a value read from the member's `proof.json`. The gateway rejects with `account-mismatch` if it differs, which is what stops a relayed proof (review finding B1).
+- When the gateway is run with `MNO_ADAPTER_SECRET` set, send `Authorization: Bearer $MNO_ADAPTER_SECRET` on both calls. The gateway returns `401` without it. Keep the secret server-side, never in code the member's browser or device can read, since it is what lets the gateway trust the `account` the adapter sends. The read-only endpoints (`/v1/members`, `/v1/dml`, `/v1/health`) need no token.
 
 Use a distinct `platform` string per adapter (for example `telegram`, `matrix`, `web`).
 Because the context hash includes that string, the same voting key produces unlinkable

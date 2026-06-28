@@ -87,7 +87,8 @@ runs on your machine.
 - Boot the verification gateway against the root you just produced:
 
 ```bash
-npm run gateway
+# set MNO_ADAPTER_SECRET in production; for a local check, opt into running open:
+MNO_ALLOW_UNAUTH_GATEWAY=1 npm run gateway
 # then, in another terminal:
 curl http://127.0.0.1:8787/v1/health
 ```

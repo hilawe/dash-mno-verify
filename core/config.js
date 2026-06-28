@@ -68,6 +68,18 @@ export const config = {
   // otherwise a client can spoof the header to dodge the limit.
   trustProxy: process.env.MNO_TRUST_PROXY === "1",
 
+  // Shared secret an adapter presents (Authorization: Bearer <secret>) to call the account-bearing
+  // endpoints (/v1/challenge, /v1/verify). When set, the gateway trusts the submitted account
+  // because only an authenticated adapter could send it, which is what makes the B1 account binding
+  // authoritative rather than just closing the adapter relay path. /v1/register is member-driven and
+  // proof-authenticated, so it does not take this token; public reads (members, dml, health) never do.
+  adapterSecret: process.env.MNO_ADAPTER_SECRET || null,
+
+  // The gateway fails closed: with no adapterSecret it refuses to start, so an operator cannot
+  // silently run an open gateway by forgetting the secret. Set this to "1" to opt into running
+  // unauthenticated on purpose (local dev, demos, tests); the gateway then warns at boot.
+  allowUnauthGateway: process.env.MNO_ALLOW_UNAUTH_GATEWAY === "1",
+
   // PLONK verification key for the single-tier membership circuit.
   verificationKeyPath: process.env.MNO_VKEY ?? "circuits/build/verification_key.json",
 

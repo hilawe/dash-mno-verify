@@ -9,7 +9,8 @@
 //
 // Usage:
 //   node prover/two_tier.js register --gateway URL --platform discord --community ID --role ID --voting-key WIF
-//   node prover/two_tier.js prove    --gateway URL --platform discord --community ID --role ID [--account NAME]
+//   node prover/two_tier.js prove    --gateway URL --challenge challenge.json [--secret member.secret.json] [--out proof.json]
+// The adapter mints challenge.json (it holds the gateway token) and submits the resulting proof.json.
 import * as snarkjs from "snarkjs";
 import { readFile, writeFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
@@ -26,6 +27,11 @@ function flags(argv) {
   return o;
 }
 
+// This CLI runs on the member's machine and never holds the adapter secret. It calls only the
+// public read endpoints (/v1/dml, /v1/members) and the accountless, proof-authenticated /v1/register.
+// The account-bearing endpoints (/v1/challenge, /v1/verify) belong to the adapter: it mints the
+// challenge, hands it to the member, and submits the resulting proof. So `prove` consumes a challenge
+// and emits a proof file, exactly like the single-tier prover.
 const get = async (url) => (await fetch(url)).json();
 const post = async (url, body) =>
   (await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })).json();
@@ -109,20 +115,12 @@ async function register(a) {
 
 async function prove(a) {
   const { secret } = JSON.parse(await readFile(a.secret ?? "member.secret.json", "utf8"));
-  const account = a.account ?? "cli-member";
+  // The adapter mints the challenge (it authenticates the platform account and holds the gateway
+  // token) and hands challenge.json to the member. This CLI consumes it and never calls the
+  // account-bearing endpoints.
+  const ch = JSON.parse(await readFile(a.challenge ?? "challenge.json", "utf8"));
 
-  const ch = await post(`${a.gateway}/v1/challenge`, {
-    platform: a.platform,
-    communityId: a.community,
-    roleId: a.role,
-    account,
-  });
-  if (!ch.nonce) {
-    console.error("could not get a challenge:", ch.error);
-    process.exit(1);
-  }
-
-  // Fetch the members tree for this challenge's context, since each community has its own tree.
+  // The members tree for this challenge's context. A public read, so no token and no account.
   const members = await get(`${a.gateway}/v1/members?context=${encodeURIComponent(ch.contextHash)}`);
   const poseidon = await buildPoseidon();
   const F = poseidon.F;
@@ -141,12 +139,9 @@ async function prove(a) {
     `${B}/mno_members.zkey`
   );
 
-  const res = await post(`${a.gateway}/v1/verify`, { nonce: ch.nonce, proof, publicSignals, account });
-  if (!res.ok) {
-    console.error("verification failed:", res.reason);
-    process.exit(1);
-  }
-  console.log(`verified. access granted to ${res.account} for epoch ${res.epoch}.`);
+  const out = a.out ?? "proof.json";
+  await writeFile(out, JSON.stringify({ nonce: ch.nonce, proof, publicSignals }, null, 2));
+  console.log(`Wrote ${out}. Submit it through your adapter, which calls /v1/verify. Your secret never left this machine.`);
 }
 
 const sub = process.argv[2];
@@ -154,6 +149,6 @@ const a = flags(process.argv.slice(3));
 if (sub === "register") await register(a);
 else if (sub === "prove") await prove(a);
 else {
-  console.error("usage: node prover/two_tier.js <register|prove> --gateway URL --platform P --community ID --role ID [--voting-key WIF]");
+  console.error("usage:\n  node prover/two_tier.js register --gateway URL --platform P --community ID --role ID --voting-key WIF\n  node prover/two_tier.js prove --gateway URL --challenge challenge.json [--secret member.secret.json] [--out proof.json]");
   process.exit(1);
 }

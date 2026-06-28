@@ -56,19 +56,26 @@ What remains before gating anything of value:
 
 ## Quickstart
 
+Generate one shared secret and put it in the environment of BOTH the gateway and every adapter. They
+run as separate long-lived processes (separate terminals), so the gateway's terminal does not pass it
+to the adapter's; set it in each. A `.env` you source in both, or a secrets manager, works too.
+
 ```bash
 npm install                          # add --omit=optional for an oracle/gateway-only install
+SECRET=$(openssl rand -hex 32)       # the shared adapter token; keep it somewhere both processes read
 
 # 1) publish a root from a synced Dash Core node
 npm run oracle                       # writes oracle/root.json
 
-# 2) run the verification gateway
-npm run gateway                      # listens on :8787
+# 2) run the verification gateway (its own terminal)
+MNO_ADAPTER_SECRET="$SECRET" npm run gateway          # listens on :8787
+#    Local demo only: run it open on purpose (it otherwise refuses to start unauthenticated).
+# MNO_ALLOW_UNAUTH_GATEWAY=1 npm run gateway
 
-# 3) run a platform adapter (Discord shown here)
-npm run bot
+# 3) run a platform adapter (Discord shown here) in another terminal, with the SAME secret
+MNO_ADAPTER_SECRET="$SECRET" npm run bot
 
-# a member, on their own machine, turns a challenge into a proof
+# a member, on their own machine, turns the adapter's challenge into a proof (no secret needed)
 npm run prove -- --challenge challenge.json --voting-key <WIF>
 ```
 

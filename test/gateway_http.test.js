@@ -37,11 +37,16 @@ function freePort() {
   });
 }
 
-async function startGateway(extraEnv) {
+async function startGateway(extraEnv = {}) {
   const port = await freePort();
+  // The gateway fails closed without auth, so tests run in the explicit unauthenticated mode unless
+  // a case opts in via extraEnv. Drop any MNO_ADAPTER_SECRET inherited from the shell, so a developer
+  // who exported one (per the docs) does not flip the default test gateway into authenticated mode.
+  const env = { ...process.env, MNO_MODE: "single", MNO_STORE: "memory", MNO_ALLOW_UNAUTH_GATEWAY: "1", MNO_GATEWAY_PORT: String(port), ...extraEnv };
+  if (!("MNO_ADAPTER_SECRET" in extraEnv)) delete env.MNO_ADAPTER_SECRET;
   const proc = spawn("node", ["core/gateway.js"], {
     cwd: REPO,
-    env: { ...process.env, MNO_MODE: "single", MNO_STORE: "memory", MNO_GATEWAY_PORT: String(port), ...extraEnv },
+    env,
     stdio: ["ignore", "pipe", "pipe"],
   });
   let err = "";
@@ -156,6 +161,41 @@ test("a malformed numeric config value fails loud at boot rather than disabling 
   // A non-numeric cap must not become NaN (which would make every size check false and silently
   // disable the pending-challenge cap); the gateway must refuse to start instead.
   await assert.rejects(startGateway({ MNO_MAX_PENDING_CHALLENGES: "not-a-number" }), /must be an integer/);
+});
+
+// M5/B1: the gateway fails closed. With neither a secret nor the explicit unauth override, it
+// refuses to start rather than silently exposing the account endpoints.
+test("the gateway refuses to start unauthenticated unless explicitly allowed", async () => {
+  await assert.rejects(startGateway({ MNO_ALLOW_UNAUTH_GATEWAY: "" }), /refusing to start unauthenticated/);
+});
+
+// M5/B1: when MNO_ADAPTER_SECRET is set, the account-bearing endpoints require the adapter bearer
+// token, so the account is vouched for by an authenticated adapter and not chosen by any caller.
+// Public reads stay open. (The default suite gateway has no secret, so its tests run unauthenticated.)
+test("the account endpoints require the adapter secret when it is set", async () => {
+  const oracle = join(dir, "root.json");
+  const sec = await startGateway({ MNO_ORACLE_SOURCE: oracle, MNO_ORACLE_REFRESH: "3600", MNO_ADAPTER_SECRET: "s3cr3t" });
+  try {
+    const challenge = (headers) =>
+      fetch(sec.base + "/v1/challenge", {
+        method: "POST",
+        headers: { "content-type": "application/json", ...headers },
+        body: JSON.stringify({ platform: "p", communityId: "c", roleId: "r", account: "alice" }),
+      }).then((r) => r.status);
+    assert.equal(await challenge({}), 401, "no token is rejected");
+    assert.equal(await challenge({ authorization: "Bearer wrong" }), 401, "a wrong token is rejected");
+    assert.equal(await challenge({ authorization: "Bearer s3cr3t" }), 200, "the correct token is accepted");
+    // verify is gated the same way; a public read is not.
+    const verifyStatus = await fetch(sec.base + "/v1/verify", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ nonce: "x", proof: {}, publicSignals: ["1"], account: "alice" }),
+    }).then((r) => r.status);
+    assert.equal(verifyStatus, 401, "verify without a token is rejected");
+    assert.equal((await fetch(sec.base + "/v1/health")).status, 200, "health stays public");
+  } finally {
+    sec.proc.kill();
+  }
 });
 
 test("an expired nonce is rejected", async () => {

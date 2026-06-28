@@ -26,6 +26,7 @@ export MNO_STORE=platform
 export MNO_PLATFORM_NETWORK=testnet            # or mainnet
 export MNO_PLATFORM_MNEMONIC="your wallet mnemonic"
 export MNO_PLATFORM_CONTRACT_ID="<the registered contract id>"
+export MNO_ADAPTER_SECRET="<shared with your adapters>"   # or MNO_ALLOW_UNAUTH_GATEWAY=1 for local dev
 npm run gateway
 ```
 

@@ -12,6 +12,10 @@ const TOKEN = process.env.MATRIX_ACCESS_TOKEN;
 const USER_ID = process.env.MATRIX_USER_ID; // @yourbot:matrix.org
 const GATED_ROOM = process.env.MATRIX_GATED_ROOM; // !roomid:matrix.org, bot must be able to invite
 const GATEWAY = process.env.MNO_GATEWAY_URL ?? "http://127.0.0.1:8787";
+// Adapter bearer token the gateway requires when MNO_ADAPTER_SECRET is set there (review B1/M5).
+// This is the gateway token, distinct from the Matrix access token used by api() below.
+const ADAPTER_SECRET = process.env.MNO_ADAPTER_SECRET;
+const authHeaders = ADAPTER_SECRET ? { authorization: `Bearer ${ADAPTER_SECRET}` } : {};
 const COMMUNITY = process.env.MATRIX_COMMUNITY ?? GATED_ROOM;
 const ROLE = process.env.MATRIX_ROLE ?? "member";
 
@@ -35,7 +39,7 @@ async function handle(roomId, sender, body) {
   if (text === "!verify") {
     const res = await fetch(`${GATEWAY}/v1/challenge`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...authHeaders },
       body: JSON.stringify({ platform: "matrix", communityId: COMMUNITY, roleId: ROLE, account: sender }),
     });
     if (!res.ok) return sendText(roomId, "Verification service is unavailable right now. Try again shortly.");
@@ -66,7 +70,7 @@ async function handle(roomId, sender, body) {
   // Submit the account this sender is identified by. The gateway binds the verify to it (review B1).
   const res = await fetch(`${GATEWAY}/v1/verify`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...authHeaders },
     body: JSON.stringify({ ...payload, account: sender }),
   });
   const out = await res.json();

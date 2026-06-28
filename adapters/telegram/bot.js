@@ -14,6 +14,9 @@ const GROUP_ID = process.env.TELEGRAM_GROUP_ID;
 const COMMUNITY_ID = process.env.TELEGRAM_COMMUNITY ?? String(GROUP_ID);
 const ROLE_ID = process.env.TELEGRAM_ROLE ?? "member";
 const GATEWAY = process.env.MNO_GATEWAY_URL ?? "http://127.0.0.1:8787";
+// Adapter bearer token the gateway requires when MNO_ADAPTER_SECRET is set there (review B1/M5).
+const ADAPTER_SECRET = process.env.MNO_ADAPTER_SECRET;
+const authHeaders = ADAPTER_SECRET ? { authorization: `Bearer ${ADAPTER_SECRET}` } : {};
 
 const bot = new Bot(TOKEN);
 
@@ -24,7 +27,7 @@ bot.command("start", (ctx) =>
 bot.command("verify", async (ctx) => {
   const res = await fetch(`${GATEWAY}/v1/challenge`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...authHeaders },
     body: JSON.stringify({
       platform: "telegram",
       communityId: COMMUNITY_ID,
@@ -65,7 +68,7 @@ bot.on("message:document", async (ctx) => {
   // Submit the account this user is identified by. The gateway binds the verify to it (review B1).
   const res = await fetch(`${GATEWAY}/v1/verify`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...authHeaders },
     body: JSON.stringify({ ...payload, account: String(ctx.from.id) }),
   });
   const out = await res.json();

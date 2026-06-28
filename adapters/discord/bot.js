@@ -22,6 +22,10 @@ const APP_ID = process.env.DISCORD_APP_ID;
 const GUILD_ID = process.env.DISCORD_GUILD_ID;
 const ROLE_ID = process.env.DISCORD_MNO_ROLE_ID;
 const GATEWAY = process.env.MNO_GATEWAY_URL ?? "http://127.0.0.1:8787";
+// Adapter bearer token the gateway requires when MNO_ADAPTER_SECRET is set there. Sent on the
+// account-bearing calls so the gateway trusts the account this adapter vouches for (review B1/M5).
+const ADAPTER_SECRET = process.env.MNO_ADAPTER_SECRET;
+const authHeaders = ADAPTER_SECRET ? { authorization: `Bearer ${ADAPTER_SECRET}` } : {};
 
 const commands = [
   new SlashCommandBuilder().setName("verify").setDescription("Start anonymous masternode verification"),
@@ -50,7 +54,7 @@ client.on("interactionCreate", async (i) => {
     await i.deferReply({ flags: MessageFlags.Ephemeral });
     const res = await fetch(`${GATEWAY}/v1/challenge`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...authHeaders },
       body: JSON.stringify({ platform: "discord", communityId: GUILD_ID, roleId: ROLE_ID, account: i.user.id }),
     });
     if (!res.ok) return i.editReply("Verification service is unavailable right now. Try again shortly.");
@@ -90,7 +94,7 @@ client.on("interactionCreate", async (i) => {
     // Submit the account this user is identified by. The gateway binds the verify to it (review B1).
     const res = await fetch(`${GATEWAY}/v1/verify`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...authHeaders },
       body: JSON.stringify({ ...payload, account: i.user.id }),
     });
     const out = await res.json();

@@ -56,13 +56,25 @@ npm run oracle
 Run it from cron every few minutes. A provider example and the read-only safety notes are in
 `docs/run_on_your_node.md`.
 
-3. Run the gateway. Single-tier is the simplest. Two-tier gives members a cheap per-epoch proof.
+3. Run the gateway. Single-tier is the simplest. Two-tier gives members a cheap per-epoch proof. Set
+   `MNO_ADAPTER_SECRET` to a strong random value and give the SAME value to the gateway and to every
+   adapter, so only your adapters can call the account-bearing endpoints. The gateway and the adapters
+   are separate long-lived processes, so set the secret in each one's environment (a shared `.env` or
+   a secrets manager is the usual way); do not rely on one process's shell passing it to another. The
+   gateway refuses to start without the secret unless you set `MNO_ALLOW_UNAUTH_GATEWAY=1`, which is
+   for local development only.
 
 ```bash
-npm run gateway                    # single-tier, listens on :8787
+# generate once, then make it available to BOTH the gateway and the adapters
+openssl rand -hex 32                # store the output where the gateway and adapters can read it
+
+MNO_ADAPTER_SECRET=<that value> npm run gateway          # single-tier, listens on :8787
 # or
-MNO_MODE=two-tier npm run gateway
+MNO_ADAPTER_SECRET=<that value> MNO_MODE=two-tier npm run gateway
 ```
+
+   If you front the gateway with a reverse proxy, set `MNO_TRUST_PROXY=1` so the per-client rate
+   limit keys off the real client address (the last `X-Forwarded-For` hop) rather than the proxy.
 
 The gateway reads `oracle/root.json` on its own, so it boots even before the first oracle run
 and picks up the root when it appears.
@@ -71,9 +83,10 @@ and picks up the root when it appears.
 and the full set is in the adapter's README.
 
 ```bash
-# Discord
+# Discord. MNO_ADAPTER_SECRET must be the same value the gateway runs with, or its calls get 401.
 export DISCORD_TOKEN=... DISCORD_APP_ID=... DISCORD_GUILD_ID=... DISCORD_MNO_ROLE_ID=...
 export MNO_GATEWAY_URL=http://127.0.0.1:8787
+export MNO_ADAPTER_SECRET=<the same value the gateway uses>
 npm run bot
 ```
 
@@ -91,14 +104,18 @@ npm ci --omit=optional
 bash scripts/fetch_keys.sh         # downloads and checksum-verifies the members key and the wasms
 ```
 
-2. Prove. In two-tier mode there are two commands.
+2. Prove. In two-tier mode there are two commands. Registration is member-driven and posts directly
+   to the gateway (it is accountless and proof-authenticated, so it needs no adapter token). The
+   per-epoch prove consumes a `challenge.json` the adapter minted and writes a `proof.json` the
+   member hands back to the adapter, which submits it. The member never holds the adapter secret.
 
 ```bash
 # once a season, the heavy proof, needs a few GB of RAM
 npm run register -- --gateway https://the-gateway --platform discord --community <id> --role <id> --voting-key <WIF>
 
-# every epoch, the cheap proof, fine on a Raspberry Pi
-npm run prove-epoch -- --gateway https://the-gateway --platform discord --community <id> --role <id> --secret member.secret.json
+# every epoch, the cheap proof, fine on a Raspberry Pi. The adapter gave you challenge.json.
+npm run prove-epoch -- --gateway https://the-gateway --challenge challenge.json --secret member.secret.json
+# then submit the resulting proof.json back through the adapter (it calls /v1/verify with the token).
 ```
 
 Registration needs the 2.3 GB registration proving key, which you rebuild once with

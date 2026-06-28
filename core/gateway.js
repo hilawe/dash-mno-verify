@@ -4,6 +4,11 @@
 // gateway never learns a masternode address, a voting key, or which node proved. It learns
 // only a per-account nonce and an unlinkable nullifier.
 //
+// The account-bearing endpoints (/v1/challenge, /v1/verify) require the adapter bearer token
+// (Authorization: Bearer $MNO_ADAPTER_SECRET) when that secret is set, so the account is vouched for
+// by a trusted adapter. /v1/register is member-driven and proof-authenticated (no account, no token);
+// the read-only endpoints (members, dml, health) are public.
+//
 // Single mode (MNO_MODE=single):
 //   POST /v1/challenge  { platform, communityId, roleId, account }
 //        -> { nonce, signalHash, epoch, root, contextHash, epochSeconds }
@@ -18,7 +23,7 @@
 //
 //   GET  /v1/health     -> { ok, mode, root, dmlRoot, season, contexts? }
 import { createServer } from "node:http";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash, timingSafeEqual } from "node:crypto";
 import { config } from "./config.js";
 import { RootStore, NullifierStore, ChallengeStore, RateLimiter, loadOracle } from "./stores.js";
 import { loadVerificationKey, verifyMembership, verifyRegistration } from "./verifier.js";
@@ -29,13 +34,38 @@ import { contextHash, signalHash, epochNow, seasonNow } from "../common/index.js
 const twoTier = config.mode === "two-tier";
 const nowSec = () => Math.floor(Date.now() / 1000);
 
+// Fail closed: refuse to start unauthenticated unless the operator explicitly opted in. This keeps
+// a forgotten MNO_ADAPTER_SECRET from silently exposing the account-bearing endpoints to any caller.
+if (!config.adapterSecret && !config.allowUnauthGateway) {
+  throw new Error(
+    "refusing to start unauthenticated: set MNO_ADAPTER_SECRET so adapters authenticate the account, " +
+      "or set MNO_ALLOW_UNAUTH_GATEWAY=1 to run open on purpose (local dev, demos, tests only).",
+  );
+}
+
 const challenges = new ChallengeStore(config.challengeTtlSeconds, config.maxPendingChallenges);
 
-// Per-client guards on the two unauthenticated endpoints (review finding M5).
+// Per-client rate-limit guards on the request-facing endpoints (review finding M5). The
+// account-bearing ones additionally require the adapter bearer token when MNO_ADAPTER_SECRET is set.
 const challengeLimiter = new RateLimiter({ windowSeconds: config.rateWindowSeconds, max: config.challengeRateMax });
 const verifyLimiter = new RateLimiter({ windowSeconds: config.rateWindowSeconds, max: config.verifyRateMax });
 const registerLimiter = new RateLimiter({ windowSeconds: config.rateWindowSeconds, max: config.registerRateMax });
 const membersLimiter = new RateLimiter({ windowSeconds: config.rateWindowSeconds, max: config.membersRateMax });
+// Adapter authentication for the account-bearing endpoints. When MNO_ADAPTER_SECRET is set, a
+// caller must present it as a bearer token, so the account on /v1/challenge and /v1/verify is
+// vouched for by an authenticated adapter rather than chosen by any HTTP caller (this is what makes
+// the B1 binding authoritative). The compare is constant-time over sha256 digests so it neither
+// leaks the secret's length nor short-circuits on the first differing byte. The expected digest is
+// computed once at boot. With no secret the gateway fails closed at boot unless explicitly allowed.
+const adapterSecretDigest = config.adapterSecret ? createHash("sha256").update(config.adapterSecret).digest() : null;
+function authorized(req) {
+  if (!adapterSecretDigest) return true;
+  const m = /^Bearer\s+(.+)$/i.exec(req.headers["authorization"] ?? "");
+  if (!m) return false;
+  const got = createHash("sha256").update(m[1]).digest();
+  return timingSafeEqual(got, adapterSecretDigest);
+}
+
 // The client key for rate limiting. With MNO_TRUST_PROXY set, the gateway is assumed to sit behind
 // exactly one trusted reverse proxy, which appends the connecting client to X-Forwarded-For. The
 // LAST hop is the address that proxy observed, so it is the one entry the client cannot forge (the
@@ -236,6 +266,9 @@ const server = createServer(async (req, res) => {
     const path = url.pathname;
 
     if (req.method === "POST" && path === "/v1/challenge") {
+      // Auth before the rate limiter, so an unauthorized caller cannot burn the bucket for a client
+      // key and block the real adapter.
+      if (!authorized(req)) return send(res, 401, { error: "unauthorized" });
       if (!challengeLimiter.allow(clientKey(req))) return send(res, 429, { error: "rate limited" });
       const { platform, communityId, roleId, account } = await readBody(req);
       if (!platform || !communityId || !roleId || !account) return send(res, 400, { error: "missing fields" });
@@ -261,6 +294,7 @@ const server = createServer(async (req, res) => {
     }
 
     if (req.method === "POST" && path === "/v1/verify") {
+      if (!authorized(req)) return send(res, 401, { error: "unauthorized" });
       if (!verifyLimiter.allow(clientKey(req))) return send(res, 429, { error: "rate limited" });
       const { nonce, proof, publicSignals, account } = await readBody(req);
       if (!nonce || !proof || !publicSignals || !account) return send(res, 400, { error: "missing fields" });
@@ -268,10 +302,10 @@ const server = createServer(async (req, res) => {
       if (!pending) return send(res, 410, { ok: false, reason: "unknown-or-expired-challenge" });
 
       // The submitted account must equal the account the challenge was minted for, checked here
-      // before the proof verify and the nullifier spend, so a proof relayed through an adapter cannot
-      // grant the relayer or burn the real owner's epoch (review finding B1). Both account values are
-      // still adapter-supplied; binding a direct unauthenticated caller needs adapter-to-gateway auth
-      // (see TODO.md "Authenticate the gateway").
+      // before the proof verify and the nullifier spend, so a relayed proof cannot grant the relayer
+      // or burn the real owner's epoch (review finding B1). With MNO_ADAPTER_SECRET set, the account
+      // is supplied only by an authenticated adapter (see authorized() above), so this binding is
+      // authoritative rather than just an adapter-relay guard.
       if (String(account) !== String(pending.account)) return send(res, 200, { ok: false, reason: "account-mismatch" });
 
       // The proof is checked against the root window of the same context the challenge was minted
@@ -300,6 +334,9 @@ const server = createServer(async (req, res) => {
     }
 
     if (twoTier && req.method === "POST" && path === "/v1/register") {
+      // No adapter token here: registration is member-driven (the member's own prover posts it) and
+      // proof-authenticated, and it carries no account to vouch for. Its guards are the registration
+      // PLONK proof, the one-per-(season, context) registration nullifier, and the rate limit.
       if (!registerLimiter.allow(clientKey(req))) return send(res, 429, { error: "rate limited" });
       const { platform, communityId, roleId, proof, publicSignals } = await readBody(req);
       if (!platform || !communityId || !roleId || !proof || !publicSignals) return send(res, 400, { error: "missing fields" });
@@ -366,5 +403,8 @@ const server = createServer(async (req, res) => {
     return send(res, 400, { error: err.message });
   }
 });
+
+if (!config.adapterSecret)
+  console.warn("[gateway] WARNING: running UNAUTHENTICATED (MNO_ALLOW_UNAUTH_GATEWAY=1). /v1/challenge, /v1/verify, and /v1/register accept any caller and the submitted account is not vouched for. Do not use in production; set MNO_ADAPTER_SECRET instead (review finding B1/M5).");
 
 server.listen(config.port, () => console.log(`[gateway] dash-mno-verify (${config.mode}) listening on :${config.port}`));
