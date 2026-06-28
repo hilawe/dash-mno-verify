@@ -42,10 +42,16 @@ cd dash-mno-verify
 npm install            # full, for an adapter. Use npm ci --omit=optional for oracle and gateway only.
 ```
 
-2. Publish the masternode root from your node, and keep it fresh on a schedule.
+2. Publish the masternode root from your node, and keep it fresh on a schedule. Generate an oracle
+   signing key once and sign every snapshot, so the gateway authenticates the membership set against
+   a key you pin rather than trusting whoever serves the JSON.
 
 ```bash
-# local dash-cli:
+# generate the oracle key once, save the private key, and keep the public key line for the gateway
+node scripts/gen_oracle_key.mjs > oracle-key.txt
+
+# local dash-cli, signing each snapshot:
+export MNO_ORACLE_SIGNING_KEY=oracle-key.txt        # the keygen output (the private key is read from it)
 npm run oracle
 # or JSON-RPC:
 export MNO_RPC_URL=http://127.0.0.1:9998
@@ -53,8 +59,9 @@ export MNO_RPC_USER=rpcuser MNO_RPC_PASS=rpcpassword
 npm run oracle
 ```
 
-Run it from cron every few minutes. A provider example and the read-only safety notes are in
-`docs/run_on_your_node.md`.
+Run it from cron every few minutes. For stronger assurance run two or three oracles on independent
+nodes, each with its own key, and require a quorum (see `oracle/README.md`). A provider example and
+the read-only safety notes are in `docs/run_on_your_node.md`.
 
 3. Run the gateway. Single-tier is the simplest. Two-tier gives members a cheap per-epoch proof. Set
    `MNO_ADAPTER_SECRET` to a strong random value and give the SAME value to the gateway and to every
@@ -62,15 +69,18 @@ Run it from cron every few minutes. A provider example and the read-only safety 
    are separate long-lived processes, so set the secret in each one's environment (a shared `.env` or
    a secrets manager is the usual way); do not rely on one process's shell passing it to another. The
    gateway refuses to start without the secret unless you set `MNO_ALLOW_UNAUTH_GATEWAY=1`, which is
-   for local development only.
+   for local development only. Pin the oracle's public key in `MNO_ORACLE_PUBKEYS` (the value from the
+   keygen output, comma-separated for a quorum, with `MNO_ORACLE_QUORUM`). The gateway also refuses to
+   start without pinned oracle keys unless you set `MNO_ALLOW_UNSIGNED_ORACLE=1`, for local or
+   trusted-network use only.
 
 ```bash
 # generate once, then make it available to BOTH the gateway and the adapters
 openssl rand -hex 32                # store the output where the gateway and adapters can read it
 
-MNO_ADAPTER_SECRET=<that value> npm run gateway          # single-tier, listens on :8787
+MNO_ADAPTER_SECRET=<that value> MNO_ORACLE_PUBKEYS=<oracle public key> npm run gateway   # single-tier, :8787
 # or
-MNO_ADAPTER_SECRET=<that value> MNO_MODE=two-tier npm run gateway
+MNO_ADAPTER_SECRET=<that value> MNO_ORACLE_PUBKEYS=<oracle public key> MNO_MODE=two-tier npm run gateway
 ```
 
    If you front the gateway with a reverse proxy, set `MNO_TRUST_PROXY=1` so the per-client rate
@@ -133,6 +143,7 @@ key to use, and it never leaves your machine.
 
 ## Keys, in one place
 
+- The oracle signing key is yours to generate (`scripts/gen_oracle_key.mjs`). The private half signs snapshots on the oracle (`MNO_ORACLE_SIGNING_KEY`); the public half is pinned on the gateway (`MNO_ORACLE_PUBKEYS`). It is a separate operational identity, unrelated to any masternode key.
 - The gateway's verification keys are committed, so the gateway is turnkey.
 - The cheap members proving key and all three circuit wasms are on the `circuit-keys-v1` release. Get them with `scripts/fetch_keys.sh`, which checks each file's sha256 against `keys.manifest.json`.
 - The two large proving keys (membership and registration, about 2.3 GB each) are over GitHub's release limit. Rebuild them deterministically with `scripts/build_proving_key.sh`, which verifies the rebuilt key against the committed verification key, or host them yourself on object storage or IPFS and add them to `keys.manifest.json`. See `docs/PROVING_KEY.md`.

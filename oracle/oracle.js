@@ -13,11 +13,13 @@
 //
 // Usage: node oracle/oracle.js [--out oracle/root.json]
 import { execFileSync } from "node:child_process";
-import { writeFile } from "node:fs/promises";
+import { writeFile, readFile } from "node:fs/promises";
 import { parseArgs } from "node:util";
 import process from "node:process";
+import { createPrivateKey } from "node:crypto";
 import { buildPoseidon } from "circomlibjs";
 import { votingAddressToLeaf } from "../common/dml.js";
+import { addSignature } from "../common/oracle_sig.js";
 
 const TREE_DEPTH = 16; // up to 65536 leaves; raise if the network grows past that
 const EMPTY_LEAF = 0n;
@@ -57,13 +59,26 @@ const call = (method, params) => (RPC_URL ? rpc(method, params) : cli([method, .
 const poseidon = await buildPoseidon();
 const F = poseidon.F;
 
-const height = await call("getblockcount", []);
+// The signed block hash anchors the snapshot to a chain position (so the gateway can later tell a
+// genuine reorg from a replayed lower height, and an SPV check can pin it to the chain), so the height,
+// the block hash, and the masternode list it describes must all be read at the same chain tip. A block
+// landing mid-read would sign a block hash for one height and a list from another. Bracket the reads
+// with the height before and after and retry if it moved, so the three agree.
+let height, blockHash, list;
+for (let attempt = 1; ; attempt++) {
+  height = await call("getblockcount", []);
+  blockHash = await call("getblockhash", [height]);
+  // masternodelist json returns a map keyed by "txid-index" with every node. The only other
+  // status is POSE_BANNED, so keeping status === "ENABLED" is the valid-masternode filter,
+  // the same set as `protx list valid`. Evonodes are included and carry a votingaddress too.
+  list = await call("masternodelist", ["json"]);
+  const after = await call("getblockcount", []);
+  if (after === height) break; // no block landed during the read, so list and blockHash share height
+  if (attempt >= 5) throw new Error(`oracle: chain height kept advancing during the read (${height} -> ${after})`);
+  console.error(`[oracle] height advanced during read (${height} -> ${after}), retrying`);
+}
 
-// masternodelist json returns a map keyed by "txid-index" with every node. The only other
-// status is POSE_BANNED, so keeping status === "ENABLED" is the valid-masternode filter,
-// the same set as `protx list valid`. Evonodes are included and carry a votingaddress too.
 // Read each node's voting address. Sorting by the key gives every honest oracle the same tree.
-const list = await call("masternodelist", ["json"]);
 const entries = Object.entries(list).filter(([, m]) => m.status === "ENABLED");
 entries.sort(([a], [b]) => (a < b ? -1 : 1));
 const realLeaves = entries.map(([, m]) => votingAddressToLeaf(m.votingaddress));
@@ -81,6 +96,7 @@ while (level.length > 1) {
 
 const snapshot = {
   height,
+  blockHash,
   depth: TREE_DEPTH,
   ts: Math.floor(Date.now() / 1000),
   root: F.toObject(level[0]).toString(),
@@ -89,8 +105,18 @@ const snapshot = {
   leaves: realLeaves.map((x) => x.toString()),
 };
 
+// Sign the snapshot if a key is configured, so the gateway can authenticate the leaf set against a
+// pinned oracle key rather than trusting whoever serves the JSON. MNO_ORACLE_SIGNING_KEY is a PKCS8
+// PEM, inline or a file path. The signature covers the root, which commits to the leaves. An operator
+// running a quorum signs the same snapshot with each oracle and merges the `sigs` entries.
+const keyEnv = process.env.MNO_ORACLE_SIGNING_KEY;
+if (keyEnv) {
+  const pem = keyEnv.includes("BEGIN") ? keyEnv : await readFile(keyEnv, "utf8");
+  snapshot.sigs = addSignature(snapshot, createPrivateKey(pem));
+}
+
 await writeFile(values.out, JSON.stringify(snapshot));
 console.error(
   `[oracle] ${RPC_URL ? "rpc" : "dash-cli"} height ${height}, ${realLeaves.length} ENABLED nodes, ` +
-    `root ${snapshot.root.slice(0, 12)}... -> ${values.out}`
+    `root ${snapshot.root.slice(0, 12)}...${snapshot.sigs ? ` signed by ${snapshot.sigs[0].key}` : " (unsigned)"} -> ${values.out}`
 );

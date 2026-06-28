@@ -6,16 +6,17 @@ import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { randomUUID } from "node:crypto";
+import { randomUUID, generateKeyPairSync } from "node:crypto";
 import { makeDmlRootHasher } from "../core/dml_root.js";
 import { signalHash } from "../common/index.js";
+import { addSignature, rawPublicB64 } from "../common/oracle_sig.js";
 
 // A real, self-consistent snapshot: the root is the recompute of these leaves, so it passes the
 // gateway's M3 root check. ts is stamped fresh per write so the freshness check passes.
 const rootHasher = await makeDmlRootHasher();
 const REAL_LEAVES = ["111", "222", "333"];
 const REAL_ROOT = rootHasher(REAL_LEAVES);
-const snapshot = (over = {}) => ({ height: 1, depth: 16, root: REAL_ROOT, leaves: REAL_LEAVES, ts: Math.floor(Date.now() / 1000), ...over });
+const snapshot = (over = {}) => ({ height: 1, blockHash: "ab".repeat(32), depth: 16, root: REAL_ROOT, leaves: REAL_LEAVES, ts: Math.floor(Date.now() / 1000), ...over });
 
 // Negative-path integration tests against the real gateway booted on a loopback port. The four
 // policy checks (root, epoch, context, signal) and the one-time nonce all reject before the
@@ -39,10 +40,11 @@ function freePort() {
 
 async function startGateway(extraEnv = {}) {
   const port = await freePort();
-  // The gateway fails closed without auth, so tests run in the explicit unauthenticated mode unless
-  // a case opts in via extraEnv. Drop any MNO_ADAPTER_SECRET inherited from the shell, so a developer
-  // who exported one (per the docs) does not flip the default test gateway into authenticated mode.
-  const env = { ...process.env, MNO_MODE: "single", MNO_STORE: "memory", MNO_ALLOW_UNAUTH_GATEWAY: "1", MNO_GATEWAY_PORT: String(port), ...extraEnv };
+  // The gateway fails closed without auth and without trusted oracle keys, so tests run in the
+  // explicit unauthenticated and unsigned-oracle modes unless a case opts in via extraEnv. Drop any
+  // MNO_ADAPTER_SECRET inherited from the shell, so a developer who exported one (per the docs) does
+  // not flip the default test gateway into authenticated mode.
+  const env = { ...process.env, MNO_MODE: "single", MNO_STORE: "memory", MNO_ALLOW_UNAUTH_GATEWAY: "1", MNO_ALLOW_UNSIGNED_ORACLE: "1", MNO_GATEWAY_PORT: String(port), ...extraEnv };
   if (!("MNO_ADAPTER_SECRET" in extraEnv)) delete env.MNO_ADAPTER_SECRET;
   const proc = spawn("node", ["core/gateway.js"], {
     cwd: REPO,
@@ -525,4 +527,102 @@ test("the pending-challenge map is capped", async () => {
   } finally {
     cap.proc.kill();
   }
+});
+
+// Oracle leaf authentication (review M3 remainder). With trusted oracle keys pinned, the gateway
+// adopts a snapshot only when the quorum of those keys has signed it, so a host that serves a forged
+// but self-consistent {leaves, root} cannot get the gateway to admit members against it. A rejected
+// snapshot leaves no current root, so /v1/challenge has nothing to mint and returns 503.
+async function gatewayWithSnapshot(snap, extraEnv = {}) {
+  const d = await mkdtemp(join(tmpdir(), "mno-gw-sig-"));
+  const oracle = join(d, "root.json");
+  await writeFile(oracle, JSON.stringify(snap));
+  let g;
+  try {
+    g = await startGateway({ MNO_ORACLE_SOURCE: oracle, MNO_ORACLE_REFRESH: "3600", ...extraEnv });
+  } catch (e) {
+    await rm(d, { recursive: true, force: true });
+    throw e;
+  }
+  return { g, cleanup: async () => { g.proc.kill(); await rm(d, { recursive: true, force: true }); } };
+}
+const signedBy = (snap, ...privs) => {
+  let s = { ...snap, sigs: [] };
+  for (const p of privs) s = { ...s, sigs: addSignature(s, p) };
+  return s;
+};
+const mints = async (base) =>
+  (await post(base, "/v1/challenge", { platform: "p", communityId: "c", roleId: "r", account: "alice" })).status;
+
+test("a snapshot signed by a trusted oracle key is adopted and mints challenges", async () => {
+  const { privateKey } = generateKeyPairSync("ed25519");
+  const pub = rawPublicB64(privateKey);
+  const snap = signedBy(snapshot({ blockHash: "ab".repeat(32) }), privateKey);
+  const { g, cleanup } = await gatewayWithSnapshot(snap, { MNO_ORACLE_PUBKEYS: pub });
+  try {
+    assert.equal(await mints(g.base), 200);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("an unsigned snapshot is rejected when oracle keys are pinned, leaving no root", async () => {
+  const { privateKey } = generateKeyPairSync("ed25519");
+  const { g, cleanup } = await gatewayWithSnapshot(snapshot(), { MNO_ORACLE_PUBKEYS: rawPublicB64(privateKey) });
+  try {
+    assert.equal(await mints(g.base), 503);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("a snapshot signed by an untrusted key is rejected", async () => {
+  const trusted = generateKeyPairSync("ed25519");
+  const attacker = generateKeyPairSync("ed25519");
+  const snap = signedBy(snapshot(), attacker.privateKey); // signed, but not by the pinned key
+  const { g, cleanup } = await gatewayWithSnapshot(snap, { MNO_ORACLE_PUBKEYS: rawPublicB64(trusted.privateKey) });
+  try {
+    assert.equal(await mints(g.base), 503);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("a signed snapshot with no valid block hash is rejected", async () => {
+  const { privateKey } = generateKeyPairSync("ed25519");
+  const pub = rawPublicB64(privateKey);
+  // Signed by the trusted key, but the block hash it would anchor is missing, so the chain anchor the
+  // signature is supposed to carry is absent. The gateway rejects it rather than count the signature.
+  const snap = signedBy(snapshot({ blockHash: "" }), privateKey);
+  const { g, cleanup } = await gatewayWithSnapshot(snap, { MNO_ORACLE_PUBKEYS: pub });
+  try {
+    assert.equal(await mints(g.base), 503);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("a quorum of two requires both pinned signers", async () => {
+  const a = generateKeyPairSync("ed25519");
+  const b = generateKeyPairSync("ed25519");
+  const pubs = `${rawPublicB64(a.privateKey)},${rawPublicB64(b.privateKey)}`;
+  const one = await gatewayWithSnapshot(signedBy(snapshot(), a.privateKey), { MNO_ORACLE_PUBKEYS: pubs, MNO_ORACLE_QUORUM: "2" });
+  try {
+    assert.equal(await mints(one.g.base), 503); // only one of two signed
+  } finally {
+    await one.cleanup();
+  }
+  const both = await gatewayWithSnapshot(signedBy(snapshot(), a.privateKey, b.privateKey), { MNO_ORACLE_PUBKEYS: pubs, MNO_ORACLE_QUORUM: "2" });
+  try {
+    assert.equal(await mints(both.g.base), 200);
+  } finally {
+    await both.cleanup();
+  }
+});
+
+test("the gateway refuses to start with an unsigned oracle and no opt-out", async () => {
+  await assert.rejects(
+    startGateway({ MNO_ALLOW_UNSIGNED_ORACLE: "", MNO_ORACLE_PUBKEYS: "" }),
+    /exited early|did not start/,
+  );
 });

@@ -31,6 +31,7 @@ import { loadVerificationKey, verifyMembership, verifyRegistration } from "./ver
 import { SeasonMembers } from "./season.js";
 import { makeDmlRootHasher, FIELD_PRIME } from "./dml_root.js";
 import { contextHash, signalHash, epochNow, seasonNow } from "../common/index.js";
+import { snapshotMessage, verifySnapshotSig } from "../common/oracle_sig.js";
 
 const twoTier = config.mode === "two-tier";
 const nowSec = () => Math.floor(Date.now() / 1000);
@@ -41,6 +42,17 @@ if (!config.adapterSecret && !config.allowUnauthGateway) {
   throw new Error(
     "refusing to start unauthenticated: set MNO_ADAPTER_SECRET so adapters authenticate the account, " +
       "or set MNO_ALLOW_UNAUTH_GATEWAY=1 to run open on purpose (local dev, demos, tests only).",
+  );
+}
+
+// Fail closed on the oracle too: without trusted oracle keys, the gateway would adopt any
+// self-consistent snapshot a source serves, so a forged membership set could grant access. Require
+// pinned keys unless the operator opts into an unsigned oracle on purpose.
+if (config.oraclePubkeys.length === 0 && !config.allowUnsignedOracle) {
+  throw new Error(
+    "refusing to start with an unauthenticated oracle: set MNO_ORACLE_PUBKEYS to the trusted oracle " +
+      "public key(s), or MNO_ALLOW_UNSIGNED_ORACLE=1 to trust an unsigned source on purpose (local " +
+      "dev, demos, tests, or a trusted private network only).",
   );
 }
 
@@ -143,6 +155,29 @@ function validateSnapshot(o) {
   }
 }
 
+// Authenticate the leaf set, not just its internal consistency. With trusted oracle keys configured,
+// count how many distinct keys signed this snapshot's canonical message and require the quorum. A
+// signature covers the root, which commits to the leaves, so a met quorum means trusted oracle keys
+// vouched for this membership set, and a host that merely serves the JSON cannot forge one. With no
+// keys configured (allowUnsignedOracle let the gateway boot), signing is not enforced.
+function oracleSignaturesOk(o) {
+  if (config.oraclePubkeys.length === 0) return true;
+  // A signed snapshot must anchor a real block, since the signature covers the block hash and the
+  // chain-anchor argument rests on it. Reject a missing or malformed one rather than count signatures
+  // over an empty anchor.
+  if (!/^[0-9a-fA-F]{64}$/.test(String(o.blockHash ?? ""))) {
+    console.error(`[gateway] signed oracle snapshot has no valid block hash, rejected`);
+    return false;
+  }
+  const msg = snapshotMessage(o);
+  const sigs = Array.isArray(o.sigs) ? o.sigs : [];
+  let met = 0;
+  for (const trusted of config.oraclePubkeys) {
+    if (sigs.some((s) => s && typeof s.sig === "string" && verifySnapshotSig(msg, s.sig, trusted.key))) met += 1;
+  }
+  return met >= config.oracleQuorum;
+}
+
 // Enforce the freshness bound on EVERY root the window will still accept, not only the newest. Each
 // root carries its own oracle timestamp (bounded at adoption to no more than oracleFutureSkewSeconds
 // in the future), so dropping those older than the bound stops a removed node from proving against
@@ -167,13 +202,18 @@ async function refreshRoots() {
     // whether the root is new or a republish of the current one. The fast hasher is O(real leaves),
     // so this runs every refresh cheaply, and a snapshot whose leaves do not hash to its root is
     // rejected and does not renew freshness, so a corrupted or inconsistent source cannot keep a
-    // stale root alive. (Authenticating the leaf set against a compromised source that forges a
-    // self-consistent pair still needs the signed or Platform-published roots tracked in the TODO.)
+    // stale root alive. The recompute only proves internal consistency. oracleSignaturesOk is the
+    // separate check that a trusted oracle key vouched for this leaf set, so a source that forges a
+    // self-consistent pair over an attacker-chosen set is rejected unless it also holds a trusted key.
     const recomputed = dmlRootFromLeaves(o.leaves);
     if (recomputed !== String(o.root)) {
       // Reject the inconsistent snapshot, but do not early-return: the staleness check below must
       // still run, or an aged-out accepted root would keep being served while the source is bad.
       console.error(`[gateway] oracle root mismatch, snapshot rejected: claimed ${o.root}, recomputed ${recomputed}`);
+    } else if (!oracleSignaturesOk(o)) {
+      // Self-consistent but not vouched for by the quorum of trusted oracle keys, so the leaf set is
+      // unauthenticated. Reject, and fall through to the freshness sweep like the mismatch case.
+      console.error(`[gateway] oracle snapshot signature quorum not met (need ${config.oracleQuorum} trusted signer(s)), rejected`);
     } else if (latestDml && Number(o.height) < Number(latestDml.height)) {
       // Height regressed below the accepted root. A masternode list height is the block count and
       // only moves forward, so a lower height is a replayed old snapshot or a reorg, and the two are

@@ -27,12 +27,50 @@ export MNO_RPC_HEADER="x-api-key: YOUR_KEY"
 npm run oracle
 ```
 
-It calls `getblockcount` and `masternodelist json`, keeps the nodes whose status is
-ENABLED, and writes `{ height, depth, ts, root, leaves }` to `oracle/root.json`, which the
-gateway reads.
+It calls `getblockcount`, `getblockhash`, and `masternodelist json`, keeps the nodes whose
+status is ENABLED, and writes `{ height, blockHash, depth, ts, root, leaves }` to
+`oracle/root.json`, which the gateway reads.
 
-## Determinism
+## Sign the snapshot
 
-Nodes are ordered by their masternode-list key before hashing, so every honest oracle
-builds the identical tree. Run two or three on independent nodes and require their roots to
-agree, or have the gateway recompute locally.
+Recomputing the root proves a snapshot is internally consistent, but a host that serves the
+JSON could still publish a consistent `{leaves, root}` over a masternode set it made up. So
+the oracle signs the snapshot and the gateway trusts only snapshots signed by keys it pins.
+
+Generate a key once, save the private half for the oracle, and pin the public half on the
+gateway:
+
+```bash
+node scripts/gen_oracle_key.mjs > oracle-key.txt   # prints the PEM private key and the public key line
+```
+
+```bash
+# oracle: sign each snapshot
+export MNO_ORACLE_SIGNING_KEY=oracle-key.txt        # the keygen output (the private key is read from it)
+npm run oracle                                      # writes a snapshot with a `sigs` entry
+
+# gateway: trust that signer
+export MNO_ORACLE_PUBKEYS=<public key from the keygen output>
+```
+
+The signature covers the root, which commits to the leaves, so a changed leaf set breaks it.
+The gateway fails closed: without `MNO_ORACLE_PUBKEYS` it refuses to start unless
+`MNO_ALLOW_UNSIGNED_ORACLE=1` is set for local or trusted-network use.
+
+## Quorum
+
+For a quorum, build one snapshot and have each signer add its signature to that same
+snapshot, so the gateway sees one snapshot carrying every signature. Build it once, then on
+each signer run:
+
+```bash
+export MNO_ORACLE_SIGNING_KEY=that-signer-key.txt
+node scripts/sign_oracle_snapshot.mjs oracle/root.json   # adds this signer's entry, atomically
+```
+
+The signer recomputes the root from the leaves and refuses to sign an inconsistent snapshot.
+Pin every public key in `MNO_ORACLE_PUBKEYS` (comma-separated) and set `MNO_ORACLE_QUORUM` to
+how many must sign, so an attacker must compromise the quorum, not one machine. The signers
+sign the same bytes, which is why their signatures combine. Two independently built snapshots
+would not, because each stamps its own timestamp, so sign one shared snapshot rather than
+merging separate runs.

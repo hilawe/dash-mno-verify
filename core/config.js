@@ -1,4 +1,17 @@
 import process from "node:process";
+import { publicKeyFromRaw } from "../common/oracle_sig.js";
+
+// Parse the trusted oracle public keys, a comma-separated list of raw Ed25519 keys (base64). Each is
+// turned into a key object once, at boot, failing loud on a malformed key rather than per refresh.
+function oraclePubkeys(name) {
+  const raw = process.env[name];
+  if (!raw) return [];
+  return raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((b64) => ({ b64, key: publicKeyFromRaw(b64) }));
+}
 
 // Read an integer setting from the environment, failing loud at boot on a malformed value rather
 // than letting a silent NaN through. A NaN here is not harmless: NaN as a cap or limit makes every
@@ -51,6 +64,15 @@ export const config = {
   // oracleMaxAgeSeconds, or more than this far in the future, is not adopted. The future bound stops
   // a clock-skewed or replayed future-dated snapshot from being treated as fresh.
   oracleFutureSkewSeconds: intEnv("MNO_ORACLE_FUTURE_SKEW", 120, { min: 0 }),
+
+  // Trusted oracle public keys and how many must sign a snapshot before the gateway adopts it. The
+  // signature authenticates the leaf set, so a host serving the JSON cannot forge a membership set
+  // (see common/oracle_sig.js). With several keys and a quorum above one, an attacker must compromise
+  // several independent signers. The gateway fails closed: with no keys it refuses to start unless
+  // allowUnsignedOracle is set, the same shape as the adapter-secret guard below.
+  oraclePubkeys: oraclePubkeys("MNO_ORACLE_PUBKEYS"),
+  oracleQuorum: intEnv("MNO_ORACLE_QUORUM", 1, { min: 1 }),
+  allowUnsignedOracle: process.env.MNO_ALLOW_UNSIGNED_ORACLE === "1",
 
   // Unauthenticated-endpoint guards. Per-client fixed-window limits on /v1/challenge and /v1/verify
   // plus a hard cap on pending challenges, so one source cannot mint unlimited nonces or force
@@ -107,3 +129,11 @@ export const config = {
     appName: process.env.MNO_PLATFORM_APP ?? "mnoVerify",
   },
 };
+
+// A quorum larger than the number of trusted keys can never be met, so the gateway would never adopt
+// a root. Catch that at boot rather than letting it look like a perpetually stale oracle.
+if (config.oraclePubkeys.length > 0 && config.oracleQuorum > config.oraclePubkeys.length) {
+  throw new Error(
+    `config: MNO_ORACLE_QUORUM (${config.oracleQuorum}) exceeds the number of trusted oracle keys (${config.oraclePubkeys.length})`,
+  );
+}
