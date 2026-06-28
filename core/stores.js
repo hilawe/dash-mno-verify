@@ -144,7 +144,7 @@ export class RateLimiter {
 //                                                                  (no idempotent re-grant there)
 //   add(epoch, contextHash, nf, { account }) -> { duplicate }      record once, duplicate on a re-add
 //
-// One masternode maps to one membership per epoch and context. The store records the spent tag and,
+// One voting key maps to one membership per epoch and context. The store records the spent tag and,
 // with it, the account that first claimed it. That account, and only that account, may re-verify and
 // re-grant the same tag within the epoch if its adapter failed after the spend but before applying
 // the grant (idempotent grants). A different account that hits the same tag is rejected, so one

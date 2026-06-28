@@ -2,7 +2,7 @@
 
 Anonymous proof that someone controls a Dash masternode, for gating private communities.
 
-A member proves the statement "I control one of the masternodes in the current Dash network" without revealing which one. No address, no key, and no node identity reaches the people running the community. The proof is a zero-knowledge (ZK) set-membership proof anchored to the public deterministic masternode list (DML), with an epoch-rotating nullifier so one masternode maps to one membership and access lapses when the node is sold.
+A member proves the statement "I control one of the masternodes in the current Dash network" without revealing which one. No address, no key, and no node identity reaches the people running the community. The proof is a zero-knowledge (ZK) set-membership proof anchored to the public deterministic masternode list (DML), with an epoch-rotating nullifier so one masternode voting key maps to one membership and access lapses when the node is sold. The nullifier binds the voting key the proof controls, not the collateral, so masternodes sharing a delegated voting key collapse to one membership (see the threat model).
 
 ## This is not a Discord bot
 

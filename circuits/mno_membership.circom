@@ -43,7 +43,7 @@ template MnoMembership(treeDepth, n, k) {
 
     // 4) constrain the private key d below the secp256k1 group order n, so it is the canonical
     //    scalar in [0, n). Without this, d and d + n give the same public key (the same DML leaf at
-    //    step 2) but a different Poseidon(privkey), letting one node mint two non-colliding
+    //    step 2) but a different Poseidon(privkey), letting one voting key mint two non-colliding
     //    nullifiers in the same epoch (review finding M1). The nullifier stays derived from the
     //    private key, NOT from the public hash160 leaf, so it remains unlinkable to the published
     //    leaf set (a leaf-derived nullifier would be brute-forceable over the public leaves).

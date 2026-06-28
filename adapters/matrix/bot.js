@@ -7,6 +7,7 @@
 import process from "node:process";
 import { randomUUID } from "node:crypto";
 import { proveInstructions } from "../../common/prover_instructions.js";
+import { RoomStateTracker, isPrivateDirectRoomState } from "./room_privacy.js";
 
 const HS = process.env.MATRIX_HOMESERVER; // e.g. https://matrix.org
 const TOKEN = process.env.MATRIX_ACCESS_TOKEN;
@@ -33,11 +34,20 @@ async function sendText(roomId, text) {
   });
 }
 
-async function handle(roomId, sender, body) {
+// Verification runs only in a private one-to-one room, so the challenge and the proof the member
+// pastes back stay between the member and the bot, not in a shared room where others would see the
+// proof and learn that this member controls a masternode. `state` is the room state as of this
+// message (see room_privacy.js), so the decision reflects the room as it was when the message was
+// sent, not a later read.
+const DM_ONLY = "For your privacy, verify in a private direct message. Start a one-to-one chat with me and run !verify there. That keeps the challenge and your proof out of a shared room.";
+
+async function handle(roomId, sender, body, state) {
   if (sender === USER_ID) return; // ignore our own messages
   const text = (body ?? "").trim();
+  const isPrivate = () => isPrivateDirectRoomState({ state, botUserId: USER_ID, sender });
 
   if (text === "!verify") {
+    if (!isPrivate()) return sendText(roomId, DM_ONLY);
     const res = await fetch(`${GATEWAY}/v1/challenge`, {
       method: "POST",
       headers: { "content-type": "application/json", ...authHeaders },
@@ -69,6 +79,11 @@ async function handle(roomId, sender, body) {
   }
   if (!payload?.nonce || !payload?.proof || !payload?.publicSignals) return;
 
+  // Only accept a proof in a private direct room, the same restriction as !verify. If a member pastes
+  // a proof into a shared room, refuse it and point them to a direct message rather than grant on a
+  // proof the whole room saw.
+  if (!isPrivate()) return sendText(roomId, DM_ONLY);
+
   // Submit the account this sender is identified by. The gateway binds the verify to it (review B1).
   const res = await fetch(`${GATEWAY}/v1/verify`, {
     method: "POST",
@@ -86,9 +101,20 @@ async function handle(roomId, sender, body) {
   return sendText(roomId, "Verified. You have been invited to the members room for this epoch.");
 }
 
-// Skip the backlog by taking a fresh sync token, then long-poll for new messages.
+// The privacy check reads room state as of each message, so the bot keeps a room-state cache fed from
+// every sync. The initial sync (no `since`) loads the current state of each joined room without
+// replaying the message backlog, then the loop applies each batch's state and walks the timeline in
+// order, updating state on state events and judging each message against the state at its position.
+const rooms = new RoomStateTracker();
 console.log(`[matrix] starting as ${USER_ID}`);
-let since = (await (await api("/sync?timeout=0")).json()).next_batch;
+
+const init = await (await api("/sync?timeout=0")).json();
+for (const [roomId, room] of Object.entries(init.rooms?.join ?? {})) {
+  rooms.applyEvents(roomId, room.state?.events);
+  rooms.applyEvents(roomId, room.timeline?.events); // applies state events only, the messages here are backlog
+}
+let since = init.next_batch;
+
 for (;;) {
   const res = await api(`/sync?since=${since}&timeout=30000`);
   if (!res.ok) {
@@ -98,10 +124,14 @@ for (;;) {
   const data = await res.json();
   since = data.next_batch;
   for (const [roomId, room] of Object.entries(data.rooms?.join ?? {})) {
+    rooms.applyEvents(roomId, room.state?.events); // catch-up state before the timeline window
     for (const ev of room.timeline?.events ?? []) {
+      rooms.applyEvent(roomId, ev); // a no-op unless ev is a tracked state event
       if (ev.type === "m.room.message" && ev.content?.msgtype === "m.text") {
-        await handle(roomId, ev.sender, ev.content.body).catch((e) => console.error("[matrix]", e.message));
+        // Snapshot now reflects every state event up to and including ones before this message.
+        await handle(roomId, ev.sender, ev.content.body, rooms.snapshot(roomId)).catch((e) => console.error("[matrix]", e.message));
       }
     }
   }
+  for (const roomId of Object.keys(data.rooms?.leave ?? {})) rooms.forget(roomId);
 }

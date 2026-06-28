@@ -38,7 +38,7 @@ for (const [name, makeStore] of [
     assert.equal(await store.has(1, "ctx", "nf1"), true);
 
     // the same season, context, and registration nullifier is the same spend, even with a
-    // different commitment: one masternode registers once per season and context
+    // different commitment: one voting key registers once per season and context
     const dup = await store.append({ season: 1, contextHash: "ctx", regNullifier: "nf1", commitment: "c-other" });
     assert.equal(dup.duplicate, true);
 

@@ -3,7 +3,7 @@
 // The atomic unit is one registration record:
 //   { season, contextHash, regNullifier, commitment, index }
 // deduped by a unique key on (season, contextHash, regNullifier). Appending a record is the
-// single durable write that both spends the registration nullifier (one masternode registers
+// single durable write that both spends the registration nullifier (one voting key registers
 // once per season and context) and records the member commitment. The members tree is a cache
 // rebuilt from these records, so a crash between the spend and the tree update cannot strand a
 // member: on restart the record is present and the member is back in the tree.

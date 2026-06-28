@@ -31,12 +31,12 @@ the owner specifically.
 ## The nullifier does three jobs
 
 - Epoch-rotating freshness. One fresh nullifier per epoch. Sell the node and you cannot produce next epoch's proof, so access lapses within one epoch.
-- Sybil resistance. For a fixed epoch and context, one key yields one nullifier, so one masternode maps to one membership. The circuit constrains the private key `d` below the secp256k1 group order `n`, so `d` is the canonical scalar in `[0, n)`. Without that, `d` and `d + n` share a public key (the same leaf) but hash to different nullifiers, which would let one node mint two memberships per epoch (review finding M1). The nullifier is derived from `d`, not from the public `hash160(Q)` leaf, so it stays unlinkable to the published leaf set.
+- Sybil resistance. For a fixed epoch and context, one voting key yields one nullifier, so one voting key maps to one membership. The circuit constrains the private key `d` below the secp256k1 group order `n`, so `d` is the canonical scalar in `[0, n)`. Without that, `d` and `d + n` share a public key (the same leaf) but hash to different nullifiers, which would let one node mint two memberships per epoch (review finding M1). The nullifier is derived from `d`, the voting private key, not from the public `hash160(Q)` leaf, so it stays unlinkable to the published leaf set. Because it binds the voting key and not the collateral, masternodes that share a delegated voting key collapse to one membership (see the threat model's delegation limit).
 - Cross-context unlinkability. The context hash scopes the nullifier to one platform, community, and role, so the same key produces unrelated nullifiers elsewhere.
 
 ## Idempotent grants
 
-The gateway spends the membership nullifier before the adapter applies the grant (a role, an invite, a session). If the adapter dies in between, a naive design strands the member until the next epoch, because the nullifier is already spent. The nullifier store records the account that first spent each tag in the same record as the spend, so that same account can re-verify and re-grant within the epoch. The re-grant still needs a fresh valid proof, so knowing the account is not enough, and a different account that hits the same tag is rejected, so one masternode still maps to one membership per epoch and context. Keeping the spend and the account in one record means there is no second store to fall out of step with the spent set.
+The gateway spends the membership nullifier before the adapter applies the grant (a role, an invite, a session). If the adapter dies in between, a naive design strands the member until the next epoch, because the nullifier is already spent. The nullifier store records the account that first spent each tag in the same record as the spend, so that same account can re-verify and re-grant within the epoch. The re-grant still needs a fresh valid proof, so knowing the account is not enough, and a different account that hits the same tag is rejected, so one voting key still maps to one membership per epoch and context. Keeping the spend and the account in one record means there is no second store to fall out of step with the spent set.
 
 The Platform-backed store shares the spent set across gateways but does not persist the account, because writing a platform user id (or anything derived from it) into a public document would link that user to masternode control on-chain, the disclosure this design exists to prevent. So re-grant is a memory-mode property for now. A durable, privacy-preserving claim on Platform (an account commitment under a shared cluster secret, plus a contract field) is a deliberate next step, not a silent default.
 
@@ -80,7 +80,7 @@ memberships never correlate across platforms.
 place is `nullifier`, whose unique index on `(epoch, contextHash, nf)` makes Platform
 consensus itself reject a double spend, so several gateways can share one tamper-evident
 spent set. `registration` plays the same role for the two-tier flow, with a unique index on
-`(season, contextHash, regNullifier)` so one masternode registers once per season and
+`(season, contextHash, regNullifier)` so one voting key registers once per season and
 context, and each gateway rebuilds the members tree from those records. `dmlRoot` gives
 every verifier a tamper-evident published root, and `membersRoot` publishes a per-context
 members-tree root. Platform is an integrity and availability layer, not a privacy layer.

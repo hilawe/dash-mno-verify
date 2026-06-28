@@ -40,7 +40,7 @@ export function readSignals(publicSignals) {
 // it, so when the tag is already spent, the only caller let through is that same account, re-verifying
 // because its adapter died after the spend but before it applied the grant (role, invite, session).
 // The re-grant still needs a fresh valid proof, so knowing the account is not enough, and a different
-// account is rejected, so one masternode still maps to one account per epoch and context. A store
+// account is rejected, so one voting key still maps to one account per epoch and context. A store
 // whose get() returns null (the Platform-backed store, which does not persist the account) simply
 // never re-grants, so a spent tag is already-used there.
 //
@@ -84,7 +84,7 @@ export async function verifyMembership({
     return prior != null && String(prior.account) === String(expected.account);
   };
 
-  // 5) one masternode, one membership per epoch and context. An already-spent tag is only let through
+  // 5) one voting key, one membership per epoch and context. An already-spent tag is only let through
   //    as an idempotent re-grant for the account that first claimed it, and only with a fresh valid
   //    proof. The has() check rejects an ordinary replay before the expensive proof verify.
   if (await nullifiers.has(s.epoch, s.contextHash, s.nullifier)) {
@@ -117,7 +117,7 @@ export const REG_SIGNAL_INDEX = {
 };
 
 // Verify a two-tier registration proof. On success it commits one durable registration record,
-// so one masternode registers exactly one commitment per season and context, and mirrors that
+// so one voting key registers exactly one commitment per season and context, and mirrors that
 // commitment into the in-memory members tree.
 //
 // The policy checks and the proof verify run here, with no lock held. The state mutation is
@@ -145,7 +145,7 @@ export async function verifyRegistration({ vkey, proof, publicSignals, expected,
   if (String(s.season) !== String(expected.season)) return { ok: false, reason: "wrong-season" };
   // 3) the proof must be scoped to this community, platform, and role
   if (String(s.contextHash) !== String(expected.contextHash)) return { ok: false, reason: "wrong-context" };
-  // 4) one masternode registers once per season and context. A cheap read so an obvious replay is
+  // 4) one voting key registers once per season and context. A cheap read so an obvious replay is
   //    rejected before the expensive proof verify; the durable append in commit is the authority.
   if (await registrationStore.has(s.season, s.contextHash, s.regNullifier)) return { ok: false, reason: "already-registered" };
 

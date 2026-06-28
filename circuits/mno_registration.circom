@@ -6,7 +6,7 @@ pragma circom 2.1.6;
 // too slow to run every epoch. This registration proof does the expensive secp256k1 and
 // hash160 work ONCE per season. It proves the prover controls some masternode, emits a
 // fresh member commitment to add to a members tree, and emits a registration nullifier
-// so one masternode registers only once per season and context. The proof itself reveals
+// so one voting key registers only once per season and context. The proof itself reveals
 // nothing about which node registered.
 //
 // Trade-off: because member commitments are unlinkable to nodes, a sold node cannot be
@@ -56,8 +56,8 @@ template MnoRegistration(treeDepth, n, k) {
 
     // constrain the private key d below the secp256k1 group order n, so it is the canonical scalar
     // in [0, n). Without this, d and d + n give the same public key (the same DML leaf) but a
-    // different Poseidon(privkey), letting one node register twice per (season, context) with two
-    // non-colliding registration nullifiers (review finding M1). The nullifier stays derived from
+    // different Poseidon(privkey), letting one voting key register twice per (season, context) with
+    // two non-colliding registration nullifiers (review finding M1). The nullifier stays derived from
     // the private key, NOT the public hash160 leaf, so it remains unlinkable to the published leaves.
     var order[100] = get_secp256k1_order(n, k);
     component dlt = BigLessThan(n, k);
