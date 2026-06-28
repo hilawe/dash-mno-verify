@@ -29,7 +29,8 @@ import { config } from "./config.js";
 import { RootStore, NullifierStore, ChallengeStore, RateLimiter, loadOracle } from "./stores.js";
 import { loadVerificationKey, verifyMembership, verifyRegistration } from "./verifier.js";
 import { SeasonMembers } from "./season.js";
-import { makeDmlRootHasher, FIELD_PRIME } from "./dml_root.js";
+import { makeDmlRootHasher } from "./dml_root.js";
+import { isCanonicalField } from "../common/field.js";
 import { contextHash, signalHash, epochNow, seasonNow } from "../common/index.js";
 import { snapshotMessage, verifySnapshotSig } from "../common/oracle_sig.js";
 
@@ -127,11 +128,6 @@ if (config.store === "platform") {
 const dmlRoots = new RootStore(config.rootWindow);
 let latestDml = null; // the last verified oracle snapshot, so provers can fetch leaves and build paths
 const dmlRootFromLeaves = await makeDmlRootHasher(config.treeDepth);
-
-// A canonical field element is decimal digits whose value is in [0, FIELD_PRIME). A larger value
-// would be folded to a different element by the Poseidon reduction, so reject it as data-convention
-// drift rather than silently alias it.
-const isCanonicalField = (v) => /^\d+$/.test(String(v)) && BigInt(v) < FIELD_PRIME;
 
 // Reject a malformed or implausibly-timestamped snapshot before it can reach the verify path
 // (review finding M3). Shape, depth, and leaf field-elements are checked here, plus a bound on the

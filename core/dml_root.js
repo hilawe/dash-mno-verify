@@ -14,14 +14,13 @@
 // all-empty subtree of height l), so the work is O(real leaves), not O(2**depth), while the root is
 // identical to the full build. test/dml_root.test.js pins that equivalence against MembersTree.
 import { buildPoseidon } from "circomlibjs";
+// The Poseidon field is the BN254 scalar field. FIELD_PRIME and the canonical-element check live in
+// common/field.js, the neutral home for the field convention; they are re-exported here so existing
+// importers and the equivalence test (which pins FIELD_PRIME against the live Poseidon modulus so it
+// cannot drift) keep working.
+export { FIELD_PRIME, isCanonicalField } from "../common/field.js";
 
 const DEFAULT_DEPTH = 16;
-
-// The Poseidon field is the BN254 (alt_bn128) scalar field. A canonical leaf or root is in
-// [0, FIELD_PRIME). A larger value would be silently reduced mod p by F.e() and alias a different
-// element, so the gateway rejects noncanonical values before they reach the hasher. The equivalence
-// test pins this constant against the live Poseidon field modulus so it cannot drift.
-export const FIELD_PRIME = 21888242871839275222246405745257275088548364400416034343698204186575808495617n;
 
 export async function makeDmlRootHasher(depth = DEFAULT_DEPTH) {
   const poseidon = await buildPoseidon();

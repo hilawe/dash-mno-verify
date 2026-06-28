@@ -1,8 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { verifyMembership } from "../core/verifier.js";
+import { verifyMembership, verifyRegistration } from "../core/verifier.js";
 import { NullifierStore } from "../core/stores.js";
 import { DocumentNullifierStore, MemoryBackend } from "../core/platform_store.js";
+import { FIELD_PRIME } from "../core/dml_root.js";
 
 // Idempotent grants: the account that first spends a membership tag may re-verify and re-grant it
 // within the epoch (its adapter died after the spend but before applying the grant), while a second
@@ -76,6 +77,38 @@ test("a lost add race re-grants the original account but rejects another", async
   const mallory = await verifyMembership(args("mallory", { nullifiers: raced() }));
   assert.equal(mallory.ok, false);
   assert.equal(mallory.reason, "already-used");
+});
+
+// A nullifier of x and one of x + p are the same field element to snarkjs but distinct strings to the
+// store, so a non-canonical signal must be rejected before it is used as a key, or the same masternode
+// could spend twice in one epoch. p itself (FIELD_PRIME) is the smallest non-canonical value.
+test("a non-canonical public signal is rejected before any spend", async () => {
+  const nullifiers = new NullifierStore();
+  const bad = { ...args("alice", { nullifiers }), publicSignals: [FIELD_PRIME.toString(), "222", "7", "333", "444"] };
+  const r = await verifyMembership(bad);
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, "non-canonical-signal");
+  assert.equal(nullifiers.has("7", "333", FIELD_PRIME.toString()), false, "a non-canonical signal spends nothing");
+});
+
+// The registration path shares the canonical-signal guard, and the registration nullifier is keyed by
+// its string too, so a non-canonical regNullifier must be rejected before the store or the proof.
+test("verifyRegistration rejects a non-canonical public signal before the store or proof", async () => {
+  let touched = false;
+  const registrationStore = { has: async () => ((touched = true), false) };
+  const commit = async () => ((touched = true), { ok: true });
+  // REG_SIGNAL_INDEX layout: [commitment, regNullifier, root, season, contextHash]. "01" regNullifier.
+  const r = await verifyRegistration({
+    vkey: {},
+    proof: {},
+    publicSignals: ["1", "01", "3", "4", "5"],
+    expected: { rootStore: { isRecent: () => true }, season: "3", contextHash: "5" },
+    registrationStore,
+    commit,
+  });
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, "non-canonical-signal");
+  assert.equal(touched, false, "neither the store nor commit was touched");
 });
 
 test("a verify with no account is rejected before any spend", async () => {

@@ -1,16 +1,23 @@
 import process from "node:process";
-import { publicKeyFromRaw } from "../common/oracle_sig.js";
+import { publicKeyFromRaw, rawPublicB64 } from "../common/oracle_sig.js";
 
 // Parse the trusted oracle public keys, a comma-separated list of raw Ed25519 keys (base64). Each is
 // turned into a key object once, at boot, failing loud on a malformed key rather than per refresh.
+// Duplicates are dropped on the decoded key bytes, not the raw string, so the same key written in two
+// base64 spellings (padded, unpadded, or base64url) counts once and cannot satisfy a quorum twice.
 function oraclePubkeys(name) {
   const raw = process.env[name];
   if (!raw) return [];
-  return raw
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .map((b64) => ({ b64, key: publicKeyFromRaw(b64) }));
+  const out = [];
+  const seen = new Set();
+  for (const entry of raw.split(",").map((s) => s.trim()).filter(Boolean)) {
+    const key = publicKeyFromRaw(entry); // decodes and validates the 32-byte key, throws on a bad one
+    const id = rawPublicB64(key); // canonical base64 of the raw bytes, identical across base64 spellings
+    if (seen.has(id)) continue;
+    seen.add(id);
+    out.push({ b64: id, key });
+  }
+  return out;
 }
 
 // Read an integer setting from the environment, failing loud at boot on a malformed value rather

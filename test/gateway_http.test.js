@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID, generateKeyPairSync } from "node:crypto";
-import { makeDmlRootHasher } from "../core/dml_root.js";
+import { makeDmlRootHasher, FIELD_PRIME } from "../core/dml_root.js";
 import { signalHash } from "../common/index.js";
 import { addSignature, rawPublicB64 } from "../common/oracle_sig.js";
 
@@ -84,13 +84,15 @@ async function challenge(base) {
   return res.body; // { nonce, signalHash, epoch, root, contextHash, epochSeconds }
 }
 
-// publicSignals layout (SIGNAL_INDEX): [nullifier, root, epoch, contextHash, signalHash].
+// publicSignals layout (SIGNAL_INDEX): [nullifier, root, epoch, contextHash, signalHash]. snarkjs
+// emits each public signal as a decimal string, so build them as strings here too (the challenge
+// returns epoch as a JSON number, which a real prover would carry as the string snarkjs produced).
 const signalsFor = (ch, over = {}) => [
-  over.nullifier ?? "1",
-  over.root ?? ch.root,
-  over.epoch ?? ch.epoch,
-  over.contextHash ?? ch.contextHash,
-  over.signalHash ?? ch.signalHash,
+  String(over.nullifier ?? "1"),
+  String(over.root ?? ch.root),
+  String(over.epoch ?? ch.epoch),
+  String(over.contextHash ?? ch.contextHash),
+  String(over.signalHash ?? ch.signalHash),
 ];
 
 let gw, dir;
@@ -152,6 +154,21 @@ test("tampered public signals are rejected by the policy layer, before any proof
     assert.equal(v.body.ok, false, `tampered ${name} should be rejected`);
     assert.equal(v.body.reason, reason, `tampered ${name}`);
   }
+});
+
+test("a non-canonical public signal is rejected before the proof verify", async () => {
+  const ch = await challenge(gw.base);
+  // FIELD_PRIME equals p, which is not in [0, p), so it is not canonical. snarkjs would reduce it mod
+  // p, so without this guard a nullifier x and x + p would key two distinct spends for one field
+  // element. The gateway rejects it before the nullifier is ever used as a key.
+  const v = await post(gw.base, "/v1/verify", {
+    nonce: ch.nonce,
+    proof: {},
+    publicSignals: signalsFor(ch, { nullifier: FIELD_PRIME.toString() }),
+    account: "alice",
+  });
+  assert.equal(v.body.ok, false);
+  assert.equal(v.body.reason, "non-canonical-signal");
 });
 
 test("two-tier with the Platform store fails loud at boot, before any Platform connection", async () => {
@@ -618,6 +635,30 @@ test("a quorum of two requires both pinned signers", async () => {
   } finally {
     await both.cleanup();
   }
+});
+
+test("duplicate oracle keys are deduped, so one key cannot satisfy a larger quorum", async () => {
+  const { privateKey } = generateKeyPairSync("ed25519");
+  const pub = rawPublicB64(privateKey);
+  // The same key listed twice with quorum 2: deduped to one key, quorum 2 now exceeds the key count,
+  // so the gateway refuses to start rather than let one signer be counted twice.
+  await assert.rejects(
+    startGateway({ MNO_ORACLE_PUBKEYS: `${pub},${pub}`, MNO_ORACLE_QUORUM: "2" }),
+    /exited early|did not start/,
+  );
+});
+
+test("the same key in different base64 spellings is deduped on its decoded bytes, not its string", async () => {
+  const { privateKey } = generateKeyPairSync("ed25519");
+  const padded = rawPublicB64(privateKey); // standard base64, with padding
+  const unpadded = padded.replace(/=+$/, ""); // same 32 bytes, a different string
+  assert.notEqual(padded, unpadded);
+  // String-level dedup would keep both and let one signer cover quorum 2. Byte-level dedup collapses
+  // them to one key, so quorum 2 exceeds the key count and the gateway refuses to start.
+  await assert.rejects(
+    startGateway({ MNO_ORACLE_PUBKEYS: `${padded},${unpadded}`, MNO_ORACLE_QUORUM: "2" }),
+    /exited early|did not start/,
+  );
 });
 
 test("the gateway refuses to start with an unsigned oracle and no opt-out", async () => {

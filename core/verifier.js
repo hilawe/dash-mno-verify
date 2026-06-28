@@ -1,5 +1,16 @@
 import { readFile } from "node:fs/promises";
 import * as snarkjs from "snarkjs";
+import { isCanonicalField } from "../common/field.js";
+
+// Every public signal must be a canonical field element in [0, FIELD_PRIME). snarkjs reduces a
+// non-canonical input mod p during verification, so a proof would still verify, but the gateway keys
+// the nullifier (and the registration nullifier) by the raw signal string. Without this check, a
+// caller could submit x and x + p as two string-distinct nullifiers that are the same field element,
+// and spend a membership or registration twice. Reject up front, before any signal is read or used as
+// a key.
+function signalsAreCanonical(publicSignals, count) {
+  return Array.isArray(publicSignals) && publicSignals.length === count && publicSignals.every(isCanonicalField);
+}
 
 // Public-signal layout. snarkjs orders public signals as the circuit's public OUTPUTS
 // first, then its public INPUTS in declaration order. For mno_membership.circom:
@@ -55,6 +66,9 @@ export async function verifyMembership({
   nullifiers,
   verifyProof = (vk, ps, pf) => snarkjs.plonk.verify(vk, ps, pf),
 }) {
+  // The public signals must be canonical before any of them is read or used as a nullifier key.
+  if (!signalsAreCanonical(publicSignals, Object.keys(SIGNAL_INDEX).length))
+    return { ok: false, reason: "non-canonical-signal" };
   const s = readSignals(publicSignals);
 
   // 0) the caller must name the account this verify is for. The claim record keys idempotency on it,
@@ -131,6 +145,9 @@ export const REG_SIGNAL_INDEX = {
 //
 // commit({ season, contextHash, regNullifier, commitment }) -> { ok, reason?, index?, membersRoot?, size? }
 export async function verifyRegistration({ vkey, proof, publicSignals, expected, registrationStore, commit }) {
+  // Canonical before any signal is read or used as the registration-nullifier key (see above).
+  if (!signalsAreCanonical(publicSignals, Object.keys(REG_SIGNAL_INDEX).length))
+    return { ok: false, reason: "non-canonical-signal" };
   const s = {
     commitment: publicSignals[REG_SIGNAL_INDEX.commitment],
     regNullifier: publicSignals[REG_SIGNAL_INDEX.regNullifier],
