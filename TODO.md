@@ -69,6 +69,7 @@ follow-up below.
 ## P3, ergonomics
 
 - [ ] Let `/v1/members` accept `platform`, `community`, and `role` and hash the context server-side, as an alternative to the raw `context` param, so a client need not compute the context hash itself. (`core/gateway.js`)
+- [ ] Member-facing gateway URL for the two-tier prove instructions. The adapters fill in their `MNO_GATEWAY_URL` for the `--gateway` value they show members, which is correct when members reach the gateway at the same address. For a split deployment (adapter on an internal address, members on a public one) add an `MNO_PUBLIC_GATEWAY_URL` the adapters prefer for member-facing copy. (`adapters/*`)
 - [ ] On a registration-store load, warn if a record's stored `index` does not match its position within the (season, context) bucket. After B2 the index is per-context; old per-season files still load correctly (the prover uses commitment order, not the stored index), so this is an upgrade-clarity check, not a fix. (`core/registration_store.js`)
 
 ## P3, docs

@@ -46,7 +46,7 @@ bot.command("verify", async (ctx) => {
     {
       caption: [
         "Step 1 of 2. On the machine holding your masternode voting key, run:",
-        ...proveInstructions(challenge.mode),
+        ...proveInstructions(challenge.mode, { gateway: GATEWAY, platform: "telegram", community: COMMUNITY_ID, role: ROLE_ID }),
         "Then send me the proof.json it produces.",
         "",
         "Your key, and which node you control, never leave your device.",

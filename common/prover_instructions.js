@@ -6,14 +6,23 @@
 //
 // Kept out of common/index.js, which holds the value primitives the prover and gateway must agree
 // on (context hash, signal hash, epoch). This is adapter-facing copy, a different boundary.
-export function proveInstructions(mode) {
+//
+// The two-tier commands need the member-facing gateway URL (the prove fetches the members tree) and
+// the exact platform, community, and role (registration hashes them into the context, so a wrong
+// guess registers into a tree that will not satisfy this adapter's challenge). The adapter knows all
+// four, so it passes them in ctx and only <WIF>, the member's own voting key, stays a placeholder.
+// Values left out of ctx fall back to angle-bracket placeholders. Single-tier needs none of this,
+// because that prover reads the oracle snapshot locally.
+export function proveInstructions(mode, ctx = {}) {
   if (mode === "two-tier") {
-    // The two-tier prove fetches the members tree from the gateway, so it needs --gateway.
+    const gateway = ctx.gateway ?? "<gateway-url>";
+    const platform = ctx.platform ?? "<platform>";
+    const community = ctx.community ?? "<community-id>";
+    const role = ctx.role ?? "<role-id>";
     return [
-      "npm run prove-epoch -- --gateway <url> --challenge challenge.json --secret member.secret.json",
-      "(once per season, before your first proof, run: npm run register -- --gateway <url> --platform <p> --community <id> --role <id> --voting-key <WIF>)",
+      `npm run prove-epoch -- --gateway ${gateway} --challenge challenge.json --secret member.secret.json`,
+      `(once per season, before your first proof, run: npm run register -- --gateway ${gateway} --platform ${platform} --community ${community} --role ${role} --voting-key <WIF>)`,
     ];
   }
-  // The single-tier prover reads the oracle snapshot locally, so it needs no gateway URL.
   return ["npm run prove -- --challenge challenge.json --voting-key <WIF>"];
 }

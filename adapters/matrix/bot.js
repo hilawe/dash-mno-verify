@@ -50,7 +50,7 @@ async function handle(roomId, sender, body) {
       [
         "Anonymous masternode verification, step 1 of 2.",
         "On the machine holding your masternode voting key, save the challenge below as challenge.json and run:",
-        ...proveInstructions(challenge.mode),
+        ...proveInstructions(challenge.mode, { gateway: GATEWAY, platform: "matrix", community: COMMUNITY, role: ROLE }),
         "then paste the resulting proof.json back into this room.",
         "Your key, and which node you control, never leave your device.",
         "",

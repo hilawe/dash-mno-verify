@@ -116,7 +116,7 @@ const server = createServer(async (req, res) => {
       const challenge = await r.json();
       // Send the prover command(s) for the gateway's mode alongside the challenge, computed with the
       // shared helper, so the page shows the right command without duplicating the logic in browser JS.
-      return send(res, 200, { challenge, proverInstructions: proveInstructions(challenge.mode) }, setCookie);
+      return send(res, 200, { challenge, proverInstructions: proveInstructions(challenge.mode, { gateway: GATEWAY, platform: "web", community: COMMUNITY_ID, role: ROLE_ID }) }, setCookie);
     }
 
     if (req.method === "POST" && req.url === "/api/submit") {

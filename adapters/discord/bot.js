@@ -72,7 +72,7 @@ client.on("interactionCreate", async (i) => {
         "",
         "1. Download `challenge.json` below.",
         "2. On the machine holding your masternode voting key, run:",
-        ...proveInstructions(challenge.mode).map((l) => "   `" + l + "`"),
+        ...proveInstructions(challenge.mode, { gateway: GATEWAY, platform: "discord", community: GUILD_ID, role: ROLE_ID }).map((l) => "   `" + l + "`"),
         "3. Run `/submit` here and attach the `proof.json` it produces.",
         "",
         "Your key, and which node you control, never leave your device. The bot learns only that some valid masternode vouched for you.",
