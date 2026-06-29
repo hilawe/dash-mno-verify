@@ -29,13 +29,21 @@ design exists to provide.
 
 ## Before any real deployment
 
-Done: RIPEMD-160 is implemented in-repo and the in-circuit hash160 is validated against the
-generator vector on every push. The full `mno_membership.circom` compiles against
-circom-ecdsa, and the proving system is PLONK over the public Hermez Powers of Tau, a
-transparent universal setup with no per-circuit ceremony. The verification key is committed
-and the gateway boots with it.
+Several pieces are already in place. RIPEMD-160 is implemented in-repo and the in-circuit
+hash160 is validated against the generator vector on every push. The full
+`mno_membership.circom` compiles against circom-ecdsa, and the proving system is PLONK over
+the public Hermez Powers of Tau, a transparent universal setup with no per-circuit ceremony.
+The verification key is committed and the gateway boots with it. The oracle reads a real Dash
+node and signs each snapshot, and the gateway requires a quorum of pinned oracle keys and
+fails closed without them. The canonical-scalar constraint closes the nullifier malleability,
+and the verifier rejects non-canonical public signals. Adapters authenticate to the gateway,
+the verify binds the submitter account, and two-tier registration is durable and season-scoped
+with per-context members trees. The pipeline has been exercised on real mainnet data on a
+Raspberry Pi.
 
-Still required:
+Four things still remain.
 
-1. Build and distribute the PLONK proving key (about 2 GB) and the circuit wasm to provers.
-2. Run the oracle against a real Dash node, and decide single-tier versus two-tier from measured proving time.
+1. A formal third-party security audit. The code has had a careful adversarial self-review, which is not the same as an audit.
+2. Hosting for the PLONK proving keys, about 2.3 GB each, so provers can fetch them rather than rebuild them locally. The circuit wasm and the small per-epoch members key are already published.
+3. The fully trustless oracle anchor against the chain's own masternode-list commitment, described in the oracle-trust limit above. The oracle is currently trusted as a quorum of pinned keys.
+4. The member-side cost. Each member runs the prover locally with a large proving key, which is the main adoption question to settle for a given community.
