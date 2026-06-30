@@ -94,11 +94,22 @@ and the full set is in the adapter's README.
 
 ```bash
 # Discord. MNO_ADAPTER_SECRET must be the same value the gateway runs with, or its calls get 401.
-export DISCORD_TOKEN=... DISCORD_APP_ID=... DISCORD_GUILD_ID=... DISCORD_MNO_ROLE_ID=...
+export DISCORD_TOKEN=... DISCORD_APP_ID=... DISCORD_GUILD_ID=...
 export MNO_GATEWAY_URL=http://127.0.0.1:8787
 export MNO_ADAPTER_SECRET=<the same value the gateway uses>
+# Channel mode (recommended): add verified members to the private channel(s), no public role.
+export DISCORD_GRANT_MODE=channel DISCORD_GRANT_CHANNEL_IDS=<channel id,...>
+# Role mode (simpler, but the role is visible on the profile card):
+# export DISCORD_GRANT_MODE=role DISCORD_MNO_ROLE_ID=...
 npm run bot
 ```
+
+Choose the grant mode for your privacy needs. In `channel` mode the bot adds a verified member to the
+private channel with a per-user permission overwrite, so nothing about their masternode shows on their
+public profile. In `role` mode it assigns a role, which is simpler but visible on the profile card and
+so reveals who holds a masternode. The bot also revokes access once a member's epoch grant lapses and
+they have not re-verified. The full set of variables is in `adapters/discord/README.md`. For the
+opinionated, copy-paste version of this whole setup see `docs/RUNBOOK.md`.
 
 The other adapters are `npm run telegram`, `npm run matrix`, and `npm run web`, documented
 under `adapters/`.

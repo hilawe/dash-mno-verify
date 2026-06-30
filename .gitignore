@@ -33,3 +33,6 @@ witness.json
 # editor and OS noise
 .DS_Store
 *.log
+
+# Discord adapter runtime grant ledger (holds user ids; not source)
+adapters/discord/grants.json

@@ -6,6 +6,7 @@
 - The gateway. It learns a per-request nonce and the nullifier. It never learns an address or key.
 - The oracle. It reads only public chain data, so it learns nothing private.
 - A network eavesdropper. It may learn that a member is verifying, but nothing that links them to a node.
+- Other members of the server. This depends on the grant mechanism, not the proof. A public grant like a Discord role is visible on a member's profile to anyone in the server, so it reveals that they hold a masternode (though never which one). The Discord adapter's channel grant mode avoids this by adding the member to the private channel with a per-user permission overwrite, which does not show on the public profile. Choose the grant mode for your exposure needs (see `adapters/discord/README.md`).
 
 No party links a platform identity to an on-chain address. That is the property the
 design exists to provide.
@@ -15,7 +16,7 @@ design exists to provide.
 - Forged membership. The Merkle root is built from public DML data by a deterministic function, so anyone can recompute it and catch a snapshot whose leaves do not produce its root. Recomputation only proves internal consistency, so the gateway also requires the snapshot to carry a quorum of signatures from pinned oracle keys (`MNO_ORACLE_PUBKEYS`, `MNO_ORACLE_QUORUM`). The signature covers the root, which commits to the leaves, so a host that merely serves the JSON cannot forge a membership set, and running several independent signers means an attacker must compromise the quorum rather than one machine. The gateway refuses to start without pinned keys unless `MNO_ALLOW_UNSIGNED_ORACLE` is set.
 - Replay to another account. The challenge nonce is bound to the requesting account, and the proof is bound to the nonce through the signal hash, so a proof for one account does not grant another.
 - Sybil and double join. The epoch-and-context nullifier means one masternode voting key maps to one membership per epoch (see the delegation limit below).
-- Stale membership. Roots are accepted only within a small recent window, and a fresh proof is required each epoch, so a sold or banned node loses access quickly.
+- Stale membership. Roots are accepted only within a small recent window, and a fresh proof is required each epoch. The Discord adapter enforces this on its side with a sweep that revokes access once a member's epoch grant lapses and they have not re-verified, so a sold or banned node loses access rather than keeping a one-time grant forever.
 
 ## Known limits, stated plainly
 
