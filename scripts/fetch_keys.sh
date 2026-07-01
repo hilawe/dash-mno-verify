@@ -19,6 +19,18 @@ WANT_LARGE=0
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
+# Fail early on a missing or invalid manifest, since the loops below read it through process
+# substitution and would otherwise see empty input and silently fetch nothing.
+node -e "require('./keys.manifest.json')" >/dev/null || { echo "keys.manifest.json is missing or invalid"; exit 1; }
+
+# Remove the in-progress temp file if the script is interrupted mid-download (Ctrl+C), so a partial
+# 2.3 GB file is not left behind. The temp name is fixed per destination, so a re-run would overwrite it
+# anyway, but this avoids the orphan in the first place. CURRENT_TMP is set only while a download is in
+# flight, and the loops run in this shell (process substitution below), so the trap sees it.
+CURRENT_TMP=""
+cleanup() { [ -n "$CURRENT_TMP" ] && rm -f "$CURRENT_TMP"; }
+trap cleanup EXIT INT TERM
+
 sha256_of() {
   if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{print $1}'
   else shasum -a 256 "$1" | awk '{print $1}'; fi
@@ -34,30 +46,31 @@ fetch_one() {
   local name="$1" dest="$2" sha="$3" url="$4"
   local src="${url:-$BASE/$name}"
   local tmp="$dest.download"
+  CURRENT_TMP="$tmp"
   mkdir -p "$(dirname "$dest")"
   echo "  $name ..."
   if ! curl -fsSL "$src" -o "$tmp"; then
-    rm -f "$tmp"
+    rm -f "$tmp"; CURRENT_TMP=""
     echo "  could not download $name from $src"
     return 1
   fi
   local got
   got=$(sha256_of "$tmp")
   if [ "$got" != "$sha" ]; then
-    rm -f "$tmp"
+    rm -f "$tmp"; CURRENT_TMP=""
     echo "  CHECKSUM MISMATCH for $name (expected $sha, got $got). The source does not match"
     echo "  keys.manifest.json, so it is stale. The existing file, if any, was left untouched."
     return 1
   fi
   if ! mv "$tmp" "$dest"; then
-    rm -f "$tmp"
+    rm -f "$tmp"; CURRENT_TMP=""
     echo "  could not move $name into place"
     return 1
   fi
+  CURRENT_TMP=""
 }
 
 echo "fetching small artifacts from $BASE"
-node -e "for (const f of require('./keys.manifest.json').files) console.log([f.name,f.dest,f.sha256,f.url||''].join('\t'));" |
 while IFS=$'\t' read -r name dest sha url; do
   if ! fetch_one "$name" "$dest" "$sha" "$url"; then
     echo "  The '$TAG' release may not be published yet, or MNO_KEYS_BASE_URL is wrong. Rebuild locally"
@@ -65,11 +78,10 @@ while IFS=$'\t' read -r name dest sha url; do
     echo "  or point MNO_KEYS_BASE_URL at where the artifacts live."
     exit 1
   fi
-done
+done < <(node -e "for (const f of require('./keys.manifest.json').files) console.log([f.name,f.dest,f.sha256,f.url||''].join('\t'));")
 
 if [ "$WANT_LARGE" = "1" ]; then
   echo "fetching large proving keys (--large)"
-  node -e "for (const f of (require('./keys.manifest.json').largeFiles||[])) console.log([f.name,f.dest,f.sha256||'',f.url||''].join('\t'));" |
   while IFS=$'\t' read -r name dest sha url; do
     # Only sha256 is required. An empty url falls back to MNO_KEYS_BASE_URL, so a mirror that hosts
     # every artifact under one base still works without a per-entry url.
@@ -85,7 +97,7 @@ if [ "$WANT_LARGE" = "1" ]; then
       echo "  be on the GitHub release), or rebuild it with scripts/rebuild_proving_keys.sh."
       exit 1
     fi
-  done
+  done < <(node -e "for (const f of (require('./keys.manifest.json').largeFiles||[])) console.log([f.name,f.dest,f.sha256||'',f.url||''].join('\t'));")
 fi
 
 echo "All requested artifacts fetched and verified against keys.manifest.json."

@@ -35,6 +35,20 @@ under the member's control.
 
 The only thing that removes the 2.3 GB is a smaller circuit, which means a different proving backend.
 
+## The design lever that decides the cost
+
+Before the backend, there is a statement choice that drives the constraint count more than the backend
+does. Proving the private-key-to-public-key derivation is a full secp256k1 scalar multiplication, the
+dominant cost above, and it is not what accelerated tooling targets. If instead the member signs a
+deterministic message (for example the gateway challenge nonce) with the voting key, the statement only
+has to verify that signature, which is exactly the operation zkVM precompiles and halo2 chips
+accelerate. That can cut the expensive part by an order of magnitude, so it is the first thing to
+settle, and it is what keeps the prover memory below in range. It carries two conditions. The signature
+has to be deterministic (RFC 6979), or the nullifier has to be derived from a stable value rather than
+the signature, so one voting key still yields one nullifier per epoch. And the signing has to be
+something a member can do with a standard wallet or Dash RPC. This is the same key-handling tradeoff
+the threat model notes, now as a lever for cost, not only for key exposure.
+
 ## The options
 
 1. A zero-knowledge virtual machine with a STARK backend (SP1, RISC Zero). Write the membership check as
@@ -46,8 +60,13 @@ The only thing that removes the 2.3 GB is a smaller circuit, which means a diffe
    needs, and it has to confirm the guest can keep the public key and the hash preimages private. The
    Merkle tree would move from Poseidon to SHA-256 (see the scoping note below), and the nullifier would
    use a standard hash. RIPEMD-160 has no common precompile, so it would run as plain instructions,
-   which is acceptable because it hashes only 32 bytes. This is the least hand-rolled path to a
-   no-large-key proof, and the recommended one to prototype first.
+   which is acceptable because it hashes only 32 bytes. The real risk to watch is prover memory, not
+   disk. A STARK prover over many cycles can want tens of gigabytes of RAM, which on a lightweight
+   masternode would be worse than the 2.3 GB disk file it replaces. The signature-based statement above
+   is what keeps the cycle count, and so the memory, in range, and the prototype has to measure peak
+   prover memory against real masternode hardware and treat exceeding it as this option failing, not a
+   detail. Subject to that, this is the least hand-rolled path to a no-large-key proof, and the
+   recommended one to prototype first.
 2. A hand-written halo2 circuit. Smaller than the current circom circuit, and free of a trusted setup
    only if it uses an inner-product commitment rather than the common KZG commitment, which itself needs
    a universal setup and gives a different verifier cost. It is more work than the virtual machine,
@@ -55,11 +74,12 @@ The only thing that removes the 2.3 GB is a smaller circuit, which means a diffe
    ECDSA verification chip, which fits only if the statement is redesigned to consume a signature rather
    than derive the public key from the private key, a design change with its own nullifier-determinism
    care (see the threat model's key-handling limit).
-3. A folding scheme (Nova, SuperNova, HyperNova) for the repeated elliptic-curve operations. Folding can
-   lower prover memory for repeated structure, but the secp256k1 and hash work still has to be expressed
-   somewhere, so the win is not guaranteed for this shape, and a practical verifier likely needs a
-   compression or wrapping step. It has the least off-the-shelf tooling for this exact statement, so the
-   highest research risk.
+3. A folding scheme (Nova, SuperNova, HyperNova). Folding targets incremental computation over many
+   uniform steps, which a one-shot membership proof does not have at the top level. The only repetition
+   to exploit is inside the scalar multiplication, the double-and-add loop, so folding helps here only
+   if the statement is restructured so that loop is the folded step, a significant redesign, and a
+   practical verifier still needs a compression or wrapping step. It has the least off-the-shelf tooling
+   for this exact statement, so it is the highest research risk and not a natural fit as written.
 4. Optimizing the current circom circuit. Realistic gains are marginal because the non-native secp256k1
    arithmetic is intrinsic to the approach, so this does not reach the goal.
 
@@ -72,9 +92,10 @@ the root.
 
 ## Recommendation
 
-Prototype option 1 before committing to any rewrite. A proof of concept implements the membership
-statement in a virtual machine (derive the public key, compute `keyIDVoting`, verify the SHA-256 Merkle
-inclusion, compute the nullifier, bind the challenge signal) and measures the prover-side numbers on a
+Prototype option 1 before committing to any rewrite, in the signature-based form from the design lever
+above. A proof of concept implements the membership statement in a virtual machine (verify the member's
+signature over the challenge to recover the voting public key, compute `keyIDVoting`, verify the SHA-256
+Merkle inclusion, compute the nullifier, bind the challenge signal) and measures the prover-side numbers on a
 masternode-class machine, namely the proof time, the peak prover memory, and the proof size, and the
 gateway-side numbers, namely the verification time and whether a succinct wrapping step is needed to
 keep the gateway fast enough at its request rate. The gateway verifies off-chain, so a larger STARK
