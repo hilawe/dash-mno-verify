@@ -47,4 +47,4 @@ Four things still remain.
 1. A formal third-party security audit. The code has had a careful adversarial self-review, which is not the same as an audit.
 2. Hosting for the PLONK proving keys, about 2.3 GB each, so provers can fetch them rather than rebuild them locally. The circuit wasm and the small per-epoch members key are already published.
 3. The fully trustless oracle anchor against the chain's own masternode-list commitment, described in the oracle-trust limit above. The oracle is currently trusted as a quorum of pinned keys.
-4. The member-side cost. Each member runs the prover locally with a large proving key, which is the main adoption question to settle for a given community.
+4. The member-side cost. Each member runs the prover locally with a large proving key, which is the main adoption question to settle for a given community. Hosting the key and proving on the masternode make it a non-issue for an operator, and `docs/REDUCING_PROVING_COST.md` is the design track for removing the large key entirely with a different proving backend.

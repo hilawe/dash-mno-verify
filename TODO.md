@@ -82,6 +82,10 @@ follow-up below.
 - [ ] Member-facing gateway URL for the two-tier prove instructions. The adapters fill in their `MNO_GATEWAY_URL` for the `--gateway` value they show members, which is correct when members reach the gateway at the same address. For a split deployment (adapter on an internal address, members on a public one) add an `MNO_PUBLIC_GATEWAY_URL` the adapters prefer for member-facing copy. (`adapters/*`)
 - [ ] On a registration-store load, warn if a record's stored `index` does not match its position within the (season, context) bucket. After B2 the index is per-context; old per-season files still load correctly (the prover uses commitment order, not the stored index), so this is an upgrade-clarity check, not a fix. (`core/registration_store.js`)
 
+## Research, the member-side proving cost
+
+- [ ] Remove the 2.3 GB proving key at the source by changing the proving backend. Hosting the key and proving on the masternode make it a non-issue for an operator, but the durable fix is a smaller circuit, which means leaving circom and snarkjs for a STARK-based virtual machine (SP1, RISC Zero) or a hand-written halo2 circuit. Start with a proof of concept on a virtual machine and measure the proof time, memory, and size before committing to the rewrite. Full design, options, validation burden, and the collaboration angle are in `docs/REDUCING_PROVING_COST.md`. Run as a parallel research track, not a deploy blocker.
+
 ## P3, docs
 
 - [ ] The README still says the oracle reads `protx list`, but the code uses `masternodelist json`. Update it. (README, `oracle/oracle.js`)
