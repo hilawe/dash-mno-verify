@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { GrantLedger, extraTargets } from "../adapters/discord/grant_ledger.js";
@@ -187,6 +188,39 @@ test("grant refuses a malformed record before writing or applying", async () => 
   assert.equal(l.has("u1"), false);
   assert.equal(applied.length, 0);
   assert.equal(existsSync(file), false); // nothing was written
+});
+
+// Operations are globally serialized, so concurrent grants for different users must not clobber the
+// shared temp file or lose an update: all three must end up persisted.
+test("concurrent grants for different users all persist", async () => {
+  const file = tmpFile();
+  const l = new GrantLedger({ file, apply: noop, revoke: noop, now: () => 100 });
+  await Promise.all([l.grant("u1", rec(200)), l.grant("u2", rec(200)), l.grant("u3", rec(200))]);
+  assert.deepEqual(Object.keys(JSON.parse(readFileSync(file, "utf8"))).sort(), ["u1", "u2", "u3"]);
+});
+
+// The commit-boundary invariant, the point of serializing every operation: when a grant's own persist
+// fails, it rolls back in memory and the file must not contain it either. A prior committed grant is
+// left intact. (Global serialization is what keeps a concurrent grant from having persisted the
+// in-flight record in the meantime.)
+test("a persist failure rolls back the grant and writes nothing", async () => {
+  const file = tmpFile();
+  let failNextWrite = false;
+  const l = new GrantLedger({
+    file,
+    apply: noop,
+    revoke: noop,
+    now: () => 100,
+    writeFileFn: async (tmp, data) => {
+      if (failNextWrite) throw new Error("disk full");
+      return writeFile(tmp, data);
+    },
+  });
+  await l.grant("a", rec(200)); // committed
+  failNextWrite = true;
+  await assert.rejects(l.grant("b", rec(300)), /could not persist/);
+  assert.equal(l.has("b"), false); // rolled back in memory
+  assert.deepEqual(Object.keys(JSON.parse(readFileSync(file, "utf8"))), ["a"]); // and never written
 });
 
 test("extraTargets returns only targets the prior grant did not cover", () => {

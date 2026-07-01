@@ -231,6 +231,22 @@ test("an expired nonce is rejected", async () => {
   }
 });
 
+// The gateway owns epoch timing: a proof for a challenge whose epoch has rolled over is rejected here,
+// before the nullifier spend, so the member's epoch claim is not burned for an already-expired grant.
+test("a proof for a rolled-over epoch is rejected before the nullifier spend", async () => {
+  const oracle = join(dir, "root.json");
+  const gw2 = await startGateway({ MNO_ORACLE_SOURCE: oracle, MNO_ORACLE_REFRESH: "3600", MNO_EPOCH_SECONDS: "1", MNO_CHALLENGE_TTL: "600" });
+  try {
+    const ch = await challenge(gw2.base);
+    await delay(1300); // the 1s epoch rolls over while the 600s challenge stays valid
+    const v = await post(gw2.base, "/v1/verify", { nonce: ch.nonce, proof: {}, publicSignals: signalsFor(ch), account: "alice" });
+    assert.equal(v.body.ok, false);
+    assert.equal(v.body.reason, "epoch-rolled-over");
+  } finally {
+    gw2.proc.kill();
+  }
+});
+
 // The challenge advertises the gateway mode, so each adapter renders the matching local prover
 // command (single-tier `npm run prove` vs two-tier `npm run prove-epoch`).
 test("the challenge advertises the gateway mode", async () => {

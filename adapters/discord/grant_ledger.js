@@ -1,4 +1,5 @@
-import { readFileSync, writeFileSync, renameSync, mkdirSync } from "node:fs";
+import { readFileSync } from "node:fs";
+import { writeFile, rename, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 
 // The targets in `a` that `b` does not already cover. Used two ways: the new targets a renewal adds
@@ -34,18 +35,21 @@ export function isValidRecord(r) {
 // Two properties the inline version did not have:
 //   - Persist before applying. A crash between the two then leaves a record with no access, which the
 //     sweep harmlessly clears, never access with no record, which would be permanent and untracked.
-//   - Serialize per user. grant and revoke for one user run under a per-user lock, and the sweep
-//     re-checks the live record inside that lock, so a member who re-verifies while the sweep is in
-//     flight keeps their fresh access instead of having the stale revoke land on top of it.
+//   - Serialize every operation globally (see #run). grant and sweep run one at a time, so a member
+//     who re-verifies while the sweep is in flight keeps their fresh access instead of having the stale
+//     revoke land on top of it, and no operation's whole-map save persists another operation's
+//     not-yet-committed record.
 export class GrantLedger {
-  constructor({ file, apply, revoke, now = () => Math.floor(Date.now() / 1000), log = () => {} }) {
+  #serial = Promise.resolve();
+
+  constructor({ file, apply, revoke, now = () => Math.floor(Date.now() / 1000), log = () => {}, writeFileFn = writeFile } = {}) {
     this.file = file;
     this.apply = apply;
     this.revoke = revoke;
     this.now = now;
     this.log = log;
+    this.writeFileFn = writeFileFn; // injectable so the persist-failure path is testable
     this.map = this.#load();
-    this.locks = new Map(); // userId -> tail promise, to serialize grant against revoke per user
   }
 
   // Only a missing file means an empty ledger (first run). A corrupt, unreadable, or malformed file is
@@ -77,24 +81,32 @@ export class GrantLedger {
     return map;
   }
 
-  #save() {
-    mkdirSync(dirname(this.file), { recursive: true });
+  // Persist asynchronously so a write never blocks the event loop and the bot's Discord heartbeat. The
+  // load stays synchronous, because it runs once at construction before the bot is live, where a brief
+  // blocking read is harmless. Callers save only inside #run, so saves never overlap.
+  async #save() {
+    await mkdir(dirname(this.file), { recursive: true });
     const tmp = `${this.file}.tmp`;
-    writeFileSync(tmp, JSON.stringify(Object.fromEntries(this.map), null, 2));
-    renameSync(tmp, this.file); // atomic replace, so a crash mid-write cannot corrupt the ledger
+    await this.writeFileFn(tmp, JSON.stringify(Object.fromEntries(this.map), null, 2));
+    await rename(tmp, this.file); // atomic replace, so a crash mid-write cannot corrupt the ledger
   }
 
-  #lock(userId, fn) {
-    const prev = this.locks.get(userId) ?? Promise.resolve();
-    const run = prev.then(fn, fn); // run fn once the previous op for this user settles, either way
-    const tail = run.then(() => {}, () => {});
-    this.locks.set(userId, tail);
-    // Drop the entry once it settles, unless a newer op for this user has replaced it, so the lock map
-    // does not grow without bound in a long-lived bot.
-    tail.finally(() => {
-      if (this.locks.get(userId) === tail) this.locks.delete(userId);
-    });
-    return run;
+  // Serialize every grant and sweep operation, so no two mutate-and-persist sequences interleave. This
+  // is stricter than a per-user lock (grants for different users no longer run concurrently), and it is
+  // what keeps a save honest: an operation's map mutation, persist, apply, and any rollback all complete
+  // before the next begins, so one user's whole-map save can never persist another user's in-flight
+  // record that later rolls back.
+  //
+  // The tradeoff is head-of-line blocking: one user's Discord apply or revoke holds the queue for every
+  // other operation. That is acceptable here, because grants are human-paced, a Discord call is bounded
+  // by the client's request timeout, and the worst case (a mass-expiry sweep or a Discord outage) is a
+  // few seconds of delayed grants, not a stall. A finer design keeps per-user ordering around the
+  // Discord calls and serializes only the mutate-and-persist section, but the correct answer at real
+  // scale is a per-row store (SQLite), which removes the whole-map rewrite that forces this serialization
+  // at all. That store is the tracked follow-up; the single queue is the right size for a reference bot.
+  #run(fn) {
+    this.#serial = this.#serial.then(fn, fn); // run fn once the previous op settles, either way
+    return this.#serial;
   }
 
   // Migrate any orphaned prior targets, persist the record, then apply the Discord access. If
@@ -103,7 +115,7 @@ export class GrantLedger {
   // caller can tell the member to retry.
   async grant(userId, record) {
     if (!isValidRecord(record)) throw new Error(`refusing to grant a malformed record for ${userId}`);
-    return this.#lock(userId, async () => {
+    return this.#run(async () => {
       const prev = this.map.get(userId);
       // If a renewal changes the target, revoke the parts of the prior grant the new one does not carry
       // forward, before applying the new grant, so old access (including a different mode or role id) is
@@ -120,7 +132,7 @@ export class GrantLedger {
 
       this.map.set(userId, record);
       try {
-        this.#save();
+        await this.#save();
       } catch (e) {
         if (prev) this.map.set(userId, prev);
         else this.map.delete(userId);
@@ -134,20 +146,20 @@ export class GrantLedger {
         // orphaned old targets were revoked above. Keep record so the sweep covers it. On a first grant
         // there is no prior access, so also best-effort revoke the uncertain new access now.
         if (!prev) await this.revoke(userId, record).catch(() => {});
-        try { this.#save(); } catch (err) { this.log(`could not persist after a failed apply: ${err.message}`); }
+        try { await this.#save(); } catch (err) { this.log(`could not persist after a failed apply: ${err.message}`); }
         throw e;
       }
     });
   }
 
   // Revoke every grant whose epoch has lapsed. Returns the user ids actually revoked, so the caller can
-  // notify them. The live record is re-checked inside the per-user lock, so a member who re-verified
+  // notify them. The live record is re-checked inside the serialized operation, so a member who re-verified
   // during the sweep keeps their fresh access.
   async sweep() {
     const due = [...this.map].filter(([, r]) => this.now() >= r.expiresAt).map(([u]) => u);
     const revoked = [];
     for (const userId of due) {
-      await this.#lock(userId, async () => {
+      await this.#run(async () => {
         const live = this.map.get(userId);
         if (!live || this.now() < live.expiresAt) return; // re-verified meanwhile, leave it alone
         try {
@@ -157,7 +169,7 @@ export class GrantLedger {
           return; // a real revoke failure must not drop the record, or live access goes untracked
         }
         this.map.delete(userId);
-        try { this.#save(); } catch (e) { this.log(`could not persist sweep: ${e.message}`); }
+        try { await this.#save(); } catch (e) { this.log(`could not persist sweep: ${e.message}`); }
         revoked.push(userId);
       });
     }

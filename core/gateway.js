@@ -349,6 +349,13 @@ const server = createServer(async (req, res) => {
       // authoritative rather than just an adapter-relay guard.
       if (String(account) !== String(pending.account)) return send(res, 200, { ok: false, reason: "account-mismatch" });
 
+      // The challenge was minted for pending.epoch. If that epoch has since rolled over, reject here,
+      // before the proof verify and the nullifier spend, so a stale-epoch proof does not burn the
+      // member's epoch claim for a grant that would already be expired. The gateway owns epoch timing,
+      // so an adapter can trust an ok response rather than re-checking expiry against its own clock. The
+      // member re-verifies for the current epoch.
+      if (nowSec() >= (pending.epoch + 1) * config.epochSeconds) return send(res, 200, { ok: false, reason: "epoch-rolled-over" });
+
       // The proof is checked against the root window of the same context the challenge was minted
       // for, in the current season. A season rollover since the challenge resets that window, so a
       // proof against the stale root is rejected as stale-or-unknown-root.
