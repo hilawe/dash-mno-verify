@@ -1,6 +1,6 @@
 {
   "tag": "circuit-keys-v2",
-  "note": "Hostable circuit artifacts for dash-mno-verify, matching the current circuit build. The membership and registration proving keys are ~2.3GB each, over the GitHub 2GB asset limit, so host them elsewhere or rebuild with scripts/build_proving_key.sh. The membership and registration wasms changed with the M1 d<n constraint, so the circuit-keys-v2 release must be published with the rebuilt artifacts before fetch_keys.sh can install them; until then, rebuild locally. mno_members is unchanged by M1.",
+  "note": "Hostable circuit artifacts for dash-mno-verify, matching the current circuit build. `files` are the small always-hosted artifacts (the members proving key and the wasms), fetched by scripts/fetch_keys.sh. `largeFiles` are the two ~2.3GB proving keys (membership, registration), over the GitHub 2GB asset limit. Host them on object storage or IPFS, fill in each entry's sha256 and a url (or set MNO_KEYS_BASE_URL), and fetch with `scripts/fetch_keys.sh --large`, or rebuild them with scripts/rebuild_proving_keys.sh. PLONK setup is deterministic, so a rebuilt key is byte-identical and its sha256 is stable across builders. The membership and registration wasms changed with the M1 d<n constraint, so the circuit-keys-v2 release must be published with the rebuilt artifacts before fetch_keys.sh can install them, and until then rebuild locally. mno_members is unchanged by M1.",
   "files": [
     {
       "name": "mno_members.zkey",
@@ -25,6 +25,22 @@
       "dest": "circuits/build/mno_registration_js/mno_registration.wasm",
       "sha256": "9a638627aa6ac76928072694aae560c45057189267def767eb05ea1b813e858d",
       "bytes": 8540367
+    }
+  ],
+  "largeFiles": [
+    {
+      "name": "mno_membership.zkey",
+      "dest": "circuits/build/mno_membership.zkey",
+      "note": "~2.3GB single-tier and registration-verify proving key. Rebuild once with scripts/rebuild_proving_keys.sh, or host it and fill in url + sha256 to fetch with --large.",
+      "sha256": "",
+      "url": ""
+    },
+    {
+      "name": "mno_registration.zkey",
+      "dest": "circuits/build/mno_registration.zkey",
+      "note": "~2.3GB two-tier registration proving key. Rebuild once with scripts/rebuild_proving_keys.sh, or host it and fill in url + sha256 to fetch with --large.",
+      "sha256": "",
+      "url": ""
     }
   ]
 }

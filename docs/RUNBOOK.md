@@ -65,20 +65,24 @@ npm run bot
 
 On a successful proof the bot adds the member to the channel with a per-user permission overwrite, which is the automated form of how you add people by hand today. Nothing shows on their public profile. The verification itself happens in ephemeral replies only the member sees. Let the bot do the adds rather than adding people to that channel by hand, since its expiry sweep resets the access it manages.
 
-## 5. The member's side
+## 5. The member's side, on the masternode itself
 
-Members clone the repo, fetch the small keys, and prove. The one heavy step is the once-a-season registration, which needs a large proving key.
+The heavy once-a-season registration needs a 2.3 GB proving key and a few gigabytes of RAM. The clean place to run it is the masternode the member already operates, not a laptop. The voting key and the spare CPU are already there, the box already stores a multi-gigabyte blockchain so 2.3 GB more is nothing, and the key is fetched or built there once. So the 2.3 GB stops being a barrier and becomes a one-time setup step on infrastructure the member already runs. The per-epoch proof after that is small (a 35 MB key) and runs anywhere.
+
+On the masternode, once:
 
 ```bash
 git clone https://github.com/hilawe/dash-mno-verify && cd dash-mno-verify
 npm ci --omit=optional
-bash scripts/fetch_keys.sh                            # the 35 MB per-epoch key and the wasms
+bash scripts/fetch_keys.sh            # the 35 MB per-epoch key and the wasms, always
+bash scripts/fetch_keys.sh --large    # the 2.3 GB keys, if you host them (see below); else rebuild:
+# bash scripts/rebuild_proving_keys.sh
 ```
 
-- Once a season: `npm run register -- --gateway https://your-gateway --platform discord --community <guild id> --role mn-members --voting-key <WIF>`. This needs the 2.3 GB registration key, rebuilt once with `scripts/build_proving_key.sh` or downloaded if you host it.
-- Every epoch, in Discord: `/verify` gives them a challenge, they run `npm run prove-epoch` locally (fine on a Pi), and `/submit` hands the proof back. The bot adds them to the channel.
+- Once a season, on the node: `npm run register -- --gateway https://your-gateway --platform discord --community <guild id> --role mn-members --voting-key <WIF>`. This needs the 2.3 GB registration key.
+- Every epoch, in Discord: `/verify` gives a challenge, the member runs `npm run prove-epoch -- --gateway https://your-gateway --challenge challenge.json --secret member.secret.json` on the node, and `/submit` hands the resulting `proof.json` back. The bot adds them to the channel.
 
-The 2.3 GB key is the real friction. Host it once on object storage and add it to `keys.manifest.json` so members download rather than rebuild, or accept that each member rebuilds it once.
+To make the 2.3 GB a download instead of a rebuild, host each large key once on object storage or IPFS and fill in its `url` and `sha256` under `largeFiles` in `keys.manifest.json`, then members get it with `fetch_keys.sh --large`. PLONK setup is deterministic, so the rebuilt key is byte-identical and its checksum is stable. See `docs/PROVING_KEY.md`.
 
 ## How access ends
 

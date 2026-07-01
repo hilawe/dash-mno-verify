@@ -49,10 +49,27 @@ It downloads each file, checks its sha256 against the manifest, and places it un
 `circuits/build/`. Point `MNO_KEYS_BASE_URL` at a different host if you mirror them.
 
 The two large proving keys, membership and registration, are about 2.3 GB each, over the
-GitHub 2 GB asset limit, so they are not on the release. Rebuild them with
-`scripts/build_proving_key.sh`, or host them yourself on object storage (S3, R2) or IPFS and
-add them to `keys.manifest.json` with their sha256. Whatever the source, the build script's
-check still applies: prove a witness and verify it against the committed verification key.
+GitHub 2 GB asset limit, so they are not on the release. They are listed under `largeFiles`
+in `keys.manifest.json`, separate from the small `files`, and `fetch_keys.sh` fetches them
+only when asked:
+
+```bash
+bash scripts/fetch_keys.sh --large
+```
+
+Until a large key is hosted, that `largeFiles` entry has an empty `url` and `sha256`, so
+`--large` prints how to proceed and exits rather than downloading nothing. To host one,
+rebuild it once with `scripts/rebuild_proving_keys.sh`, upload the `.zkey` to object storage
+(S3, R2) or IPFS, compute its sha256, and fill in the `url` and `sha256` for that entry.
+Because PLONK setup is deterministic given the same circuit and universal SRS, every builder
+produces a byte-identical key, so one published sha256 verifies a rebuilt key too. Each
+`largeFiles` entry may carry its own `url`, so the large keys can live on a different host
+than the small `files`. Whatever the source, the build script's check still applies. It proves
+a witness and verifies it against the committed verification key.
+
+Hosting the large key is what turns the member side from "install circom and rebuild" into
+"download one checksummed file," which matters most for a masternode operator running the
+prover on the node itself, where the key lives once alongside the chain data.
 
 ## What the prover expects
 
