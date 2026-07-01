@@ -64,8 +64,9 @@ rebuild it once with `scripts/rebuild_proving_keys.sh`, upload the `.zkey` to ob
 Because PLONK setup is deterministic given the same circuit and universal SRS, every builder
 produces a byte-identical key, so one published sha256 verifies a rebuilt key too. Each
 `largeFiles` entry may carry its own `url`, so the large keys can live on a different host
-than the small `files`. Whatever the source, the build script's check still applies. It proves
-a witness and verifies it against the committed verification key.
+than the small `files`. The checksum pins a downloaded key to the manifest. The build script's
+own check, which proves a witness and verifies it against the committed verification key, applies
+when creating or auditing the hosted artifact, not on the download itself.
 
 Hosting the large key is what turns the member side from "install circom and rebuild" into
 "download one checksummed file," which matters most for a masternode operator running the

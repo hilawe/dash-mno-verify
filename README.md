@@ -47,7 +47,7 @@ No party links a platform identity to an on-chain address. That is the property 
 
 ## Status
 
-Early but runnable end to end. The full single-tier `mno_membership.circom` compiles (about 174k constraints) against `circom-ecdsa`, fetched as an external build dependency by `scripts/setup_circom_ecdsa.sh`. The proving system is PLONK over the public Hermez Powers of Tau, a transparent universal setup with no per-circuit ceremony. The verification key is committed, so the gateway boots out of the box.
+Early but runnable end to end. The full single-tier `mno_membership.circom` compiles (about 174k constraints) against `circom-ecdsa`, fetched as an external build dependency by `scripts/setup_circom_ecdsa.sh`. The proving system is PLONK over the public Hermez Powers of Tau, a universal trusted setup with no per-circuit ceremony. The verification key is committed, so the gateway boots out of the box.
 
 The CI `circuits` job compiles every circuit on each push, the full membership circuit included, and validates the in-circuit hash160 against a known vector, so the in-circuit leaf provably equals the off-chain one.
 

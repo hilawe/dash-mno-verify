@@ -56,8 +56,8 @@ export function readSignals(publicSignals) {
 // never re-grants, so a spent tag is already-used there.
 //
 // verifyProof is injected so the proof check can be stubbed in unit tests. It defaults to PLONK,
-// whose verification key comes from a transparent universal setup (the public Hermez Powers of Tau)
-// with no per-circuit ceremony.
+// whose verification key comes from a universal trusted setup (the public Hermez Powers of Tau),
+// reused across circuits with no per-circuit ceremony.
 export async function verifyMembership({
   vkey,
   proof,

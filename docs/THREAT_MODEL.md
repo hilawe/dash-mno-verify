@@ -26,14 +26,14 @@ design exists to provide.
 - Timing and metadata. The cryptography hides the address link, not the fact that a member verified at a given time. Batch or delay if on-chain timing correlation is a concern.
 - Nullifier griefing. Base Platform contracts use ownership-based writes, not per-type access control. The defense is that the gateway is the only writer and a nullifier is unpredictable until a valid proof is submitted, so it cannot be squatted in advance. Platform enforces uniqueness, the gateway enforces validity, and neither alone is sufficient.
 - Key handling. The prover reads the raw voting key locally. It controls no funds, and it never leaves the device, but it is still a key-handling step. A variant that consumes an ECDSA signature instead keeps the key in the wallet at a higher circuit cost, and needs care to make the nullifier deterministic.
-- Trusted setup. If the circuit uses Groth16, it needs a per-circuit ceremony. Prefer a transparent setup (PLONK or halo2) for a community tool.
+- Trusted setup. Groth16 needs a per-circuit ceremony, which this system avoids by using PLONK over the public Hermez Powers of Tau, a universal trusted setup reused across circuits with no per-circuit ceremony. It is not setup-free, since it is secure only if one ceremony participant was honest. A backend with no trusted setup at all, a STARK or an inner-product-argument system, is the stronger option for a community tool, at a different proof size and verifier cost (see `docs/REDUCING_PROVING_COST.md`).
 
 ## Before any real deployment
 
 Several pieces are already in place. RIPEMD-160 is implemented in-repo and the in-circuit
 hash160 is validated against the generator vector on every push. The full
 `mno_membership.circom` compiles against circom-ecdsa, and the proving system is PLONK over
-the public Hermez Powers of Tau, a transparent universal setup with no per-circuit ceremony.
+the public Hermez Powers of Tau, a universal trusted setup with no per-circuit ceremony.
 The verification key is committed and the gateway boots with it. The oracle reads a real Dash
 node and signs each snapshot, and the gateway requires a quorum of pinned oracle keys and
 fails closed without them. The canonical-scalar constraint closes the nullifier malleability,

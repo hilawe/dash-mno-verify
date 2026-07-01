@@ -19,8 +19,10 @@ what make the circuit large:
 - The Merkle inclusion proof against the DML root, using Poseidon at depth 16.
 
 The number of constraints drives the size of the PLONK proving key, so a few million constraints
-produces a multi-gigabyte key. The proof system is already transparent (PLONK over the public Hermez
-Powers of Tau, no per-circuit trusted ceremony), so the problem is size, not trust.
+produces a multi-gigabyte key. PLONK here uses a universal trusted setup, the public Hermez Powers of
+Tau, reused across circuits with no per-circuit ceremony. It is not setup-free, since it is secure only
+if one participant in that ceremony was honest, so the problem this document addresses is the key size,
+and removing the trusted setup entirely is a separate benefit the STARK option below also brings.
 
 ## What already softens it, and what does not
 
@@ -36,32 +38,49 @@ The only thing that removes the 2.3 GB is a smaller circuit, which means a diffe
 ## The options
 
 1. A zero-knowledge virtual machine with a STARK backend (SP1, RISC Zero). Write the membership check as
-   a normal Rust program and prove its execution. A STARK has no per-circuit proving key to download,
-   and these virtual machines ship accelerated precompiles for secp256k1 and SHA-256, the two most
-   expensive parts above. The Merkle tree would switch from Poseidon to SHA-256 (which has a precompile
-   and which the oracle would then also use, so the two sides still agree), and the nullifier would use
-   a standard hash. RIPEMD-160 has no common precompile, so it would run as plain instructions, which is
-   acceptable because it hashes only 32 bytes. This is the least hand-rolled path to a no-large-key
-   proof, and the recommended one to prototype first.
-2. A hand-written halo2 circuit with an existing secp256k1 ECDSA chip. Smaller key than the current
-   PLONK circuit, and transparent under an inner-product commitment. It is more work than the virtual
-   machine, because the elliptic-curve and hash gadgets are assembled by hand, but the tooling for
-   secp256k1 in halo2 is mature.
-3. A folding scheme (Nova, SuperNova, HyperNova) for the repeated elliptic-curve operations. Very small
-   prover memory and key, but the least off-the-shelf tooling for this exact shape, so highest research
-   risk.
+   a normal Rust program and prove its execution. A STARK has no per-circuit proving key to download and
+   no trusted setup. These virtual machines ship accelerated support for secp256k1 and SHA-256, the two
+   most expensive parts above, but the prototype has to confirm the exact accelerated operations each
+   one exposes, because the acceleration often targets ECDSA verification, key recovery, or generic
+   curve operations rather than the private-key-to-public-key scalar multiplication this statement
+   needs, and it has to confirm the guest can keep the public key and the hash preimages private. The
+   Merkle tree would move from Poseidon to SHA-256 (see the scoping note below), and the nullifier would
+   use a standard hash. RIPEMD-160 has no common precompile, so it would run as plain instructions,
+   which is acceptable because it hashes only 32 bytes. This is the least hand-rolled path to a
+   no-large-key proof, and the recommended one to prototype first.
+2. A hand-written halo2 circuit. Smaller than the current circom circuit, and free of a trusted setup
+   only if it uses an inner-product commitment rather than the common KZG commitment, which itself needs
+   a universal setup and gives a different verifier cost. It is more work than the virtual machine,
+   because the elliptic-curve and hash gadgets are assembled by hand. The mature secp256k1 tooling is an
+   ECDSA verification chip, which fits only if the statement is redesigned to consume a signature rather
+   than derive the public key from the private key, a design change with its own nullifier-determinism
+   care (see the threat model's key-handling limit).
+3. A folding scheme (Nova, SuperNova, HyperNova) for the repeated elliptic-curve operations. Folding can
+   lower prover memory for repeated structure, but the secp256k1 and hash work still has to be expressed
+   somewhere, so the win is not guaranteed for this shape, and a practical verifier likely needs a
+   compression or wrapping step. It has the least off-the-shelf tooling for this exact statement, so the
+   highest research risk.
 4. Optimizing the current circom circuit. Realistic gains are marginal because the non-native secp256k1
    arithmetic is intrinsic to the approach, so this does not reach the goal.
+
+Switching the Merkle hash is not local to the prover. The oracle publishes the DML root, so it has to
+publish the matching SHA-256 root. And the cheap per-epoch members proof uses its own Poseidon tree. If
+that proof stays in circom it keeps Poseidon, so the two trees would use different hashes during a
+partial migration, and if the whole stack moves to the virtual machine both trees and the oracle move
+together. Either way it needs compatibility tests that the prover, the gateway, and the oracle agree on
+the root.
 
 ## Recommendation
 
 Prototype option 1 before committing to any rewrite. A proof of concept implements the membership
 statement in a virtual machine (derive the public key, compute `keyIDVoting`, verify the SHA-256 Merkle
-inclusion, compute the nullifier, bind the challenge signal) and measures the proof time, the peak
-memory, and the proof size on a masternode-class machine. The gateway verifies off-chain, so a
-larger STARK proof and a heavier verify are acceptable, and the proof can be wrapped to a succinct SNARK
-later if a small verify is wanted. If those numbers are acceptable, the full work is a replacement of
-the circom and snarkjs proving layer, not a patch.
+inclusion, compute the nullifier, bind the challenge signal) and measures the prover-side numbers on a
+masternode-class machine, namely the proof time, the peak prover memory, and the proof size, and the
+gateway-side numbers, namely the verification time and whether a succinct wrapping step is needed to
+keep the gateway fast enough at its request rate. The gateway verifies off-chain, so a larger STARK
+proof and a heavier verify are tolerable, and the proof can be wrapped to a succinct SNARK if the raw
+verify is too slow, at the cost of reintroducing a wrapper setup. If those numbers are acceptable, the
+full work is a replacement of the circom and snarkjs proving layer, not a patch.
 
 ## The validation burden
 
@@ -70,9 +89,9 @@ semantics (nullifier, root, epoch, context hash, signal hash), or the security p
 model no longer hold. So a migration needs an equivalence review of the new statement against the
 current one, a fresh security audit of the new prover and verifier, and a transition plan. The
 transition can run both stacks in parallel during a cutover, or cut over cleanly with a new key tag and
-a re-published oracle that uses the matching Merkle hash. The move keeps the transparent-setup property,
-and a STARK removes even the reliance on the Powers of Tau, at the cost of depending on the virtual
-machine's own soundness and its precompiles.
+a re-published oracle that uses the matching Merkle hash. A STARK removes the trusted setup entirely, so
+on that axis the move is a strict improvement over the current universal-setup PLONK, at the cost of
+depending on the virtual machine's own soundness and its accelerated operations.
 
 ## What not to do
 

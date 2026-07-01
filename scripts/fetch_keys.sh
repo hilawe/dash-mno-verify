@@ -49,7 +49,11 @@ fetch_one() {
     echo "  keys.manifest.json, so it is stale. The existing file, if any, was left untouched."
     return 1
   fi
-  mv "$tmp" "$dest"
+  if ! mv "$tmp" "$dest"; then
+    rm -f "$tmp"
+    echo "  could not move $name into place"
+    return 1
+  fi
 }
 
 echo "fetching small artifacts from $BASE"
@@ -76,7 +80,11 @@ if [ "$WANT_LARGE" = "1" ]; then
       echo "  docs/PROVING_KEY.md."
       exit 1
     fi
-    fetch_one "$name" "$dest" "$sha" "$url" || exit 1
+    if ! fetch_one "$name" "$dest" "$sha" "$url"; then
+      echo "  Fill in this entry's url, set MNO_KEYS_BASE_URL to where the large keys live (they cannot"
+      echo "  be on the GitHub release), or rebuild it with scripts/rebuild_proving_keys.sh."
+      exit 1
+    fi
   done
 fi
 

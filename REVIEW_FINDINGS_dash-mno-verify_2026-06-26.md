@@ -14,8 +14,8 @@ independently by more than one reviewer are marked (consensus).
 
 Consensus BLOCK, and that matches the repo's own "not audited" disclaimer. The cryptographic core
 is in good shape. The circuits are correctly constrained, hash160 is implemented and continuous-
-integration-tested against a known vector, the setup is transparent PLONK with no trusted-setup
-risk, and the verifier hard-fails on an invalid proof. The blockers are in the binding and trust
+integration-tested against a known vector, the setup is universal-SRS PLONK with no per-circuit ceremony and no per-circuit
+trusted-setup risk, and the verifier hard-fails on an invalid proof. The blockers are in the binding and trust
 layer around the proof, not in the proof itself. Do not deploy this to gate anything of value yet,
 and do not commit the current working-tree diff as-is until the season-rollover race is fixed (the
 new registration store and contract parts of the diff are good).
@@ -129,7 +129,7 @@ the cookie on the initial GET.
   is CI-tested end to end against the secp256k1 generator vector. (crypto pass)
 - Merkle inclusion enforces the path-index boolean and root equality, and the Semaphore
   signal-binding constraint is correct. The circuit-level binding is fine. (crypto pass)
-- Transparent PLONK over a shared universal SRS, so no Groth16 toxic-waste exposure. Verification
+- PLONK over a shared universal SRS (a universal trusted setup, not per-circuit), so no Groth16 per-circuit toxic-waste exposure. Verification
   keys are committed and config-pinned, not attacker-supplied at run time. (crypto pass)
 - No assign-without-constrain (`<--` only) signals anywhere in the first-party circuits. The
   classic under-constrained-signal bug is absent. (crypto pass)

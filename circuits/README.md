@@ -42,8 +42,9 @@ against the generated `public.json` and keep `core/verifier.js` in sync.
 ## Compile and set up
 
 The full single-tier circuit needs circom-ecdsa, fetched as an external build dependency.
-The proving system is PLONK, so the setup is transparent: it reuses the public Hermez
-Powers of Tau universal SRS, with no per-circuit ceremony.
+The proving system is PLONK, so the setup is universal rather than per-circuit. It reuses the
+public Hermez Powers of Tau structured reference string across circuits, with no per-circuit
+ceremony, and is secure as long as one participant in that one ceremony was honest.
 
 ```bash
 # 1. fetch circom-ecdsa (clones to circuits/.deps, symlinks this repo's circomlib)
