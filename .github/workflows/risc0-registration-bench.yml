@@ -39,6 +39,16 @@ jobs:
         working-directory: research/risc0-registration
         run: cargo build --release -p host
 
+      - name: Member-side artifact sizes
+        working-directory: research/risc0-registration
+        run: |
+          echo "host prover binary (what a member runs):"
+          ls -l target/release/host
+          du -h target/release/host
+          echo "r0vm prover runtime (shared, installed once):"
+          ls -l "$HOME/.risc0/bin/r0vm" 2>/dev/null || echo "r0vm not at the expected path"
+          du -h "$HOME/.risc0/bin/r0vm" 2>/dev/null || true
+
       - name: Run the registration proof with a peak-memory measurement
         working-directory: research/risc0-registration
         run: |

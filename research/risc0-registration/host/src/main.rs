@@ -107,6 +107,8 @@ fn main() {
     let receipt_bytes = bincode::serialize(&receipt).map(|b| b.len()).unwrap_or(0);
 
     // Machine-readable metrics, one per line, for the bench harness to grep.
+    // guest_elf_bytes is the per-statement artifact, the closest analogue to a proving key.
+    println!("guest_elf_bytes: {}", REGISTRATION_ELF.len());
     println!("proving_time_s: {:.2}", elapsed.as_secs_f64());
     println!("receipt_bytes: {receipt_bytes}");
     println!("journal_bytes: {}", receipt.journal.bytes.len());
