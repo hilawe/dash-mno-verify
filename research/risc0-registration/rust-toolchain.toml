@@ -1,0 +1,5 @@
+# Host toolchain. The guest is compiled by the RISC Zero toolchain that rzup
+# installs, this pin is for the host build only. Align the channel with the one
+# your installed RISC Zero release supports if the build complains.
+[toolchain]
+channel = "1.81.0"

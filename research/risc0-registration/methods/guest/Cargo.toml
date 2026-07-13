@@ -1,0 +1,18 @@
+[package]
+name = "registration-guest"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "registration"
+path = "src/main.rs"
+
+[dependencies]
+# Align the risc0-zkvm version with your installed RISC Zero release (see the top-level README).
+risc0-zkvm = { version = "1.2.0", default-features = false, features = ["std"] }
+k256 = { version = "0.13", default-features = false, features = ["arithmetic"] }
+sha2 = { version = "0.10", default-features = false }
+ripemd = { version = "0.1", default-features = false }
+
+[profile.release]
+opt-level = 3
