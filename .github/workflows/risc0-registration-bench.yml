@@ -1,0 +1,46 @@
+name: risc0-registration-bench
+
+# Research prototype for the proving-cost track (docs/REDUCING_PROVING_COST.md).
+# Separate from the main ci workflow. It runs only on manual dispatch or when the
+# prototype changes, because it installs the RISC Zero toolchain and runs a real
+# proof, which is heavy. A GitHub-hosted ubuntu-latest runner is x86_64 with about
+# 16 GB of memory, so this doubles as the Phase 0 gate test: does the registration
+# proof fit a roughly 16 GB masternode-class box. If the run step is killed for
+# memory, that is itself the answer (it needs more than the runner has). If it
+# completes, the "Maximum resident set size" line is the measured peak.
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "research/risc0-registration/**"
+      - ".github/workflows/risc0-registration-bench.yml"
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Runner resources
+        run: |
+          echo "arch: $(uname -m)"
+          echo "cpus: $(nproc)"
+          free -h
+
+      - name: Install the RISC Zero toolchain
+        run: |
+          curl -L https://risczero.com/install | bash
+          echo "$HOME/.risc0/bin" >> "$GITHUB_PATH"
+
+      - name: rzup install
+        run: rzup install
+
+      - name: Build host and guest (release)
+        working-directory: research/risc0-registration
+        run: cargo build --release -p host
+
+      - name: Run the registration proof with a peak-memory measurement
+        working-directory: research/risc0-registration
+        run: |
+          echo "the Maximum resident set size line below is the Phase 0 gate number"
+          /usr/bin/time -v ./target/release/host

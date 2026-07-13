@@ -102,6 +102,16 @@ Install the toolchain, then build and run:
 On Linux `scripts/bench.sh` uses GNU `time -v`. On macOS it falls back to `/usr/bin/time -l`, whose
 `maximum resident set size` is in bytes.
 
+### Continuous integration path (real x86_64, no server to provision)
+
+The workflow at `.github/workflows/risc0-registration-bench.yml` builds and runs the prover on a
+GitHub-hosted `ubuntu-latest` runner, which is real x86_64 Linux with about 16 GB of memory, so it needs
+no machine of your own. Trigger it from the Actions tab (it is a `workflow_dispatch`), or by pushing a
+change under `research/risc0-registration/`. Because the runner is about 16 GB, this doubles as the gate
+test, does the proof fit a roughly 16 GB masternode-class box. If the run step is killed for memory, that
+is the answer. If it completes, read the `Maximum resident set size` line. For a target larger than the
+runner, use a native x86_64 Linux box with more memory instead.
+
 ## Version alignment
 
 The RISC Zero crate versions and the fork tags in the `[patch.crates-io]` block are set to the 3.0.5
