@@ -49,8 +49,14 @@ jobs:
           ls -l "$HOME/.risc0/bin/r0vm" 2>/dev/null || echo "r0vm not at the expected path"
           du -h "$HOME/.risc0/bin/r0vm" 2>/dev/null || true
 
-      - name: Run the registration proof with a peak-memory measurement
+      - name: Derive-key statement, peak-memory measurement
         working-directory: research/risc0-registration
         run: |
-          echo "the Maximum resident set size line below is the Phase 0 gate number"
-          /usr/bin/time -v ./target/release/host
+          echo "the Maximum resident set size line below is the Phase 0 gate number (derive)"
+          /usr/bin/time -v ./target/release/host derive
+
+      - name: Signature statement, peak-memory measurement
+        working-directory: research/risc0-registration
+        run: |
+          echo "the Maximum resident set size line below is the Phase 0 gate number (sig)"
+          /usr/bin/time -v ./target/release/host sig

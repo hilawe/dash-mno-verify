@@ -1,15 +1,23 @@
 // Host harness: build a synthetic registration witness, run the prover once, and print the numbers
 // the Phase 0 gate needs. Peak resident memory is captured externally by scripts/bench.sh, because
 // it is a property of the whole process, not something the program can report for itself reliably.
+//
+// Takes one argument, the statement to measure:
+//   derive  (default)  prove P = d*G from the raw private key, then hash160, Merkle, nullifier.
+//   sig                verify a wallet signature over a deterministic message, so the private key
+//                      never enters the prover, then hash160, Merkle, nullifier.
+// Run each in its own process (the bench does) so their peak memory is measured separately.
 
+use k256::ecdsa::signature::hazmat::PrehashSigner;
+use k256::ecdsa::{Signature, SigningKey};
 use k256::elliptic_curve::sec1::ToEncodedPoint;
 use k256::SecretKey;
-use methods::{REGISTRATION_ELF, REGISTRATION_ID};
+use methods::{REGISTRATION_ELF, REGISTRATION_ID, REGISTRATION_SIG_ELF, REGISTRATION_SIG_ID};
 use rand::rngs::OsRng;
 use ripemd::Ripemd160;
-use risc0_zkvm::{default_prover, ExecutorEnv};
+use risc0_zkvm::{default_prover, ExecutorEnv, ProveInfo};
 use sha2::{Digest, Sha256};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 const TREE_DEPTH: usize = 16;
 
@@ -47,74 +55,98 @@ fn parent(bit: u8, node: &[u8; 32], sib: &[u8; 32]) -> [u8; 32] {
     sha256(&buf)
 }
 
-fn main() {
-    // --- synthetic witness ---
-    let sk = SecretKey::random(&mut OsRng);
-    let d: [u8; 32] = sk.to_bytes().into();
-    let pk = sk.public_key();
-    let compressed = pk.to_encoded_point(true);
-    let key_id = hash160(compressed.as_bytes());
-
-    // A SHA-256 Merkle path of TREE_DEPTH, our leaf on the left at every level, deterministic siblings.
-    let mut node = leaf_node(&key_id);
+// A SHA-256 Merkle path of TREE_DEPTH with the leaf on the left at every level, deterministic siblings.
+fn build_merkle(key_id: &[u8; 20]) -> (Vec<[u8; 32]>, Vec<u8>, [u8; 32]) {
+    let mut node = leaf_node(key_id);
     let mut siblings: Vec<[u8; 32]> = Vec::with_capacity(TREE_DEPTH);
     let mut bits: Vec<u8> = Vec::with_capacity(TREE_DEPTH);
     for i in 0..TREE_DEPTH {
         let sib = sha256(&[i as u8; 32]);
-        let bit = 0u8;
-        node = parent(bit, &node, &sib);
+        node = parent(0, &node, &sib);
         siblings.push(sib);
-        bits.push(bit);
+        bits.push(0);
     }
-    let root = node;
+    (siblings, bits, node)
+}
 
+fn report(mode: &str, elf: &[u8], info: &ProveInfo, elapsed: Duration) {
+    let receipt = &info.receipt;
+    let receipt_bytes = bincode::serialize(receipt).map(|b| b.len()).unwrap_or(0);
+    println!("[{mode}] guest_elf_bytes: {}", elf.len());
+    println!("[{mode}] proving_time_s: {:.2}", elapsed.as_secs_f64());
+    println!("[{mode}] receipt_bytes: {receipt_bytes}");
+    println!("[{mode}] journal_bytes: {}", receipt.journal.bytes.len());
+    println!("[{mode}] total_cycles: {}", info.stats.total_cycles);
+    println!("[{mode}] user_cycles: {}", info.stats.user_cycles);
+}
+
+fn main() {
+    let mode = std::env::args().nth(1).unwrap_or_else(|| "derive".to_string());
     let epoch: u64 = 42;
     let context_hash = sha256(b"dash-mno-verify:v1:discord:example:member");
     let signal_hash = sha256(b"one-time-challenge-nonce-bound-to-account");
 
-    // --- environment, same order the guest reads ---
-    let env = ExecutorEnv::builder()
-        .write(&d)
-        .unwrap()
-        .write(&siblings)
-        .unwrap()
-        .write(&bits)
-        .unwrap()
-        .write(&root)
-        .unwrap()
-        .write(&epoch)
-        .unwrap()
-        .write(&context_hash)
-        .unwrap()
-        .write(&signal_hash)
-        .unwrap()
-        .build()
-        .unwrap();
-
-    // --- prove ---
-    eprintln!("proving the registration statement (tree depth {TREE_DEPTH}) ...");
-    let start = Instant::now();
-    let info = default_prover()
-        .prove(env, REGISTRATION_ELF)
-        .expect("proving failed");
-    let elapsed = start.elapsed();
-
-    let receipt = info.receipt;
-    receipt
-        .verify(REGISTRATION_ID)
-        .expect("receipt failed to verify");
-
-    let receipt_bytes = bincode::serialize(&receipt).map(|b| b.len()).unwrap_or(0);
-
-    // Machine-readable metrics, one per line, for the bench harness to grep.
-    // guest_elf_bytes is the per-statement artifact, the closest analogue to a proving key.
-    println!("guest_elf_bytes: {}", REGISTRATION_ELF.len());
-    println!("proving_time_s: {:.2}", elapsed.as_secs_f64());
-    println!("receipt_bytes: {receipt_bytes}");
-    println!("journal_bytes: {}", receipt.journal.bytes.len());
-    // Cycle counts. Field names can vary slightly across RISC Zero releases; adjust if the build
-    // reports an unknown field on info.stats.
-    println!("total_cycles: {}", info.stats.total_cycles);
-    println!("user_cycles: {}", info.stats.user_cycles);
-    eprintln!("done. peak memory is reported by scripts/bench.sh via the system time utility.");
+    match mode.as_str() {
+        "derive" => {
+            let sk = SecretKey::random(&mut OsRng);
+            let d: [u8; 32] = sk.to_bytes().into();
+            let compressed = sk.public_key().to_encoded_point(true);
+            let key_id = hash160(compressed.as_bytes());
+            let (siblings, bits, root) = build_merkle(&key_id);
+            let env = ExecutorEnv::builder()
+                .write(&d).unwrap()
+                .write(&siblings).unwrap()
+                .write(&bits).unwrap()
+                .write(&root).unwrap()
+                .write(&epoch).unwrap()
+                .write(&context_hash).unwrap()
+                .write(&signal_hash).unwrap()
+                .build()
+                .unwrap();
+            eprintln!("[derive] proving (tree depth {TREE_DEPTH}) ...");
+            let start = Instant::now();
+            let info = default_prover().prove(env, REGISTRATION_ELF).expect("proving failed");
+            let elapsed = start.elapsed();
+            info.receipt.verify(REGISTRATION_ID).expect("receipt failed to verify");
+            report("derive", REGISTRATION_ELF, &info, elapsed);
+        }
+        "sig" => {
+            let signing = SigningKey::random(&mut OsRng);
+            let pubkey_bytes = signing.verifying_key().to_encoded_point(true).as_bytes().to_vec();
+            let key_id = hash160(&pubkey_bytes);
+            // the message the member signs, derived from the public epoch and context.
+            let msg_hash = {
+                let mut buf = Vec::new();
+                buf.extend_from_slice(b"dash-mno-verify:auth:v1");
+                buf.extend_from_slice(&context_hash);
+                buf.extend_from_slice(&epoch.to_le_bytes());
+                sha256(&buf)
+            };
+            let sig: Signature = signing.sign_prehash(&msg_hash).expect("signing failed");
+            let sig_bytes = sig.to_bytes().to_vec();
+            let (siblings, bits, root) = build_merkle(&key_id);
+            let env = ExecutorEnv::builder()
+                .write(&pubkey_bytes).unwrap()
+                .write(&sig_bytes).unwrap()
+                .write(&siblings).unwrap()
+                .write(&bits).unwrap()
+                .write(&root).unwrap()
+                .write(&epoch).unwrap()
+                .write(&context_hash).unwrap()
+                .write(&signal_hash).unwrap()
+                .build()
+                .unwrap();
+            eprintln!("[sig] proving (tree depth {TREE_DEPTH}) ...");
+            let start = Instant::now();
+            let info = default_prover().prove(env, REGISTRATION_SIG_ELF).expect("proving failed");
+            let elapsed = start.elapsed();
+            info.receipt.verify(REGISTRATION_SIG_ID).expect("receipt failed to verify");
+            report("sig", REGISTRATION_SIG_ELF, &info, elapsed);
+        }
+        other => {
+            eprintln!("unknown mode '{other}', use 'derive' or 'sig'");
+            std::process::exit(2);
+        }
+    }
+    eprintln!("done. peak memory is reported externally via the system time utility.");
 }
