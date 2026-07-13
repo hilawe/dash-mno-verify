@@ -92,11 +92,22 @@ These are a set to benchmark against each other, not a ranked list with a predet
 5. A linkable ring signature or one-out-of-many proof over the voting-key set (Groth-Kohlweiss,
    Triptych, Lelantus). This solves anonymous membership natively over secp256k1 with a key-image that
    is a nullifier, needing no circuit, no proving key, and no ceremony, with a proof logarithmic in the
-   set size. It is gated first on a feasibility check, because the DML publishes `hash160(pubkey)`, not
-   the public keys a ring needs, so it only works if the voting public keys can be assembled (recovered
-   from signatures, or bound through a derived commitment). Check that before building anything.
+   set size, but a feasibility check settles it against this candidate (see below). A ring operates over
+   the public keys as elliptic-curve points, and the DML commits the voting key as `hash160(pubkey)`,
+   not as a point, so the points would have to be assembled from elsewhere, and they cannot be.
 6. Optimizing the current circom circuit in place. Realistic gains are marginal because the non-native
    secp256k1 arithmetic is intrinsic to the approach, so this does not reach the goal on its own.
+
+The ring-signature feasibility check (candidate 5) is already settled, against it. A ring needs the
+voting public keys as points, and Dash commits each voting key only as `KeyIdVoting`, the `hash160` of
+the point. The point is recoverable only from a proposal-vote ECDSA signature, which Dash uses to
+validate the vote, so it is available for masternodes that have voted but not for the rest, giving a
+partial and shifting anonymity set rather than the full list. A member that publishes its point to
+enlarge the ring is de-anonymized, because anyone matches `hash160` of that point to a specific list
+entry. Proving membership against `hash160` commitments is instead a zero-knowledge preimage-plus-
+inclusion proof, which is the SNARK path, so the ring candidate collapses into it rather than beating it.
+That is also the positive reason the current design proves knowledge of the `hash160` preimage in zero
+knowledge, it is the natural construction when the chain commits a hash rather than a point.
 
 ## The statement choice, a joint optimization
 
