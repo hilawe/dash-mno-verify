@@ -1,0 +1,4 @@
+# Host toolchain. The guest is compiled by the RISC Zero toolchain that rzup
+# installs, this pin is for the host build only.
+[toolchain]
+channel = "stable"

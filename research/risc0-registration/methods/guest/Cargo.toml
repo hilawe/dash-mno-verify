@@ -1,0 +1,38 @@
+# Empty workspace table so this guest is its own workspace root, not a member of the
+# parent research/risc0-registration workspace. risc0-build compiles it separately for
+# the RISC-V target. Because it is its own workspace root it does NOT inherit the parent
+# workspace's [patch.crates-io], so the acceleration patch is repeated here.
+[workspace]
+
+[package]
+name = "registration-guest"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "registration"
+path = "src/main.rs"
+
+[[bin]]
+name = "registration_sig"
+path = "src/bin/registration_sig.rs"
+
+[dependencies]
+risc0-zkvm = { version = "3.0", default-features = false, features = ["std"] }
+# Default features on, matching the RISC Zero precompile documentation, so the sec1
+# encoding path (to_encoded_point) is available. The exact version pins let the patch apply.
+k256 = { version = "=0.13.3", features = ["arithmetic"] }
+sha2 = "=0.10.8"
+crypto-bigint = "=0.5.5"
+ripemd = "0.1"
+
+# Acceleration precompiles for secp256k1 (k256) and SHA-256 (sha2). Same forks and tags
+# as the parent workspace, RISC Zero 3.0.5. Repeated here because the [workspace] above
+# makes this guest its own workspace root.
+[patch.crates-io]
+sha2 = { git = "https://github.com/risc0/RustCrypto-hashes", tag = "sha2-v0.10.8-risczero.0" }
+k256 = { git = "https://github.com/risc0/RustCrypto-elliptic-curves", tag = "k256/v0.13.3-risczero.1" }
+crypto-bigint = { git = "https://github.com/risc0/RustCrypto-crypto-bigint", tag = "v0.5.5-risczero.0" }
+
+[profile.release]
+opt-level = 3
