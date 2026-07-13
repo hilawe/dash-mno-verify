@@ -1,28 +1,44 @@
 # Reducing the member-side proving cost
 
 The one real barrier to wide adoption is the size of the membership proving key, about 2.3 GB, and the
-memory and time to make a proof with it. This document is the design track for removing that cost at
-the source, not just relocating it. It is a plan and a set of options, not a decision.
+memory and time to make a proof with it. This document is the design track for removing that cost at the
+source, not just relocating it. It is a plan and a set of options, not a decision.
 
-## Why the key is 2.3 GB
+The analysis below was sharpened by a clean-room design exercise, in which several independent designs
+from different model families were produced from the requirements alone, followed by an adversarial
+review of the resulting synthesis. The earlier version of this document led with the proven statement as
+"the lever that decides the cost." That framing was too narrow, and the corrected account is what
+follows.
 
-The membership and registration circuits prove, in zero knowledge, that the member knows the voting
-private key for one entry in the deterministic masternode list (DML). Three parts of that statement are
-what make the circuit large:
+## Why the key is 2.3 GB, three bundled costs
 
-- Deriving the secp256k1 public key from the private key. Elliptic-curve scalar multiplication over
-  secp256k1 is done inside a proof system whose native field is BN254, so every secp256k1 operation is
-  emulated with non-native field arithmetic. This is the dominant cost, on the order of millions of
-  constraints (circom-ecdsa's `ECDSAPrivToPub`).
-- Computing `keyIDVoting = hash160(pubkey)`, which is SHA-256 then RIPEMD-160, both bit-oriented hashes
-  that are expensive as circuit constraints.
-- The Merkle inclusion proof against the DML root, using Poseidon at depth 16.
+The membership and registration circuits prove, in zero knowledge (ZK), that the member knows the voting
+private key for one entry in the deterministic masternode list (DML). The 2.3 GB is not one thing. It is
+three costs bundled together, and separating them is what makes the fix tractable.
 
-The number of constraints drives the size of the PLONK proving key, so a few million constraints
-produces a multi-gigabyte key. PLONK here uses a universal trusted setup, the public Hermez Powers of
-Tau, reused across circuits with no per-circuit ceremony. It is not setup-free, since it is secure only
-if one participant in that ceremony was honest, so the problem this document addresses is the key size,
-and removing the trusted setup entirely is a separate benefit the STARK option below also brings.
+1. The proof system. The circuits use PLONK, a succinct non-interactive argument of knowledge (SNARK)
+   over the BN254 curve, whose per-circuit proving key scales with the constraint count, so a few
+   million constraints produce a multi-gigabyte key. A transparent proof system built on the Fast
+   Reed-Solomon Interactive Oracle Proof of Proximity (FRI) has no such structured key at all, its
+   prover needs only the compiled circuit, a few megabytes.
+2. The arithmetization. The dominant part of the constraint count is `circom-ecdsa`, a brute-force
+   emulation of secp256k1 arithmetic over the BN254 field that predates modern lookup arguments. Much of
+   the 2.3 GB is this stale arithmetization, not an inherent property of the SNARK family. A lookup-based
+   arithmetization (Plookup, LogUp, Lasso, or a mature library such as halo2's secp256k1) does the same
+   elliptic-curve work at a fraction of the constraints, which shrinks the key several-fold while staying
+   a structured-key SNARK.
+3. The statement. Deriving the public key from the private key is one fixed-base secp256k1 scalar
+   multiplication. Verifying an Elliptic Curve Digital Signature Algorithm (ECDSA) signature is heavier
+   in a plain circuit, two scalar multiplications plus a modular inversion, but it can be cheaper in a
+   backend whose accelerated path targets signature verification. So the statement is a real but smaller
+   and backend-dependent factor, not the primary one.
+
+On top of these, the leaf hash `keyIDVoting = hash160(pubkey)`, which is SHA-256 then RIPEMD-160, and
+the Merkle inclusion against the DML root add constraints, but they are not where the bulk of the cost
+lives.
+
+The dominant avoidable cost is the arithmetization and proof-system combination. The statement is a
+secondary lever, and it matters most for prover memory and for key handling, discussed below.
 
 ## What already softens it, and what does not
 
@@ -33,94 +49,141 @@ runs. Those make the 2.3 GB a non-issue for a masternode operator, but none of t
 member still holds the key to make the heavy proof, because the proof must be made with the voting key
 under the member's control.
 
-The only thing that removes the 2.3 GB is a smaller circuit, which means a different proving backend.
+The only thing that removes the 2.3 GB is a smaller circuit or a proof system with no structured key,
+which means a different proving backend, a different arithmetization, or both.
 
-## The design lever that decides the cost
+## The gate that decides everything, prover memory on real hardware
 
-Before the backend, there is a statement choice that drives the constraint count more than the backend
-does. Proving the private-key-to-public-key derivation is a full secp256k1 scalar multiplication, the
-dominant cost above, and it is not what accelerated tooling targets. If instead the member signs a
-deterministic message (for example the gateway challenge nonce) with the voting key, the statement only
-has to verify that signature, which is exactly the operation zkVM precompiles and halo2 chips
-accelerate. That can cut the expensive part by an order of magnitude, so it is the first thing to
-settle, and it is what keeps the prover memory below in range. It carries two conditions. The signature
-has to be deterministic (RFC 6979), or the nullifier has to be derived from a stable value rather than
-the signature, so one voting key still yields one nullifier per epoch. And the signing has to be
-something a member can do with a standard wallet or Dash RPC. This is the same key-handling tradeoff
-the threat model notes, now as a lever for cost, not only for key exposure.
+The single measurement that decides the whole question is peak prover memory for the heavy
+once-per-season registration proof on masternode-class hardware. Independent estimates for a non-native
+secp256k1 scalar multiplication in a transparent prover scatter widely, from single-digit to tens of
+gigabytes, which is itself the reason it must be measured rather than assumed. An 8 GB node is not a
+credible target and 16 GB is plausible but not guaranteed. Treat a peak above roughly 12 GB on a 16 GB
+node as that option failing, and fall back to the lookup-modernized universal-setup SNARK below, whose
+per-circuit key is far smaller than 2.3 GB even though it does not reach zero.
 
-## The options
+## The candidates
 
-1. A zero-knowledge virtual machine with a STARK backend (SP1, RISC Zero). Write the membership check as
-   a normal Rust program and prove its execution. A STARK has no per-circuit proving key to download and
-   no trusted setup. These virtual machines ship accelerated support for secp256k1 and SHA-256, the two
-   most expensive parts above, but the prototype has to confirm the exact accelerated operations each
-   one exposes, because the acceleration often targets ECDSA verification, key recovery, or generic
-   curve operations rather than the private-key-to-public-key scalar multiplication this statement
-   needs, and it has to confirm the guest can keep the public key and the hash preimages private. The
-   Merkle tree would move from Poseidon to SHA-256 (see the scoping note below), and the nullifier would
-   use a standard hash. RIPEMD-160 has no common precompile, so it would run as plain instructions,
-   which is acceptable because it hashes only 32 bytes. The real risk to watch is prover memory, not
-   disk. A STARK prover over many cycles can want tens of gigabytes of RAM, which on a lightweight
-   masternode would be worse than the 2.3 GB disk file it replaces. The signature-based statement above
-   is what keeps the cycle count, and so the memory, in range, and the prototype has to measure peak
-   prover memory against real masternode hardware and treat exceeding it as this option failing, not a
-   detail. Subject to that, this is the least hand-rolled path to a no-large-key proof, and the
-   recommended one to prototype first.
-2. A hand-written halo2 circuit. Smaller than the current circom circuit, and free of a trusted setup
-   only if it uses an inner-product commitment rather than the common KZG commitment, which itself needs
-   a universal setup and gives a different verifier cost. It is more work than the virtual machine,
-   because the elliptic-curve and hash gadgets are assembled by hand. The mature secp256k1 tooling is an
-   ECDSA verification chip, which fits only if the statement is redesigned to consume a signature rather
-   than derive the public key from the private key, a design change with its own nullifier-determinism
-   care (see the threat model's key-handling limit).
-3. A folding scheme (Nova, SuperNova, HyperNova). Folding targets incremental computation over many
-   uniform steps, which a one-shot membership proof does not have at the top level. The only repetition
-   to exploit is inside the scalar multiplication, the double-and-add loop, so folding helps here only
-   if the statement is restructured so that loop is the folded step, a significant redesign, and a
-   practical verifier still needs a compression or wrapping step. It has the least off-the-shelf tooling
-   for this exact statement, so it is the highest research risk and not a natural fit as written.
-4. Optimizing the current circom circuit. Realistic gains are marginal because the non-native secp256k1
-   arithmetic is intrinsic to the approach, so this does not reach the goal.
+These are a set to benchmark against each other, not a ranked list with a predetermined winner.
 
-Switching the Merkle hash is not local to the prover. The oracle publishes the DML root, so it has to
-publish the matching SHA-256 root. And the cheap per-epoch members proof uses its own Poseidon tree. If
-that proof stays in circom it keeps Poseidon, so the two trees would use different hashes during a
-partial migration, and if the whole stack moves to the virtual machine both trees and the oracle move
-together. Either way it needs compatibility tests that the prover, the gateway, and the oracle agree on
-the root.
+0. The null baseline, keep the current stack and host the key. The deployment already hosts the key, so
+   the member downloads one checksummed file. Any rewrite must beat this on a cost-benefit basis,
+   because the rewrite invalidates the existing audit and takes on new assumptions, and its whole payoff
+   is deleting a one-time hostable download. State the baseline explicitly so the rewrite is measured
+   against it, not against nothing.
+1. A lookup-modernized structured-key SNARK (halo2 or PLONK with lookup arguments). Keeps the proof
+   system family but replaces the stale `circom-ecdsa` arithmetization, plausibly cutting the key to the
+   low hundreds of megabytes. This is the lowest-risk path, because it does not take on transparent-proof
+   soundness conjectures or a young arithmetization-friendly hash. It still has a per-circuit proving key
+   (smaller) and a universal structured reference string (SRS).
+2. A zero-knowledge virtual machine (zkVM) with a STARK backend (scalable transparent argument of
+   knowledge), for example SP1 or RISC Zero. Write the membership check as a normal program and prove its
+   execution, with no per-circuit key and no ceremony. Benchmark both statement forms (derive the key,
+   and verify a signature), because the zkVM's accelerated secp256k1 path may target signature
+   verification and so favor the signature statement. The real risk is prover memory, per the gate above.
+3. A folding scheme (Nova, SuperNova, HyperNova). Folding makes peak prover memory proportional to one
+   step of a uniform loop rather than the whole computation, and the secp256k1 double-and-add loop is a
+   natural fit. This is the structural answer to the memory risk, worth prototyping if the zkVM memory is
+   marginal.
+4. A purpose-built transparent secp256k1 membership prover in the Spartan family (for example the
+   published spartan-ecdsa work). Sum-check-based, transparent, no large key, and it is the closest
+   existing artifact to this exact statement, so it is a strong candidate even though it needs adaptation
+   to the exact Dash `hash160` and DML semantics and an audit.
+5. A linkable ring signature or one-out-of-many proof over the voting-key set (Groth-Kohlweiss,
+   Triptych, Lelantus). This solves anonymous membership natively over secp256k1 with a key-image that
+   is a nullifier, needing no circuit, no proving key, and no ceremony, with a proof logarithmic in the
+   set size. It is gated first on a feasibility check, because the DML publishes `hash160(pubkey)`, not
+   the public keys a ring needs, so it only works if the voting public keys can be assembled (recovered
+   from signatures, or bound through a derived commitment). Check that before building anything.
+6. Optimizing the current circom circuit in place. Realistic gains are marginal because the non-native
+   secp256k1 arithmetic is intrinsic to the approach, so this does not reach the goal on its own.
 
-## Recommendation
+## The statement choice, a joint optimization
 
-Prototype option 1 before committing to any rewrite, in the signature-based form from the design lever
-above. A proof of concept implements the membership statement in a virtual machine (verify the member's
-signature over the challenge to recover the voting public key, compute `keyIDVoting`, verify the SHA-256
-Merkle inclusion, compute the nullifier, bind the challenge signal) and measures the prover-side numbers on a
-masternode-class machine, namely the proof time, the peak prover memory, and the proof size, and the
-gateway-side numbers, namely the verification time and whether a succinct wrapping step is needed to
-keep the gateway fast enough at its request rate. The gateway verifies off-chain, so a larger STARK
-proof and a heavier verify are tolerable, and the proof can be wrapped to a succinct SNARK if the raw
-verify is too slow, at the cost of reintroducing a wrapper setup. If those numbers are acceptable, the
-full work is a replacement of the circom and snarkjs proving layer, not a patch.
+Whether to keep the derive-the-key statement or switch to verifying a signature is not a hard default in
+either direction. Settle it on three axes together, not on prover cost alone.
+
+- Prover cost. In a zkVM the accelerated ECDSA-verification path may make the signature statement the
+  faster and lower-memory choice, while in a hand-written circuit the single fixed-base scalar
+  multiplication of key derivation is lighter. This is a measurement, not an assumption.
+- Nullifier soundness. A private-key-derived nullifier is unique and not grindable, but it requires the
+  private key inside the prover. A signature-derived nullifier is a Sybil break unless the circuit
+  enforces deterministic (RFC 6979) nonces, because standard ECDSA lets a prover produce many valid
+  signatures over one message, each yielding a different nullifier. A nullifier keyed on a public
+  identifier is grindable over the public list. So the signature path does not get a sound nullifier for
+  free.
+- Key hygiene. A signature statement lets the voting key stay in the wallet and sign through the remote
+  procedure call (RPC), never entering the prover, which is a real operational gain that the
+  key-derivation statement forgoes.
+
+These pull against each other. The clean private-key nullifier wants the key in the prover, and key
+hygiene wants it out, so decide by measuring prover cost and then honoring the nullifier-soundness
+constraint, rather than by fixing the statement first.
+
+## Roots and hashes, no forced migration and no in-circuit bridge
+
+Switching the membership tree to a SNARK-friendly hash is not forced, and no in-circuit proof that a
+re-published root commits to the same set as the on-chain root is needed for the current trust model.
+The masternode list is public, so the oracle recomputes the matching root off-circuit and the gateway
+checks root equality off-circuit, which is exactly what the build already does (the M3 recompute). Two
+consequences follow.
+
+- If the chosen backend has a native SHA-256 accelerator, keep SHA-256 for the DML inclusion and avoid
+  any hash migration. A SNARK-friendly hash (Poseidon) is worth adopting only for the gateway-owned
+  members tree, where there is no external root to reconcile.
+- An in-circuit bridge proof, that a Poseidon root commits to the same set as the on-chain
+  `merkleRootMNList`, is only needed for the separate trustless-anchor goal (verifying against the chain
+  with no oracle trust). It is heavy, because it must recompute the double-SHA-256 tree over the full
+  masternode entries, so it belongs to that track, not to this one, and it is an oracle-side cost
+  amortized across all members rather than a per-member cost.
+
+## The trusted-setup question, stated precisely
+
+A transparent FRI-based system removes the ceremony and the structured key, which is a real operational
+and liveness win for a permissionless community with no natural ceremony coordinator. Two honest
+caveats keep the claim from being oversold.
+
+- It is not a soundness upgrade. It trades a one-time Powers of Tau assumption, which holds if a single
+  ceremony participant was honest, for conjectural FRI and Fiat-Shamir soundness plus the collision
+  resistance of a younger arithmetization-friendly hash.
+- It is silently reversible. To shrink a proof, a zkVM wraps its STARK in a Groth16 or PLONK proof,
+  which brings a setup back. Verification here is off-chain on a small server and tolerates a large
+  proof, so the honest position is to ship the raw unwrapped proof and pin "no wrapper" as a design
+  constraint, which keeps the no-setup property true. At community scale, a few thousand proofs per
+  multi-hour window at tens of milliseconds each is seconds of parallelizable CPU, so no wrapper is
+  needed for throughput either.
+
+## Phase 0, the ablation-first benchmark
+
+Before committing to any rewrite, run one competitive benchmark, on the worst-case masternode hardware
+floor, with a hard memory cap, against the null baseline of hosting the current key. For each candidate,
+measure proof time, peak prover memory, proof size, and gateway verification time. Run a same-backend
+ablation among the statement forms (derive the key, verify a standard signature, verify a recovered or
+transformed signature) so that cost is attributed to the right variable rather than inferred across
+incomparable designs. The candidate that fits the memory cap with the least new trust and the smallest
+per-member artifact wins. Only then is the full replacement of the circom and snarkjs proving layer worth
+starting. This is the "validate the most consequential assumption with a thin end-to-end slice before
+treating the architecture as settled" discipline, applied to the one number, prover memory, that decides
+the outcome.
 
 ## The validation burden
 
-A new circuit has to prove the same statement as the current one, with the same public-signal
-semantics (nullifier, root, epoch, context hash, signal hash), or the security properties in the threat
-model no longer hold. So a migration needs an equivalence review of the new statement against the
-current one, a fresh security audit of the new prover and verifier, and a transition plan. The
-transition can run both stacks in parallel during a cutover, or cut over cleanly with a new key tag and
-a re-published oracle that uses the matching Merkle hash. A STARK removes the trusted setup entirely, so
-on that axis the move is a strict improvement over the current universal-setup PLONK, at the cost of
-depending on the virtual machine's own soundness and its accelerated operations.
+A new prover has to prove the same statement as the current one, with the same public-signal semantics
+(nullifier, root, epoch, context hash, signal hash), or the security properties in the threat model no
+longer hold. So a migration needs an equivalence review of the new statement against the current one, a
+fresh security audit of the new prover and verifier, and a transition plan. The transition can run both
+stacks in parallel during a cutover, or cut over cleanly with a new key tag and, if the hash changed, a
+re-published oracle that uses the matching Merkle hash. A transparent backend removes the trusted setup
+entirely, which on that axis is a strict improvement over the current universal-setup PLONK, at the cost
+of depending on the backend's own soundness and its accelerated operations.
 
 ## What not to do
 
-Do not move the proof to a service that receives the voting key. That deletes the 2.3 GB from the
-member but hands the key, and therefore which node they control, to the service, which is the exact
-disclosure the whole design avoids. A privacy-preserving version (multi-party or collaborative proving,
-where the key is secret-shared and no single party learns it) is a real research direction, but it adds
-heavy infrastructure and new trust and liveness assumptions, so it is not the near-term path.
+Do not move the proof to a service that receives the voting key. That deletes the 2.3 GB from the member
+but hands the key, and therefore which node they control, to the service, which is the exact disclosure
+the whole design avoids. A privacy-preserving version (multi-party or collaborative proving, where the
+key is secret-shared and no single party learns it) is a real research direction, but it adds heavy
+infrastructure and new trust and liveness assumptions, so it is not the near-term path.
 
 ## Why this is worth doing
 
