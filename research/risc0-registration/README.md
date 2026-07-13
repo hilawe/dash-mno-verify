@@ -66,17 +66,29 @@ committed.
 Two paths. Use the container path on this Mac, which has `docker` and `colima` but no native Rust or
 RISC Zero toolchain.
 
-### Container path (recommended here)
+### Container path
 
-    colima start                 # bring up the Linux VM that backs docker
-    cd research/risc0-registration
+Platform caveat, confirmed here on 2026-07-13: the RISC Zero toolchain has no linux/aarch64 build, and
+the `rzup` installer rejects it with "Unsupported architecture: linux/aarch64". So the plain container
+build fails on an Apple Silicon Mac, because colima runs an ARM64 Linux virtual machine. Two ways
+around it.
+
+On a native x86_64 Linux host, no platform flag is needed:
+
     docker build -t r0-registration .
-    docker run --rm r0-registration
+    docker run --rm --memory=16g r0-registration
+
+On an Apple Silicon (ARM64) host, build and run for amd64 under emulation, which works but is slow and
+gives numbers that are not representative, so use it only to confirm the build:
+
+    docker run --privileged --rm tonistiigi/binfmt --install amd64
+    docker build --platform linux/amd64 -t r0-registration research/risc0-registration
+    docker run --rm --platform linux/amd64 --memory=16g r0-registration
 
 The container runs `scripts/bench.sh`, which builds in release mode and runs the host under GNU
-`time -v`, so the output ends with a `Maximum resident set size` line. For a representative number, run
-the container on a host sized like a masternode (start with a 16 GB Linux box) rather than a laptop VM,
-and constrain memory with `docker run --memory=16g` to model the target.
+`time -v`, so the output ends with a `Maximum resident set size` line. For a representative Phase 0
+number, run on a native x86_64 Linux host sized like a masternode (start with a 16 GB box), or use the
+native macOS arm64 path below, not the emulated container.
 
 ### Native path
 
@@ -90,17 +102,21 @@ Install the toolchain, then build and run:
 On Linux `scripts/bench.sh` uses GNU `time -v`. On macOS it falls back to `/usr/bin/time -l`, whose
 `maximum resident set size` is in bytes.
 
-## Version alignment (read before the first build)
+## Version alignment
 
-The RISC Zero crate versions in the `Cargo.toml` files and the fork tags in the `[patch.crates-io]`
-block must all match one RISC Zero release. The versions committed here are placeholders. Set them to
-the release your `rzup` installed, following the current RISC Zero starter template, or the guest
-acceleration will silently not engage and the memory number will be wrong. This is the first thing to
-fix if the build fails or if the cycle count looks far larger than expected.
+The RISC Zero crate versions and the fork tags in the `[patch.crates-io]` block are set to the 3.0.5
+release, and cargo resolves them cleanly (verified 2026-07-13, the `k256`, `sha2`, and `crypto-bigint`
+entries resolve to the RISC Zero forks at the expected tags, so the guest acceleration will engage). If
+your `rzup` installs a different major or minor version, realign these to it following the current RISC
+Zero starter template, or the acceleration will silently not engage and the numbers will be wrong.
 
 ## Honest status
 
-This is a scaffold. It has not been compiled or run in this environment, because the Rust and RISC Zero
-toolchains are not installed here. The numbers must be taken on representative hardware. Treat a green
-build and a peak-memory line under the cap as the signal to keep RISC Zero in the Phase 0 benchmark, and
-a memory blow-past as the signal to weight the lookup-modernized SNARK and folding candidates instead.
+The dependency graph resolves cleanly against RISC Zero 3.0.5 (verified 2026-07-13 with cargo, in a
+Linux container), and the host prover API matches the current starter template. The host and guest code
+has NOT yet been compiled, because the RISC Zero toolchain has no linux/aarch64 build and this Apple
+Silicon Mac has no native Rust or RISC Zero toolchain (see the platform caveat above). The compile and
+any measured number still need a supported platform, a native x86_64 Linux box, a native macOS arm64
+build, or continuous integration. Treat a green build with a peak-memory line under the cap as the
+signal to keep RISC Zero in the Phase 0 benchmark, and a memory blow-past as the signal to weight the
+lookup-modernized SNARK and folding candidates instead.

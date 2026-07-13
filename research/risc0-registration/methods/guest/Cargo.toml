@@ -8,10 +8,11 @@ name = "registration"
 path = "src/main.rs"
 
 [dependencies]
-# Align the risc0-zkvm version with your installed RISC Zero release (see the top-level README).
-risc0-zkvm = { version = "1.2.0", default-features = false, features = ["std"] }
-k256 = { version = "0.13", default-features = false, features = ["arithmetic"] }
-sha2 = { version = "0.10", default-features = false }
+risc0-zkvm = { version = "3.0", default-features = false, features = ["std"] }
+# Exact pins so the [patch.crates-io] acceleration in the workspace Cargo.toml applies.
+k256 = { version = "=0.13.3", default-features = false, features = ["arithmetic"] }
+sha2 = { version = "=0.10.8", default-features = false }
+crypto-bigint = { version = "=0.5.5", default-features = false }
 ripemd = { version = "0.1", default-features = false }
 
 [profile.release]
