@@ -12,7 +12,10 @@ use k256::ecdsa::signature::hazmat::PrehashSigner;
 use k256::ecdsa::{Signature, SigningKey};
 use k256::elliptic_curve::sec1::ToEncodedPoint;
 use k256::SecretKey;
-use methods::{REGISTRATION_ELF, REGISTRATION_ID, REGISTRATION_SIG_ELF, REGISTRATION_SIG_ID};
+use methods::{
+    REGISTRATION_ELF, REGISTRATION_ID, REGISTRATION_REC_ELF, REGISTRATION_REC_ID,
+    REGISTRATION_SIG_ELF, REGISTRATION_SIG_ID,
+};
 use rand::rngs::OsRng;
 use ripemd::Ripemd160;
 use risc0_zkvm::{default_prover, ExecutorEnv, ProveInfo};
@@ -143,8 +146,50 @@ fn main() {
             info.receipt.verify(REGISTRATION_SIG_ID).expect("receipt failed to verify");
             report("sig", REGISTRATION_SIG_ELF, &info, elapsed);
         }
+        "rec" => {
+            // Efficient-ECDSA (recovery/hinted) form. The member signs in the wallet, and the host
+            // reformulates the signature into the hint T and U so the in-circuit check is the single
+            // scalar multiplication Q = s*T + U. The synthetic hint below satisfies that relation, so
+            // the guest incurs the real scalar-mult cost; computing T and U from a real signature is a
+            // production item, see the guest's cost note. The raw private key never enters the prover.
+            use k256::{ProjectivePoint, Scalar};
+            let sk = SecretKey::random(&mut OsRng);
+            let q_point: ProjectivePoint = sk.public_key().to_projective();
+            let q_bytes = sk.public_key().to_encoded_point(true).as_bytes().to_vec();
+            let key_id = hash160(&q_bytes);
+            let s: Scalar = *SecretKey::random(&mut OsRng).to_nonzero_scalar();
+            let h: Scalar = *SecretKey::random(&mut OsRng).to_nonzero_scalar();
+            let t_point: ProjectivePoint = ProjectivePoint::GENERATOR * h;
+            let u_point: ProjectivePoint = q_point - (t_point * s);
+            let s_bytes: Vec<u8> = {
+                let b: [u8; 32] = s.to_bytes().into();
+                b.to_vec()
+            };
+            let t_bytes = t_point.to_affine().to_encoded_point(true).as_bytes().to_vec();
+            let u_bytes = u_point.to_affine().to_encoded_point(true).as_bytes().to_vec();
+            let (siblings, bits, root) = build_merkle(&key_id);
+            let env = ExecutorEnv::builder()
+                .write(&q_bytes).unwrap()
+                .write(&s_bytes).unwrap()
+                .write(&t_bytes).unwrap()
+                .write(&u_bytes).unwrap()
+                .write(&siblings).unwrap()
+                .write(&bits).unwrap()
+                .write(&root).unwrap()
+                .write(&epoch).unwrap()
+                .write(&context_hash).unwrap()
+                .write(&signal_hash).unwrap()
+                .build()
+                .unwrap();
+            eprintln!("[rec] proving (tree depth {TREE_DEPTH}) ...");
+            let start = Instant::now();
+            let info = default_prover().prove(env, REGISTRATION_REC_ELF).expect("proving failed");
+            let elapsed = start.elapsed();
+            info.receipt.verify(REGISTRATION_REC_ID).expect("receipt failed to verify");
+            report("rec", REGISTRATION_REC_ELF, &info, elapsed);
+        }
         other => {
-            eprintln!("unknown mode '{other}', use 'derive' or 'sig'");
+            eprintln!("unknown mode '{other}', use 'derive', 'sig', or 'rec'");
             std::process::exit(2);
         }
     }
