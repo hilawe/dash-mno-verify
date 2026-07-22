@@ -60,3 +60,9 @@ jobs:
         run: |
           echo "the Maximum resident set size line below is the Phase 0 gate number (sig)"
           /usr/bin/time -v ./target/release/host sig
+
+      - name: Recovery/hinted statement, peak-memory measurement
+        working-directory: research/risc0-registration
+        run: |
+          echo "the Maximum resident set size line below is the Phase 0 gate number (rec)"
+          /usr/bin/time -v ./target/release/host rec

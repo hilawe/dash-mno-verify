@@ -17,6 +17,10 @@ path = "src/main.rs"
 name = "registration_sig"
 path = "src/bin/registration_sig.rs"
 
+[[bin]]
+name = "registration_rec"
+path = "src/bin/registration_rec.rs"
+
 [dependencies]
 risc0-zkvm = { version = "3.0", default-features = false, features = ["std"] }
 # Default features on, matching the RISC Zero precompile documentation, so the sec1

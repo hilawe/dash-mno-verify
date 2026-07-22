@@ -131,6 +131,41 @@ These pull against each other. The clean private-key nullifier wants the key in 
 hygiene wants it out, so decide by measuring prover cost and then honoring the nullifier-soundness
 constraint, rather than by fixing the statement first.
 
+## Phase 0 results, measured on RISC Zero
+
+The prototype in `research/risc0-registration/` implements the registration statement in the RISC Zero
+zkVM and measures three variants on continuous integration, on an x86_64 runner sized like a
+masternode-class box. The heavy proof runs once per season, and the peak resident memory is the gate
+number.
+
+| Variant | Key custody | Peak RAM | Trace segment | Proving time |
+| --- | --- | --- | --- | --- |
+| Derive the key, `P = d*G` | raw key enters the prover | 4.8 GB | 2^19 | 4.6 min |
+| Verify a wallet signature | key stays in the wallet | 9.6 GB | 2^20 | 9.2 min |
+| Efficient-ECDSA, recovery-hinted | key stays in the wallet | 9.6 GB | 2^20 | 9.1 min |
+
+The result is decisive and partly negative. Deriving the key fits a 4.8 GB footprint, small enough for
+an 8 GB machine, but it requires the raw voting key inside the prover. Both wallet-custody variants,
+where the key never leaves the wallet, land at 9.6 GB, which needs a 16 GB machine. The efficient-ECDSA
+form was expected to halve the elliptic-curve work relative to a full signature verification and so
+approach the derive cost. It did reduce the arithmetic, but it did not reduce the memory. Its single
+scalar multiplication is variable-base, heavier than the derive path's fixed-base multiplication with
+generator precomputation, and parsing the hint points requires point decompressions. Those extra field
+operations push the execution trace over the boundary between the zkVM's 2^19 and 2^20 segment sizes,
+and the prover memory is set by that power-of-two segment, so the recovery variant lands in the same
+2^20 bucket as the full verification and takes the same 9.6 GB.
+
+So on this zkVM, wallet custody costs about 9.6 GB whichever of the two forms is used, and only key
+export reaches 4.8 GB. The savings of the efficient-ECDSA reformulation are real in a purpose-built
+circuit, the published spartan-ecdsa work reaches about 8,000 constraints for this exact relation, but a
+zkVM's fixed overhead and segment quantization absorb the win. Cheap wallet custody is therefore
+reachable, but through a hand-built efficient-ECDSA circuit in a system like Spartan or halo2, a larger
+effort on a different stack, not a variant swap inside the zkVM.
+
+The design position that follows has two measured options, deriving the key at 4.8 GB with the key in
+the prover, or wallet custody at 9.6 GB needing a 16 GB machine. Cheap wallet custody is a research bet
+on a custom circuit rather than a near-term result.
+
 ## Roots and hashes, no forced migration and no in-circuit bridge
 
 Switching the membership tree to a SNARK-friendly hash is not forced, and no in-circuit proof that a
