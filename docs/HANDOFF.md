@@ -91,8 +91,11 @@ prioritized punch list.
    (receipt-path measurement), both inside `research/` and the bench.
    The still-open owner decision is whether to fund the purpose-built efficient-ECDSA circuit as
    the wallet-custody research track.
-3. The P1 remainder in `TODO.md`, chiefly the chain-anchored (SPV) oracle, the Platform-backed
-   claim commitment, and Matrix private-room verification.
+3. The P1 remainder in `TODO.md`, chiefly direct node mode (the 2026-07-23 reframe of the
+   chain-anchor question after community review input: the gateway reads the DML from its own
+   trusted Core node at the last ChainLocked block, removing oracle-key trust for the common case,
+   with SPV nodeless verification demoted to deferred research), the Platform-backed claim
+   commitment, and Matrix private-room verification.
 4. P2 quality items in `TODO.md`.
 
 ## History
