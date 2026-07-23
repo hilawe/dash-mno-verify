@@ -40,17 +40,23 @@ jobs:
           curl -L https://risczero.com/install | bash
           echo "$HOME/.risc0/bin" >> "$GITHUB_PATH"
 
-      - name: rzup install (pinned release)
-        # Pin the RISC Zero release so a fresh runner cannot compile different guest bytes,
-        # a different image id, or a different acceleration profile than the recorded numbers
-        # (review finding, reproducibility). RISC0_RELEASE is the single knob; bump it
-        # deliberately and re-measure.
+      - name: rzup install (pinned component versions)
+        # Pin each RISC Zero component to the exact version the recorded measurements used, so
+        # a fresh runner cannot compile different guest bytes, a different image id, or a
+        # different acceleration profile (review finding, reproducibility). These are
+        # per-component version strings (NOT one umbrella release number), recovered from a
+        # green run's install log; bump them deliberately and re-measure. r0vm sets the prover
+        # and the guest image id, cargo-risczero and rust set the guest build.
         env:
-          RISC0_RELEASE: "3.0.5"
+          R0VM_VERSION: "3.0.6"
+          CARGO_RISCZERO_VERSION: "3.0.6"
+          RUST_GUEST_VERSION: "1.97.0"
+          CPP_VERSION: "2024.1.5"
         run: |
-          rzup install rust "$RISC0_RELEASE"
-          rzup install r0vm "$RISC0_RELEASE"
-          rzup install cpp || true
+          rzup install r0vm "$R0VM_VERSION"
+          rzup install cargo-risczero "$CARGO_RISCZERO_VERSION"
+          rzup install rust "$RUST_GUEST_VERSION"
+          rzup install cpp "$CPP_VERSION" || true
 
       - name: Record toolchain and dependency versions
         working-directory: research/risc0-registration
