@@ -9,7 +9,11 @@ prioritized punch list.
 
 ### Where things stand
 
-- `main` is at `68d9d77`, working tree clean, 124 tests green (`npm test`, about two minutes).
+- 128 tests green (`npm test`, about two minutes).
+- 2026-07-23, the oracle snapshot assembly is factored into `oracle/snapshot.js` behind an
+  injectable `call()`, the height/list race guard is pinned by fixture tests in
+  `test/oracle_snapshot.test.js`, and the README consistency pass is done (the `masternodelist json`
+  reference and a current "what remains" list).
 - The security arc from the 2026-06-26 adversarial review is done. B1 (account relay), B2
   (context-scoped members trees), M1 (nullifier malleability), M2 (season-rollover race), M3 (oracle
   root hardening and signed snapshots), and M5 (gateway authentication) are all closed. See the
@@ -53,18 +57,21 @@ prioritized punch list.
 
 ### Punch list, in order
 
-1. Operator-only, host the two 2.3 GB proving keys once. Rebuild with
-   `scripts/rebuild_proving_keys.sh`, upload to object storage or IPFS, and fill `url` and `sha256`
-   under `largeFiles` in `keys.manifest.json`, so members download rather than rebuild. This cannot
-   be done from an agent session (no built keys, no hosting account).
-2. Decide the follow-on to Phase 0. The measurement points at a hand-built efficient-ECDSA circuit
-   (Spartan or halo2 class) as the only route to cheap wallet custody. Whether to invest in that
-   track, or ship with the two measured options (derive at 4.8 GB with the key in the prover, or
-   wallet custody on a 16 GB machine), is a design decision for the owner.
-3. The P1 remainder in `TODO.md`, chiefly the oracle snapshot testability item, the chain-anchored
-   (SPV) oracle, the Platform-backed claim commitment, and Matrix private-room verification.
-4. P2 quality and P3 docs items in `TODO.md`, including the README consistency pass (`protx list`
-   vs `masternodelist json`, and the stale "what remains" list).
+1. Operator-only, host the two 2.3 GB proving keys once. Rebuild each with
+   `scripts/build_proving_key.sh <circuit>` (the non-promoting path, which verifies the rebuild
+   against the committed verification key without touching it), upload to object storage or IPFS,
+   and fill `url` and `sha256` under `largeFiles` in `keys.manifest.json`, so members download
+   rather than rebuild. This cannot be done from an agent session (no built keys, no hosting
+   account).
+2. The Phase 0 statement decision is made (2026-07-23). The 9.6 GB wallet-custody variants are
+   rejected as exceeding acceptable member hardware, and the derive-the-key statement at 4.8 GB is
+   the chosen path, recorded in the design-position paragraph of `docs/REDUCING_PROVING_COST.md`.
+   What follows from it, in order, is integrating the zkVM derive path (gateway verifier support and
+   a member proving flow, replacing the 2.3 GB download), and the still-open owner decision on
+   whether to fund the purpose-built efficient-ECDSA circuit as the wallet-custody research track.
+3. The P1 remainder in `TODO.md`, chiefly the chain-anchored (SPV) oracle, the Platform-backed
+   claim commitment, and Matrix private-room verification.
+4. P2 quality items in `TODO.md`.
 
 ## History
 

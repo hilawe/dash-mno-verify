@@ -162,9 +162,15 @@ zkVM's fixed overhead and segment quantization absorb the win. Cheap wallet cust
 reachable, but through a hand-built efficient-ECDSA circuit in a system like Spartan or halo2, a larger
 effort on a different stack, not a variant swap inside the zkVM.
 
-The design position that follows has two measured options, deriving the key at 4.8 GB with the key in
-the prover, or wallet custody at 9.6 GB needing a 16 GB machine. Cheap wallet custody is a research bet
-on a custom circuit rather than a near-term result.
+The design position that follows is decided. The 9.6 GB wallet-custody variants are rejected, because
+a 16 GB member-hardware requirement exceeds what a masternode-class box can be assumed to have, and a
+proving path that only works on upgraded hardware fails the adoption goal this whole track exists to
+serve. Deriving the key at 4.8 GB is the chosen statement. It fits an 8 GB machine, it removes the
+2.3 GB proving-key download entirely (a zkVM has no structured per-circuit key), and its custody
+posture matches what the current PLONK prover already requires, the voting key used locally by a
+prover on the member's own machine or masternode, so nothing gets worse for the member. Wallet
+custody, where the key never enters the prover, remains a research bet on a purpose-built
+efficient-ECDSA circuit (the spartan-ecdsa-class effort above), not a near-term option.
 
 ## Roots and hashes, no forced migration and no in-circuit bridge
 
