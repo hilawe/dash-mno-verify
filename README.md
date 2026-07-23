@@ -37,11 +37,11 @@ No party links a platform identity to an on-chain address. That is the property 
 
 ## Repo layout
 
-- `oracle/` reads `protx list` and emits the Merkle root over voting keys.
-- `circuits/` the Circom membership circuit and its build notes.
+- `oracle/` reads `masternodelist json` from Dash Core and emits the Merkle root over voting keys.
+- `circuits/` the five Circom circuits and their build notes.
 - `core/` the platform-neutral verification gateway (challenge plus verify).
-- `adapters/discord/` the first platform adapter.
-- `prover/` the client-side proof generator that runs on the member's machine.
+- `adapters/` the four platform adapters (Discord, Telegram, Matrix, web).
+- `prover/` the client-side proof generators (single-tier and two-tier) that run on the member's machine.
 - `contract/` an optional Dash Platform data contract for decentralizing the root and nullifier state.
 - `docs/` the design writeup, the threat model, and proving-key distribution.
 
@@ -51,10 +51,10 @@ Early but runnable end to end. The full single-tier `mno_membership.circom` comp
 
 The CI `circuits` job compiles every circuit on each push, the full membership circuit included, and validates the in-circuit hash160 against a known vector, so the in-circuit leaf provably equals the off-chain one.
 
-What remains before gating anything of value:
+What remains before gating anything of value (`TODO.md` holds the full prioritized list):
 
-1. Build or distribute the PLONK proving key and the circuit wasm to provers. The key is reproducible from public inputs with `scripts/build_proving_key.sh`, which checks the rebuilt key against the committed verification key, so it does not need hosting. See `docs/PROVING_KEY.md`.
-2. Harden the operational pieces: run the oracle against a real Dash node, and move the root and nullifier state onto the Platform contract if you want several gateways to share it. The single-tier versus two-tier choice is now measured (about 63x faster per-epoch with two-tier, 6.7s versus minutes) and both are wired, so pick `MNO_MODE` per deployment.
+1. Host the two large proving keys so members download rather than rebuild. Each key is reproducible from public inputs with `scripts/build_proving_key.sh <circuit>`, which checks the rebuilt key against the committed verification key without touching it (`scripts/rebuild_proving_keys.sh` is the separate promote path that overwrites the committed keys after an intentional circuit change), and `scripts/fetch_keys.sh` verifies a hosted copy against `keys.manifest.json`. See `docs/PROVING_KEY.md`, and `docs/REDUCING_PROVING_COST.md` for the measured research track on shrinking the member-side proving cost at the source.
+2. Finish the remaining operational hardening: the shared Dash Platform registration backend for multi-gateway deployments, anchoring the oracle to the chain itself (today a quorum of pinned oracle keys signs each snapshot), and an audit. The single-tier versus two-tier choice is measured (about 63x faster per-epoch with two-tier, 6.7s versus minutes) and both are wired, so pick `MNO_MODE` per deployment.
 
 ## Quickstart
 
