@@ -9,11 +9,20 @@ prioritized punch list.
 
 ### Where things stand
 
-- 128 tests green (`npm test`, about two minutes).
+- 133 tests green (`npm test`, about two minutes).
 - 2026-07-23, the oracle snapshot assembly is factored into `oracle/snapshot.js` behind an
-  injectable `call()`, the height/list race guard is pinned by fixture tests in
-  `test/oracle_snapshot.test.js`, and the README consistency pass is done (the `masternodelist json`
-  reference and a current "what remains" list).
+  injectable `call()`, with the tip-consistency guard pinned by fixture tests in
+  `test/oracle_snapshot.test.js`, and the README consistency pass is done.
+- 2026-07-23, a full multi-reviewer round over that change set was folded. The real findings and
+  their fixes: the tip guard now compares block hash as well as height, so a same-height branch
+  swap mid-read forces a retry instead of publishing a torn signed snapshot, with a retry backoff
+  for a syncing node; a golden-snapshot test pins the exact field set, order, and serialization,
+  plus a signing smoke test; a voting address decoding to the empty-leaf value is refused; the
+  shared tree hasher moved to `common/dml_root.js` (a re-export shim keeps `core/dml_root.js`
+  imports working); the README quickstart now sets `MNO_ALLOW_UNSIGNED_ORACLE=1` so the advertised
+  path actually boots; and the cost doc's acceptance-bar history was reconciled (see below). One
+  reviewer packet came back reviewing a different project entirely and was discarded, so a fresh
+  run of that packet is still owed.
 - The security arc from the 2026-06-26 adversarial review is done. B1 (account relay), B2
   (context-scoped members trees), M1 (nullifier malleability), M2 (season-rollover race), M3 (oracle
   root hardening and signed snapshots), and M5 (gateway authentication) are all closed. See the
@@ -65,10 +74,13 @@ prioritized punch list.
    account).
 2. The Phase 0 statement decision is made (2026-07-23). The 9.6 GB wallet-custody variants are
    rejected as exceeding acceptable member hardware, and the derive-the-key statement at 4.8 GB is
-   the chosen path, recorded in the design-position paragraph of `docs/REDUCING_PROVING_COST.md`.
-   What follows from it, in order, is integrating the zkVM derive path (gateway verifier support and
-   a member proving flow, replacing the 2.3 GB download), and the still-open owner decision on
-   whether to fund the purpose-built efficient-ECDSA circuit as the wallet-custody research track.
+   the chosen path, recorded with the acceptance-bar history in `docs/REDUCING_PROVING_COST.md`.
+   Two follow-ons before integration is claimed: the 8 GB-cap confirmation run (the 4.8 GB peak was
+   measured on a 16 GB runner, so the 8 GB fit is inferred, not demonstrated), and the integration
+   scope in `TODO.md` (the measured guest is a benchmark statement, its journal does not yet match
+   the registration publics and its tree hash differs, so wiring it in starts with a design pass).
+   The still-open owner decision is whether to fund the purpose-built efficient-ECDSA circuit as
+   the wallet-custody research track.
 3. The P1 remainder in `TODO.md`, chiefly the chain-anchored (SPV) oracle, the Platform-backed
    claim commitment, and Matrix private-room verification.
 4. P2 quality items in `TODO.md`.

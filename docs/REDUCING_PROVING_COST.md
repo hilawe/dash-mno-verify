@@ -57,10 +57,19 @@ which means a different proving backend, a different arithmetization, or both.
 The single measurement that decides the whole question is peak prover memory for the heavy
 once-per-season registration proof on masternode-class hardware. Independent estimates for a non-native
 secp256k1 scalar multiplication in a transparent prover scatter widely, from single-digit to tens of
-gigabytes, which is itself the reason it must be measured rather than assumed. An 8 GB node is not a
-credible target and 16 GB is plausible but not guaranteed. Treat a peak above roughly 12 GB on a 16 GB
-node as that option failing, and fall back to the lookup-modernized universal-setup SNARK below, whose
-per-circuit key is far smaller than 2.3 GB even though it does not reach zero.
+gigabytes, which is itself the reason it must be measured rather than assumed.
+
+The acceptance bar moved once, and the record of both versions is kept here. As pre-declared before
+the measurement, an 8 GB node was written off as not credible, 16 GB was treated as the plausible
+target, and the failure line was a peak above roughly 12 GB on a 16 GB node. The measured results
+then came in low enough to make an 8 GB node reachable, and the bar was tightened (owner decision,
+2026-07-23) to fitting an 8 GB machine, on the grounds that requiring members to hold 16 GB boxes
+fails the adoption goal this track serves. Under the original bar the 9.6 GB variants pass, and under
+the tightened bar they fail, which is why the decision below rejects them. One caveat travels with
+the tightened bar. The 4.8 GB figure is the prover's peak resident memory on a 16 GB x86_64 CI
+runner, so "fits an 8 GB machine" is an inference from headroom, not yet a demonstration, and it
+assumes the box is not simultaneously running a memory-hungry Dash Core at full cache. Confirming it
+takes one run of the derive variant under an enforced 8 GB memory cap (tracked in TODO.md).
 
 ## The candidates
 
@@ -144,8 +153,9 @@ number.
 | Verify a wallet signature | key stays in the wallet | 9.6 GB | 2^20 | 9.2 min |
 | Efficient-ECDSA, recovery-hinted | key stays in the wallet | 9.6 GB | 2^20 | 9.1 min |
 
-The result is decisive and partly negative. Deriving the key fits a 4.8 GB footprint, small enough for
-an 8 GB machine, but it requires the raw voting key inside the prover. Both wallet-custody variants,
+The result is decisive and partly negative. Deriving the key fits a 4.8 GB footprint, which puts an
+8 GB machine in reach (pending the capped confirmation run described in the gate section above), but
+it requires the raw voting key inside the prover. Both wallet-custody variants,
 where the key never leaves the wallet, land at 9.6 GB, which needs a 16 GB machine. The efficient-ECDSA
 form was expected to halve the elliptic-curve work relative to a full signature verification and so
 approach the derive cost. It did reduce the arithmetic, but it did not reduce the memory. Its single
@@ -162,15 +172,17 @@ zkVM's fixed overhead and segment quantization absorb the win. Cheap wallet cust
 reachable, but through a hand-built efficient-ECDSA circuit in a system like Spartan or halo2, a larger
 effort on a different stack, not a variant swap inside the zkVM.
 
-The design position that follows is decided. The 9.6 GB wallet-custody variants are rejected, because
-a 16 GB member-hardware requirement exceeds what a masternode-class box can be assumed to have, and a
-proving path that only works on upgraded hardware fails the adoption goal this whole track exists to
-serve. Deriving the key at 4.8 GB is the chosen statement. It fits an 8 GB machine, it removes the
-2.3 GB proving-key download entirely (a zkVM has no structured per-circuit key), and its custody
-posture matches what the current PLONK prover already requires, the voting key used locally by a
-prover on the member's own machine or masternode, so nothing gets worse for the member. Wallet
-custody, where the key never enters the prover, remains a research bet on a purpose-built
-efficient-ECDSA circuit (the spartan-ecdsa-class effort above), not a near-term option.
+The design position that follows is decided. The 9.6 GB wallet-custody variants are rejected under
+the tightened acceptance bar above, because a 16 GB member-hardware requirement exceeds what a
+masternode-class box can be assumed to have, and a proving path that only works on upgraded hardware
+fails the adoption goal this whole track exists to serve. Deriving the key at a measured 4.8 GB
+prover peak is the chosen statement. It is expected to fit an 8 GB machine, pending the capped
+confirmation run described above, it removes the 2.3 GB proving-key download entirely (a zkVM has no
+structured per-circuit key), and its custody posture matches what the current PLONK prover already
+requires, the voting key used locally by a prover on the member's own machine or masternode, so
+nothing gets worse for the member. Wallet custody, where the key never enters the prover, remains a
+research bet on a purpose-built efficient-ECDSA circuit (the spartan-ecdsa-class effort above), not a
+near-term option.
 
 ## Roots and hashes, no forced migration and no in-circuit bridge
 

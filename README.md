@@ -70,9 +70,12 @@ SECRET=$(openssl rand -hex 32)       # the shared adapter token; keep it somewhe
 npm run oracle                       # writes oracle/root.json
 
 # 2) run the verification gateway (its own terminal)
-MNO_ADAPTER_SECRET="$SECRET" npm run gateway          # listens on :8787
-#    Local demo only: run it open on purpose (it otherwise refuses to start unauthenticated).
-# MNO_ALLOW_UNAUTH_GATEWAY=1 npm run gateway
+#    Local demo only: MNO_ALLOW_UNSIGNED_ORACLE=1 trusts the unsigned root.json from step 1 on
+#    purpose (the gateway otherwise refuses to start without pinned oracle keys). A real deployment
+#    signs the snapshot and pins MNO_ORACLE_PUBKEYS instead; see docs/DEPLOY.md.
+MNO_ALLOW_UNSIGNED_ORACLE=1 MNO_ADAPTER_SECRET="$SECRET" npm run gateway   # listens on :8787
+#    Also local-demo only: run it open, without the adapter token requirement.
+# MNO_ALLOW_UNSIGNED_ORACLE=1 MNO_ALLOW_UNAUTH_GATEWAY=1 npm run gateway
 
 # 3) run a platform adapter (Discord shown here) in another terminal, with the SAME secret
 MNO_ADAPTER_SECRET="$SECRET" npm run bot
