@@ -1,15 +1,20 @@
 name: zkvm-vectors
 
-# Work-plan step 1 of docs/ZKVM_INTEGRATION.md, the Rust half of the cross-implementation
-# golden vectors. Runs light-poseidon and the SHA-256 tree spec against the constants that
-# test/zkvm_vectors.test.js pins from circomlibjs. A plain cargo test, no zkVM toolchain,
-# so it is cheap enough to run on every change to the research workspace. This passing is
-# the design's hard prerequisite (circomlib-compatible Poseidon in Rust).
+# Work-plan step 1 of docs/ZKVM_INTEGRATION.md, the cross-implementation golden vectors.
+# Both halves run in ONE job so a change to either side is checked against the other, and
+# the shared fixture test/vectors/zkvm_golden.json is the single source both consume. A
+# plain cargo test plus a node test, no zkVM toolchain, cheap enough to run on every change
+# to either implementation, the shared fixture, or the field and tree helpers.
 on:
   workflow_dispatch:
   push:
     paths:
-      - "research/risc0-registration/**"
+      - "research/risc0-registration/vectors/**"
+      - "test/zkvm_vectors.test.js"
+      - "test/vectors/zkvm_golden.json"
+      - "common/dml.js"
+      - "common/field.js"
+      - "docs/ZKVM_INTEGRATION.md"
       - ".github/workflows/zkvm-vectors.yml"
 
 jobs:
@@ -17,6 +22,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Poseidon and tree-spec golden vectors
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: JavaScript side (regenerates the fixture from circomlibjs and compares)
+        run: |
+          npm ci --omit=optional
+          node --test test/zkvm_vectors.test.js
+      - name: Rust side (reproduces the same fixture with light-poseidon and sha2)
         working-directory: research/risc0-registration
-        run: cargo test -p vectors --release
+        run: cargo test -p vectors --release --locked

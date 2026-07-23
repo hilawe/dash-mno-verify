@@ -1,39 +1,28 @@
 // Golden vectors for the zkVM integration, work-plan step 1 of docs/ZKVM_INTEGRATION.md.
 //
-// This is the circomlibjs half of the cross-implementation pin. The identical constants live
-// in research/risc0-registration/vectors/src/lib.rs, where the Rust side (light-poseidon and
-// sha2) must reproduce them. This side proves the constants really are what circomlibjs, the
-// reference the circuits are built against, computes, so neither suite can drift alone.
+// The single source both suites consume is the committed fixture
+// test/vectors/zkvm_golden.json. This test REGENERATES every value from circomlibjs (the
+// reference the circuits are built against) and byte-compares against the fixture, so the
+// fixture cannot drift from the reference. The Rust side
+// (research/risc0-registration/vectors/) parses the same file and must reproduce it with
+// light-poseidon and sha2, so neither implementation can drift alone, and neither side
+// holds its own copy of the constants.
 //
-// Poseidon forms pinned: Poseidon(secret) (the member commitment) and
-// Poseidon(Poseidon(d_limbs), season, contextHash) (the registration nullifier), with the
-// 4x64 little-endian limb layout of prover/two_tier.js. SHA-256 tree spec pinned: leaf =
-// SHA-256(0x00 || keyID20), node = SHA-256(0x01 || left || right), empty leaf = 20 zero
-// bytes, depth 16.
+// The fixture also carries the complete 136-byte journal for the pinned witness, built
+// here with independent field encoding (BigInt to big-endian hex by hand), so a shared
+// layout mistake between the Rust host and the Rust guest cannot hide.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { buildPoseidon } from "circomlibjs";
 import { leafFromPriv } from "../common/dml.js";
 import { FIELD_PRIME } from "../common/field.js";
 
-const VECTORS = {
-  poseidon1_of_1: "18586133768512220936620570745912940619677854269274689475585506675881198879027",
-  poseidon1_of_pMinus1: "3366645945435192953002076803303112651887535928162668198103357554665518664470",
-  kh_d1: "12367897091404705650828429310777103242839675713861485408658822466779430954331",
-  kh_d2: "17733228908332928336250677456484071725019237794152871801635728024063440347582",
-  rn_d1: "15227301960485994341830905575422680556053229133647037318432828740967973824578",
-  rn_d2: "5331113805761365827444637754639205013995575527913347682073454633956069601495",
-  genKeyidHex: "751e76e8199196d454941c45d1b3a323f1433bd6",
-  emptyLeafHashHex: "c90232586b801f9558a76f2f963eccd831d9fe6775e4c8f1446b2331aa2132f2",
-  emptyDepth16Hex: "aea2c3f1ca4e45228d7905549472467b418662bf5736df886e474a2aeade070b",
-  rootTwoLeavesHex: "6c0f8060bd905e707dacb197e739b7915d683842711ce16ffeae4ae6d9e51e66",
-};
+const FIXTURE = JSON.parse(readFileSync(new URL("./vectors/zkvm_golden.json", import.meta.url)));
 
 // d = n - 2 (secp256k1 group order minus 2), a canonical key near the top of the range.
 const D2 = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd036413fn;
-const SEASON = 7n;
-const CONTEXT = 999n;
 
 // The limb layout of prover/two_tier.js privToLimbs: 4 little-endian 64-bit limbs.
 const limbs = (d) => {
@@ -45,44 +34,64 @@ const sha = (buf) => createHash("sha256").update(buf).digest();
 const leafHash = (keyid20) => sha(Buffer.concat([Buffer.from([0x00]), keyid20]));
 const nodeHash = (l, r) => sha(Buffer.concat([Buffer.from([0x01]), l, r]));
 
-test("Poseidon commitment form matches the pinned vectors", async () => {
-  const p = await buildPoseidon();
-  const out = (x) => p.F.toObject(x).toString();
-  assert.equal(out(p([1n])), VECTORS.poseidon1_of_1);
-  assert.equal(out(p([FIELD_PRIME - 1n])), VECTORS.poseidon1_of_pMinus1);
-});
+// Independent journal field encoding, deliberately NOT shared with any implementation
+// under test: decimal string to 32-byte big-endian hex by hand.
+const be32hex = (dec) => BigInt(dec).toString(16).padStart(64, "0");
+const be8hex = (n) => BigInt(n).toString(16).padStart(16, "0");
 
-test("Poseidon limb and nullifier forms match the pinned vectors", async () => {
+test("the fixture's Poseidon values regenerate exactly from circomlibjs", async () => {
   const p = await buildPoseidon();
   const F = p.F;
   const out = (x) => F.toObject(x).toString();
 
+  assert.equal(out(p([1n])), FIXTURE.poseidon1_of_1);
+  assert.equal(out(p([FIELD_PRIME - 1n])), FIXTURE.poseidon1_of_pMinus1);
+
   const kh1 = p(limbs(1n).map((x) => F.e(x)));
   const kh2 = p(limbs(D2).map((x) => F.e(x)));
-  assert.equal(out(kh1), VECTORS.kh_d1);
-  assert.equal(out(kh2), VECTORS.kh_d2);
-  assert.equal(out(p([kh1, F.e(SEASON), F.e(CONTEXT)])), VECTORS.rn_d1);
-  assert.equal(out(p([kh2, F.e(SEASON), F.e(CONTEXT)])), VECTORS.rn_d2);
+  assert.equal(out(kh1), FIXTURE.kh_d1);
+  assert.equal(out(kh2), FIXTURE.kh_d2);
+
+  const season = F.e(BigInt(FIXTURE.season));
+  const ctx = F.e(BigInt(FIXTURE.contextHash));
+  assert.equal(out(p([kh1, season, ctx])), FIXTURE.rn_d1);
+  assert.equal(out(p([kh2, season, ctx])), FIXTURE.rn_d2);
 });
 
-test("the generator keyID constant matches the repository's own leaf derivation", () => {
+test("the fixture's generator keyID matches the repository's own leaf derivation", () => {
   const priv = Buffer.alloc(32);
   priv[31] = 1;
   const leaf = leafFromPriv(Uint8Array.from(priv));
-  assert.equal(leaf.toString(16).padStart(40, "0"), VECTORS.genKeyidHex);
+  assert.equal(leaf.toString(16).padStart(40, "0"), FIXTURE.genKeyidHex);
 });
 
-test("the SHA-256 tree spec matches the pinned vectors", () => {
+test("the fixture's SHA-256 tree values regenerate from the pinned spec, both directions", () => {
   const emptyLeaf = leafHash(Buffer.alloc(20));
-  assert.equal(emptyLeaf.toString("hex"), VECTORS.emptyLeafHashHex);
+  assert.equal(emptyLeaf.toString("hex"), FIXTURE.emptyLeafHashHex);
 
   const empty = [emptyLeaf];
   for (let i = 1; i <= 16; i++) empty.push(nodeHash(empty[i - 1], empty[i - 1]));
-  assert.equal(empty[16].toString("hex"), VECTORS.emptyDepth16Hex);
+  assert.equal(empty[16].toString("hex"), FIXTURE.emptyDepth16Hex);
 
-  const genKeyid = Buffer.from(VECTORS.genKeyidHex, "hex");
+  const genKeyid = Buffer.from(FIXTURE.genKeyidHex, "hex");
   const keyid2 = Buffer.alloc(20, 2);
-  let cur = nodeHash(leafHash(genKeyid), leafHash(keyid2));
-  for (let i = 1; i < 16; i++) cur = nodeHash(cur, empty[i]);
-  assert.equal(cur.toString("hex"), VECTORS.rootTwoLeavesHex);
+  let left = nodeHash(leafHash(genKeyid), leafHash(keyid2));
+  let right = nodeHash(leafHash(keyid2), leafHash(genKeyid));
+  for (let i = 1; i < 16; i++) {
+    left = nodeHash(left, empty[i]);
+    right = nodeHash(right, empty[i]);
+  }
+  assert.equal(left.toString("hex"), FIXTURE.rootTwoLeavesHex);
+  assert.equal(right.toString("hex"), FIXTURE.rootTwoLeavesRightHex);
+});
+
+test("the complete 136-byte journal regenerates from independently encoded fields", () => {
+  const journal =
+    be32hex(FIXTURE.poseidon1_of_1) +
+    be32hex(FIXTURE.rn_d1) +
+    FIXTURE.rootTwoLeavesHex +
+    be8hex(FIXTURE.season) +
+    be32hex(FIXTURE.contextHash);
+  assert.equal(journal.length, 272);
+  assert.equal(journal, FIXTURE.journalLeftHex);
 });

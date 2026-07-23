@@ -13,7 +13,20 @@ prioritized punch list.
 - 2026-07-23, the oracle snapshot assembly is factored into `oracle/snapshot.js` behind an
   injectable `call()`, with the tip-consistency guard pinned by fixture tests in
   `test/oracle_snapshot.test.js`, and the README consistency pass is done.
-- 2026-07-23, a full multi-reviewer round over that change set was folded. The real findings and
+- 2026-07-23, zkVM track progress. Guest v2 (the production five-claim statement) is built and its
+  journal matched the circomlibjs-pinned bytes on CI. It measured 9.6 GB and 77 minutes at default
+  segments (the three in-guest Poseidon hashes cost about 26x the accelerated remainder) and failed
+  the 8 GB cap, so the fit now rests on the in-flight `segment_limit_po2 = 19` reruns, and the
+  wallet-custody rejection reopens if those bring the 9.6 GB variants down too. A full multi-reviewer
+  round (Codex CLI, Codex app, Gemini, Grok) over the whole zkVM surface found no statement-soundness
+  hole and was folded: one shared golden fixture (`test/vectors/zkvm_golden.json`) both suites
+  regenerate and compare, an executor-only guest soundness gate (`host check`, rejecting d in {0, n,
+  n+1}, non-canonical fields, bad path bits and lengths, plus a valid right-hand path), a Node-side
+  receipt verification harness with request-size and image-id-binding checks, the wrap step run under
+  the 8 GB cap with docker-cgroup peak capture, the RISC Zero release pinned to 3.0.5 with lockfiles
+  committed, and doc corrections (the journal root is raw bytes not hex, the direct-node read needs a
+  ChainLocked tip not "read at the ChainLocked block", and the stale 8 GB-demonstrated claim).
+- 2026-07-23 (earlier), a full multi-reviewer round over the oracle change set was folded. The findings and
   their fixes: the tip guard now compares block hash as well as height, so a same-height branch
   swap mid-read forces a retry instead of publishing a torn signed snapshot, with a retry backoff
   for a syncing node; a golden-snapshot test pins the exact field set, order, and serialization,

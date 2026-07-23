@@ -1,10 +1,14 @@
 # zkVM registration integration design
 
-Status: design under review, first draft 2026-07-23, revised the same day after an independent
-design review (verdict on the first draft: not ready, three blockers). No implementation yet. What
-is settled is the shape (two-tier retained, the zero-knowledge virtual machine (zkVM) receipt
-replaces only the registration proof) and the statement (derive the key, per the decided position in
-`docs/REDUCING_PROVING_COST.md`). What is deliberately NOT settled is the receipt verification path,
+Status: design under review, first draft 2026-07-23, revised the same day after two independent
+review rounds (a design-consistency round, then a full multi-reviewer round once guest v2 and the
+harness existed). Guest v2 is implemented and measured, the cross-implementation golden vectors pass,
+and its statement soundness was reviewed with no malleability path found, but the cost is not settled:
+the production statement measured 9.6 GB and 77 minutes at default segments (the three in-guest
+Poseidon hashes dominate), failed the 8 GB cap, and the segment-size reruns that decide the fit are in
+flight (see `docs/REDUCING_PROVING_COST.md`). What is settled is the shape (two-tier retained, the
+zero-knowledge virtual machine (zkVM) receipt replaces only the registration proof) and the statement
+(derive the key). What is deliberately NOT settled is the receipt verification path,
 which is a gated decision with two candidates measured in work-plan step 3. Everything here is
 specified against the gateway and circuits as they exist today.
 
@@ -96,7 +100,11 @@ was loose:
 - Empty slots: the empty leaf is the 20-byte zero string, so the empty-leaf hash is
   `SHA-256(0x00 || 0x00^20)`, and empty subtrees fold up through the internal-node rule, mirroring
   the Poseidon tree's zero-padding structure.
-- Wire encoding of the root: 64 lowercase hex characters in snapshots, journals, and requests.
+- Wire encoding of the root: raw 32 bytes inside the guest journal (the appendix layout), and
+  64 lowercase hex characters everywhere it is text, meaning JSON snapshots, HTTP requests, and the
+  decoded claims object. The journal is a fixed-width byte record, so it carries the raw bytes, not
+  the hex, and a decoder that expected 64 ASCII bytes there would reject every valid 136-byte
+  journal.
 
 The same ordered leaves produce both roots, and the sort order is the oracle's existing
 list-key sort, unchanged.
@@ -136,11 +144,16 @@ Two candidates, decided by measurement in work-plan step 3, not before:
   component in the deployment and a larger receipt.
 
 Step 3 measures, for both candidates: member-side cost (the wrap step's memory under the same 8 GB
-cap as the prove, and its time), receipt size against the gateway's existing 2 MB request-body
-limit (raised deliberately or not at all), gateway verification time (which sets the registration
-rate limit and a global verification-concurrency bound), and end-to-end verification from Node. The
-combined member workflow (prove then wrap, if wrapping) is measured as one run under the cap, not
-as two isolated peaks, since the gate number is the workflow's peak.
+cap as the prove, with the docker cgroup's peak captured separately since RISC Zero runs its Groth16
+prover in docker outside the host process, and its time), the encoded HTTP request-body size against
+the gateway's existing 2 MB limit (raised deliberately or not at all), gateway verification time
+(which sets the registration rate limit and a global verification-concurrency bound), and end-to-end
+verification FROM NODE, not just from Rust, because the gateway is a Node process. The Node harness
+(`research/risc0-registration/scripts/verify_receipt.mjs`) decodes the exact request body, binds the
+configured guest image identifier to the exact journal bytes, invokes the real verifier, and rejects
+an altered journal or image identifier, so the measured numbers are the gateway's real numbers. The
+combined member workflow (prove then wrap, if wrapping) is measured as one run under the cap, not as
+two isolated peaks, since the gate number is the workflow's peak.
 
 Whichever candidate wins, verification binding is part of the design, not an implementation detail.
 The gateway pins the guest image identifier (and, if wrapping, the wrap verification key and its

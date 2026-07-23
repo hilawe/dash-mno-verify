@@ -152,21 +152,41 @@ number.
 
 | Variant | Key custody | Peak RAM | Trace segment | Proving time |
 | --- | --- | --- | --- | --- |
-| Derive the key, `P = d*G` | raw key enters the prover | 4.8 GB | 2^19 | 4.6 min |
-| Verify a wallet signature | key stays in the wallet | 9.6 GB | 2^20 | 9.2 min |
-| Efficient-ECDSA, recovery-hinted | key stays in the wallet | 9.6 GB | 2^20 | 9.1 min |
+| Derive the key, benchmark (no Poseidon) | raw key enters the prover | 4.8 GB | 2^19 | 4.6 min |
+| Verify a wallet signature, benchmark | key stays in the wallet | 9.6 GB | 2^20 | 9.2 min |
+| Efficient-ECDSA, recovery-hinted, benchmark | key stays in the wallet | 9.6 GB | 2^20 | 9.1 min |
+| Production statement (`reg`), default segments | raw key enters the prover | 9.6 GB | 2^20 | 77 min |
+| Production statement (`reg`), segment po2 19 | raw key enters the prover | pending | 2^19 | pending |
 
-The result is decisive and partly negative. Deriving the key fits a 4.8 GB footprint, demonstrated
-on an 8 GB-capped run (see the gate section above), but it requires the raw voting key inside the
-prover. Both wallet-custody variants,
-where the key never leaves the wallet, land at 9.6 GB, which needs a 16 GB machine. The efficient-ECDSA
-form was expected to halve the elliptic-curve work relative to a full signature verification and so
-approach the derive cost. It did reduce the arithmetic, but it did not reduce the memory. Its single
-scalar multiplication is variable-base, heavier than the derive path's fixed-base multiplication with
-generator precomputation, and parsing the hint points requires point decompressions. Those extra field
-operations push the execution trace over the boundary between the zkVM's 2^19 and 2^20 segment sizes,
-and the prover memory is set by that power-of-two segment, so the recovery variant lands in the same
-2^20 bucket as the full verification and takes the same 9.6 GB.
+An important correction (2026-07-23). The first three rows are benchmark variants that emit the
+public values as raw bytes and do NOT compute the circomlib-parameterized Poseidon commitment and
+nullifier the production statement requires. The 4.8 GB derive figure, and the earlier claim that the
+derive statement is "demonstrated on an 8 GB-capped run," are about that Poseidon-free benchmark, not
+the shipping statement. The production statement (`reg`, guest v2) was then measured, and its three
+in-guest Poseidon hashes cost about 7.9 million cycles, roughly 26 times the entire accelerated
+remainder (key derivation, hash160, and the SHA-256 Merkle path). That pushed the trace into the 2^20
+segment, so at default segments the production statement peaks at 9.6 GB and takes 77 minutes, and the
+8 GB-capped CI step terminated it. So the 8 GB fit is NOT currently demonstrated for the shipping
+statement.
+
+Two levers are in flight before the statement's cost is settled, and the 8 GB decision is provisional
+until they report. First, segment size sets the memory ceiling, and Phase 0 only ran the default, so
+the bench now re-runs `reg` at `segment_limit_po2 = 19` under the 8 GB cap (a pass would fit 8 GB at
+the cost of proportionally more segments, that is more time). Second, if the small-segment lever works,
+it also reopens the wallet-custody rejection, because the 9.6 GB signature variants may likewise drop
+toward the 4.8 GB tier at po2 19, so the bench re-measures the signature variant the same way and the
+custody decision is revisited on that evidence. Separately, the Poseidon cost itself is the real
+structural lever, and a faster pure-Rust Poseidon or a future zkVM BN254 field accelerator would cut
+the 26x, which is the durable path if segment-forcing alone is too slow.
+
+On the benchmark variants themselves, the efficient-ECDSA form was expected to halve the elliptic-curve
+work relative to a full signature verification and so approach the derive cost. It reduced the
+arithmetic but not the memory. Its single scalar multiplication is variable-base, heavier than the
+derive path's fixed-base multiplication with generator precomputation, and parsing the hint points
+requires point decompressions. Those extra field operations push the execution trace over the boundary
+between the zkVM's 2^19 and 2^20 segment sizes, and the prover memory is set by that power-of-two
+segment, so the recovery variant lands in the same 2^20 bucket as the full verification and takes the
+same 9.6 GB.
 
 So on this zkVM, wallet custody costs about 9.6 GB whichever of the two forms is used, and only key
 export reaches 4.8 GB. The savings of the efficient-ECDSA reformulation are real in a purpose-built
@@ -175,18 +195,17 @@ zkVM's fixed overhead and segment quantization absorb the win. Cheap wallet cust
 reachable, but through a hand-built efficient-ECDSA circuit in a system like Spartan or halo2, a larger
 effort on a different stack, not a variant swap inside the zkVM.
 
-The design position that follows is decided. The 9.6 GB wallet-custody variants are rejected under
-the tightened acceptance bar above, because a 16 GB member-hardware requirement exceeds what a
-masternode-class box can be assumed to have, and a proving path that only works on upgraded hardware
-fails the adoption goal this whole track exists to serve. Deriving the key at a measured 4.8 GB
-prover peak is the chosen statement. It fits an 8 GB machine, demonstrated by the capped run
-described above (prover alone, under an enforced 8 GB cgroup), it removes the 2.3 GB proving-key
-download entirely (a zkVM has no
-structured per-circuit key), and its custody posture matches what the current PLONK prover already
-requires, the voting key used locally by a prover on the member's own machine or masternode, so
-nothing gets worse for the member. Wallet custody, where the key never enters the prover, remains a
-research bet on a purpose-built efficient-ECDSA circuit (the spartan-ecdsa-class effort above), not a
-near-term option.
+The design position that follows is provisional, pending the segment-size reruns above. The statement
+choice is settled: deriving the key is the chosen statement, because it removes the 2.3 GB
+proving-key download entirely (a zkVM has no structured per-circuit key) and its custody posture
+matches what the current PLONK prover already requires, the voting key used locally by a prover on
+the member's own machine or masternode, so nothing gets worse for the member. What is NOT yet settled
+is the 8 GB fit for that statement, because the production `reg` measurement came in at 9.6 GB and 77
+minutes at default segments and failed the cap, so the fit now rests on the po2 19 rerun, not on the
+Poseidon-free benchmark's 4.8 GB. The wallet-custody rejection is likewise provisional for the same
+reason, if po2 19 brings the 9.6 GB variants down toward the 4.8 GB tier, that decision reopens on the
+new evidence. Wallet custody without the key in the prover otherwise remains a research bet on a
+purpose-built efficient-ECDSA circuit (the spartan-ecdsa-class effort above), not a near-term option.
 
 ## Roots and hashes, no forced migration and no in-circuit bridge
 

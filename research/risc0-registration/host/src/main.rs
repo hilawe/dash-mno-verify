@@ -154,6 +154,40 @@ fn reg_env(w: &RegWitness) -> risc0_zkvm::ExecutorEnv<'_> {
         .unwrap()
 }
 
+// A raw witness for the executor-only guest checks, so a malformed field can be injected
+// that the typed RegWitness cannot express (a bad path bit, a wrong path length, a
+// non-canonical field element). Executor-only, so each case runs in well under a second,
+// unlike a full prove.
+struct RawReg {
+    d: [u8; 32],
+    secret: [u8; 32],
+    siblings: Vec<[u8; 32]>,
+    bits: Vec<u8>,
+    root: [u8; 32],
+    season: u64,
+    ctx: [u8; 32],
+}
+
+fn raw_env(w: &RawReg) -> risc0_zkvm::ExecutorEnv<'_> {
+    ExecutorEnv::builder()
+        .write(&w.d).unwrap()
+        .write(&w.secret).unwrap()
+        .write(&w.siblings).unwrap()
+        .write(&w.bits).unwrap()
+        .write(&w.root).unwrap()
+        .write(&w.season).unwrap()
+        .write(&w.ctx).unwrap()
+        .build()
+        .unwrap()
+}
+
+// Run the guest under the executor (no proof) and return whether it completed. A guest
+// assertion aborts execution, so Err means the witness was rejected, which is what the
+// negative cases want.
+fn guest_executes(elf: &[u8], w: &RawReg) -> bool {
+    risc0_zkvm::default_executor().execute(raw_env(w), elf).is_ok()
+}
+
 fn report(mode: &str, elf: &[u8], info: &ProveInfo, elapsed: Duration) {
     let receipt = &info.receipt;
     let receipt_bytes = bincode::serialize(receipt).map(|b| b.len()).unwrap_or(0);
@@ -334,19 +368,153 @@ fn main() {
             std::fs::write("wrap_seal.hex", hex::encode(&g.seal)).expect("writing seal");
             std::fs::write("wrap_journal.hex", hex::encode(&info.receipt.journal.bytes))
                 .expect("writing journal");
-            eprintln!("[wrap] seal and journal hex written for the Node-side verification step");
+            let wbytes = bincode::serialize(&info.receipt).expect("wrap receipt serialization");
+            std::fs::write("wrap_receipt.bin", &wbytes).expect("writing wrap_receipt.bin");
+            eprintln!("[wrap] seal, journal, and receipt written for the Node-side step");
             report("wrap", REGISTRATION_REG_ELF, &info, elapsed);
+        }
+        "check" => {
+            // Executor-only soundness checks for the production guest, the coverage the
+            // design promised (docs/ZKVM_INTEGRATION.md): the pinned witness executes, a
+            // valid right-hand path executes, and every malformed or out-of-range witness
+            // is rejected. No proving, so the whole set runs in seconds. A CI gate.
+            use methods::REGISTRATION_REG_ELF;
+            use vectors::golden;
+            let elf = REGISTRATION_REG_ELF;
+            let g = golden();
+
+            // secp256k1 order n and the empty-leaf value, big-endian.
+            let n: [u8; 32] =
+                hex::decode("fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141")
+                    .unwrap()
+                    .try_into()
+                    .unwrap();
+            let mut n_plus_1 = n;
+            n_plus_1[31] = n_plus_1[31].wrapping_add(1);
+            // A field element one above the BN254 modulus is non-canonical: p in big-endian.
+            let p_be: [u8; 32] =
+                hex::decode("30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001")
+                    .unwrap()
+                    .try_into()
+                    .unwrap();
+
+            let base = reg_witness();
+            let valid_left = RawReg {
+                d: base.d,
+                secret: base.secret,
+                siblings: base.siblings.clone(),
+                bits: base.bits.clone(),
+                root: base.root,
+                season: base.season,
+                ctx: base.ctx,
+            };
+
+            // The valid right-hand path: put the generator leaf at index 1, sibling is the
+            // 0x02 leaf, and rebuild the root the guest expects for that placement.
+            let right = {
+                use vectors::{leaf_hash, node_hash};
+                let gen_keyid: [u8; 20] =
+                    hex::decode(&g.gen_keyid_hex).unwrap().try_into().unwrap();
+                let mut empty = vec![leaf_hash(&[0u8; 20])];
+                for i in 1..=TREE_DEPTH {
+                    let prev = empty[i - 1];
+                    empty.push(node_hash(&prev, &prev));
+                }
+                let mut siblings: Vec<[u8; 32]> = vec![leaf_hash(&[0x02u8; 20])];
+                siblings.extend(empty.iter().take(TREE_DEPTH).skip(1));
+                let mut bits = vec![0u8; TREE_DEPTH];
+                bits[0] = 1; // our leaf is the right child at level 0
+                let mut node = leaf_hash(&gen_keyid);
+                // level 0: sibling on the left because bit = 1
+                node = node_hash(&siblings[0], &node);
+                for sib in siblings.iter().take(TREE_DEPTH).skip(1) {
+                    node = node_hash(&node, sib);
+                }
+                assert_eq!(hex::encode(node), g.root_two_leaves_right_hex);
+                RawReg {
+                    d: base.d,
+                    secret: base.secret,
+                    siblings,
+                    bits,
+                    root: node,
+                    season: base.season,
+                    ctx: base.ctx,
+                }
+            };
+
+            let bad = |mutate: &dyn Fn(&mut RawReg)| {
+                let mut w = RawReg {
+                    d: base.d,
+                    secret: base.secret,
+                    siblings: base.siblings.clone(),
+                    bits: base.bits.clone(),
+                    root: base.root,
+                    season: base.season,
+                    ctx: base.ctx,
+                };
+                mutate(&mut w);
+                w
+            };
+
+            let cases: Vec<(&str, RawReg, bool)> = vec![
+                ("pinned-left-path", valid_left, true),
+                ("valid-right-path", right, true),
+                ("d = 0", bad(&|w| w.d = [0u8; 32]), false),
+                ("d = n", bad(&|w| w.d = n), false),
+                ("d = n + 1", bad(&|w| w.d = n_plus_1), false),
+                ("non-canonical secret (p)", bad(&|w| w.secret = p_be), false),
+                ("non-canonical contextHash (p)", bad(&|w| w.ctx = p_be), false),
+                ("path bit = 2", bad(&|w| w.bits[0] = 2), false),
+                ("short path", bad(&|w| { w.siblings.pop(); w.bits.pop(); }), false),
+                ("wrong root", bad(&|w| w.root[0] ^= 0xff), false),
+            ];
+
+            let mut failures = 0;
+            for (name, w, want_ok) in &cases {
+                let got_ok = guest_executes(elf, w);
+                let pass = got_ok == *want_ok;
+                if !pass {
+                    failures += 1;
+                }
+                println!(
+                    "[check] {:<32} expect {:<6} got {:<6} {}",
+                    name,
+                    if *want_ok { "accept" } else { "reject" },
+                    if got_ok { "accept" } else { "reject" },
+                    if pass { "ok" } else { "FAIL" }
+                );
+            }
+            if failures > 0 {
+                eprintln!("[check] {failures} case(s) failed");
+                std::process::exit(1);
+            }
+            eprintln!("[check] all {} guest soundness cases passed", cases.len());
         }
         "verify" => {
             // Work-plan step 3, the unwrapped candidate's gateway-side cost: read the receipt
             // the reg mode wrote and time repeated verifications, which is what a gateway
             // sidecar would do per registration.
+            // It also prints image_id and journal_hex so the Node harness
+            // (scripts/verify_receipt.mjs) can drive it as the gateway verifier and confirm
+            // the image-id binding by rejecting a wrong id.
             use methods::REGISTRATION_REG_ID;
+            use risc0_zkvm::sha::Digest;
             let path = std::env::args().nth(2).unwrap_or_else(|| "receipt_reg.bin".to_string());
+            // Optional expected image id (hex); if it does not match, reject, which is how the
+            // Node harness checks the binding.
+            let expect_id = std::env::args().nth(3);
             let bytes = std::fs::read(&path).expect("reading the receipt file (run 'reg' first)");
             let receipt: risc0_zkvm::Receipt =
                 bincode::deserialize(&bytes).expect("receipt deserialization");
+            let image_id_hex = hex::encode(Digest::from(REGISTRATION_REG_ID).as_bytes());
+            if let Some(want) = expect_id {
+                if want != image_id_hex {
+                    eprintln!("[verify] image id mismatch: want {want}, have {image_id_hex}");
+                    std::process::exit(1);
+                }
+            }
             println!("[verify] receipt_bytes: {}", bytes.len());
+            println!("[verify] image_id: {image_id_hex}");
             let start = Instant::now();
             for _ in 0..10 {
                 receipt.verify(REGISTRATION_REG_ID).expect("verification failed");
@@ -355,9 +523,10 @@ fn main() {
                 "[verify] verify_ms_avg_of_10: {:.2}",
                 start.elapsed().as_secs_f64() * 100.0
             );
+            println!("[verify] journal_hex: {}", hex::encode(&receipt.journal.bytes));
         }
         other => {
-            eprintln!("unknown mode '{other}', use 'derive', 'sig', 'rec', 'reg', 'wrap', or 'verify'");
+            eprintln!("unknown mode '{other}', use 'derive', 'sig', 'rec', 'reg', 'check', 'wrap', or 'verify'");
             std::process::exit(2);
         }
     }

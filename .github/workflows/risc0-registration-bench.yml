@@ -35,17 +35,40 @@ jobs:
           echo "cpus: $(nproc)"
           free -h
 
-      - name: Install the RISC Zero toolchain
+      - name: Install the RISC Zero toolchain (pinned)
         run: |
           curl -L https://risczero.com/install | bash
           echo "$HOME/.risc0/bin" >> "$GITHUB_PATH"
 
-      - name: rzup install
-        run: rzup install
+      - name: rzup install (pinned release)
+        # Pin the RISC Zero release so a fresh runner cannot compile different guest bytes,
+        # a different image id, or a different acceleration profile than the recorded numbers
+        # (review finding, reproducibility). RISC0_RELEASE is the single knob; bump it
+        # deliberately and re-measure.
+        env:
+          RISC0_RELEASE: "3.0.5"
+        run: |
+          rzup install rust "$RISC0_RELEASE"
+          rzup install r0vm "$RISC0_RELEASE"
+          rzup install cpp || true
 
-      - name: Build host and guest (release)
+      - name: Record toolchain and dependency versions
         working-directory: research/risc0-registration
-        run: cargo build --release -p host
+        run: |
+          echo "== rzup"; rzup show || true
+          echo "== r0vm"; r0vm --version || true
+          echo "== rustc"; rustc --version
+          echo "== Cargo.lock present:"; ls -l Cargo.lock host/Cargo.lock methods/guest/Cargo.lock 2>/dev/null || true
+
+      - name: Build host and guest (release, locked)
+        working-directory: research/risc0-registration
+        run: cargo build --release --locked -p host
+
+      - name: Guest soundness checks (executor only, fast)
+        working-directory: research/risc0-registration
+        run: |
+          echo "runs the promised rejection and boundary cases through the executor, no proving"
+          ./target/release/host check
 
       - name: Member-side artifact sizes
         working-directory: research/risc0-registration
@@ -110,15 +133,49 @@ jobs:
           echo "the per-registration cost a gateway verifier sidecar would pay (step 3)"
           ./target/release/host verify receipt_reg.bin
 
-      - name: Wrapped candidate, prove-and-wrap measurement
+      - name: Unwrapped candidate, Node-side verification and request size
         working-directory: research/risc0-registration
         run: |
-          echo "the Groth16-wrapped candidate (step 3). RISC Zero runs its Groth16 prover in"
-          echo "docker, so this measures combined prove-and-wrap wall time, seal and receipt"
-          echo "sizes, and wrapped-verification timings, and dumps the seal for the Node-side"
-          echo "verification experiment. The wrap's memory runs inside the docker daemon's"
-          echo "process tree, so the time -v peak below covers the host process only; the"
-          echo "docker requirement itself is a member-side operational cost of this candidate."
+          echo "the real gateway path: a Node harness decodes the exact request body, binds"
+          echo "the guest image id to the journal, invokes the verifier, rejects a wrong id,"
+          echo "and reports request wire size and latency (step 3 decision inputs)."
+          IMAGE_ID=$(./target/release/host verify receipt_reg.bin | sed -n 's/^\[verify\] image_id: //p')
+          echo "image id: $IMAGE_ID"
+          node scripts/verify_receipt.mjs unwrapped "$IMAGE_ID"
+
+      - name: Wrapped candidate, prove-and-wrap under the 8 GB cap (cgroup-scoped)
+        working-directory: research/risc0-registration
+        run: |
+          echo "the Groth16-wrapped candidate (step 3), under the SAME 8 GB cap as the prove."
+          echo "RISC Zero's Groth16 prover runs in docker, so the systemd scope alone would"
+          echo "miss the daemon's memory. This runs docker under the same cgroup slice AND"
+          echo "polls the docker cgroup peak, so the true combined peak is captured, not just"
+          echo "the host process (the unanimous review finding)."
           docker --version
-          MNO_SEGMENT_PO2=19 /usr/bin/time -v ./target/release/host wrap
+          # Start a background poller of the whole docker cgroup's peak memory.
+          ( PEAK=0
+            for _ in $(seq 1 3600); do
+              CUR=$(cat /sys/fs/cgroup/system.slice/docker.service/memory.peak 2>/dev/null || echo 0)
+              [ "$CUR" -gt "$PEAK" ] && PEAK=$CUR
+              echo "$PEAK" > /tmp/docker_peak
+              sleep 2
+            done ) &
+          POLLER=$!
+          sudo env "PATH=$PATH" MNO_SEGMENT_PO2=19 systemd-run --scope --collect \
+            -p MemoryMax=8G -p MemorySwapMax=0 \
+            /usr/bin/time -v ./target/release/host wrap || echo "WRAP STEP non-zero exit (OOM is a valid negative result)"
+          kill "$POLLER" 2>/dev/null || true
+          echo "docker cgroup peak bytes: $(cat /tmp/docker_peak 2>/dev/null || echo unknown)"
           echo "seal head:"; head -c 200 wrap_seal.hex; echo
+
+      - name: Wrapped candidate, Node-side verification and request size
+        working-directory: research/risc0-registration
+        if: always()
+        run: |
+          echo "same Node harness on the wrapped receipt, if the wrap step produced one"
+          if [ -f wrap_receipt.bin ]; then
+            IMAGE_ID=$(./target/release/host verify receipt_reg.bin | sed -n 's/^\[verify\] image_id: //p')
+            node scripts/verify_receipt.mjs wrapped "$IMAGE_ID"
+          else
+            echo "no wrap_receipt.bin (wrap step did not complete), skipping"
+          fi
