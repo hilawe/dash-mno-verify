@@ -44,7 +44,13 @@ types are fixed as follows:
   output and the unique-index key).
 - root: engine-dependent, a canonical BN254 field element as a decimal string for the PLONK engine
   (the Poseidon root), a 64-lowercase-hex string for the zkVM engine (the SHA-256 root).
-- season: a non-negative integer, decimal string.
+- season: an unsigned 64-bit integer, decimal string. The zkVM guest reads season as a u64 and the
+  journal encodes it as 8 big-endian bytes, so this u64 bound is the binding constraint and must be
+  enforced everywhere season is set, in configuration, in snapshot ingestion, in both engine
+  decoders, and in the serialized commit. PLONK would accept any canonical field element, so a
+  season scheme that ever produced a value above 2^64 - 1 would validate under PLONK but be
+  unrepresentable in the zkVM. Season is a small monotonic counter, so u64 is ample, but the bound is
+  stated rather than assumed to keep the two engines interchangeable.
 - contextHash: a canonical BN254 field element, decimal string (computed by the gateway today, both
   engines).
 
@@ -128,6 +134,34 @@ list-key sort, unchanged.
 - The two roots commit to the same leaves by construction, and the gateway recomputes both on every
   refresh (the M3 discipline applied twice), so no in-circuit bridge proof is needed, exactly as
   the cost doc argues.
+
+## Root freshness against a long proof
+
+A registration proof binds a DML root, and the gateway accepts it only if that root is still within
+its recency window (`MNO_ORACLE_MAX_AGE`) at submission. The production statement takes about 77
+minutes to prove (the measured default-segment number, and slower still at po2 19), which collides
+with that window: a member who starts proving against a fresh root can finish after it has aged out,
+and the registration is rejected through no fault of theirs. Widening the window to cover the proof
+naively is not free, because the window is also the stale-ownership exposure. A root accepted for
+longer means a node that left the DML during that span can still complete a registration against the
+root that still listed it.
+
+The policy this design commits to, so it is decided rather than defaulted:
+
+- Bind an explicit issuance time into the registration challenge, and accept a proof only if the
+  bound root was current at issuance and the proof arrives within a `MNO_REG_PROOF_MAX_AGE` lease
+  that covers proving, queueing, and one retry (a small multiple of the measured proving time, so on
+  the order of a few hours, not the per-epoch window).
+- Keep the accepted-root window sized to that lease, not longer, and state the exposure plainly: the
+  worst case is one lease of stale ownership on the once-per-season registration, which the
+  season-boundary re-registration already bounds, and which the per-epoch proof (unchanged, seconds
+  to prove) does not share.
+- The lease is a registration-only concept. The cheap per-epoch proof keeps the existing short
+  freshness window, since it proves in seconds and has no long-proof collision.
+
+This is why the proving-time number is a first-class design input, not just a cost figure: it sets
+the lease, and the lease sets the exposure. If the po2 19 or an accelerated-Poseidon result brings
+proving well under an hour, the lease and the exposure both shrink accordingly.
 
 ## Receipt verification at the gateway, a gated decision
 

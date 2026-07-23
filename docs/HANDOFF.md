@@ -28,6 +28,13 @@ prioritized punch list.
   run, since no Rust toolchain is available in-session), and doc corrections (the journal root is raw
   bytes not hex, the direct-node read needs a ChainLocked tip not "read at the ChainLocked block",
   and the stale 8 GB-demonstrated claim).
+- 2026-07-23, a second reviewer pass (the packet reviewers returning) added three findings the first
+  fold did not cover, now folded: the capped bench step captures its exit status so an expected OOM
+  no longer aborts the later receipt-path steps; a registration proof lease
+  (`MNO_REG_PROOF_MAX_AGE`) is specified in the design because the 77-minute proof can outlast the
+  oracle recency window (the sharpest catch, root freshness versus a long proof, tracked as a gateway
+  work item); and season is pinned to u64 across both engines since the zkVM journal encodes it as 8
+  bytes while PLONK would accept any field element. No new statement-soundness hole was found.
 - 2026-07-23 (earlier), a full multi-reviewer round over the oracle change set was folded. The findings and
   their fixes: the tip guard now compares block hash as well as height, so a same-height branch
   swap mid-read forces a retry instead of publishing a torn signed snapshot, with a retry backoff

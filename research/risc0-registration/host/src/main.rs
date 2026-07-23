@@ -87,22 +87,21 @@ struct RegWitness {
 }
 
 fn reg_witness() -> RegWitness {
-    use vectors::{
-        dec_to_be32, leaf_hash, node_hash, GEN_KEYID_HEX, POSEIDON1_OF_1, RN_D1,
-        ROOT_TWO_LEAVES_HEX,
-    };
+    use vectors::{golden, leaf_hash, node_hash};
+    let g = golden();
+    // The witness reproduces the fixture's golden case: d = 1, secret = 1, season and context
+    // from the fixture, the generator leaf at index 0 in the two-leaf tree.
     let mut d = [0u8; 32];
     d[31] = 1;
     let mut secret = [0u8; 32];
     secret[31] = 1;
-    let season: u64 = 7;
-    let mut ctx = [0u8; 32];
-    ctx[30..].copy_from_slice(&999u16.to_be_bytes());
+    let season: u64 = g.season.parse().expect("fixture season is a u64");
+    let ctx = vectors::dec_to_be32(&g.context_hash);
 
-    let gen_keyid: [u8; 20] = {
-        let bytes = hex::decode(GEN_KEYID_HEX).expect("pinned keyid hex");
-        bytes.try_into().expect("keyid is 20 bytes")
-    };
+    let gen_keyid: [u8; 20] = hex::decode(&g.gen_keyid_hex)
+        .expect("pinned keyid hex")
+        .try_into()
+        .expect("keyid is 20 bytes");
     let mut empty = vec![leaf_hash(&[0u8; 20])];
     for i in 1..=TREE_DEPTH {
         let prev = empty[i - 1];
@@ -116,14 +115,16 @@ fn reg_witness() -> RegWitness {
         node = node_hash(&node, sib);
     }
     let root = node;
-    assert_eq!(hex::encode(root), ROOT_TWO_LEAVES_HEX, "host tree must match the pinned root");
+    assert_eq!(hex::encode(root), g.root_two_leaves_hex, "host tree must match the fixture root");
 
-    let mut expected_journal = [0u8; 136];
-    expected_journal[0..32].copy_from_slice(&dec_to_be32(POSEIDON1_OF_1));
-    expected_journal[32..64].copy_from_slice(&dec_to_be32(RN_D1));
-    expected_journal[64..96].copy_from_slice(&root);
-    expected_journal[96..104].copy_from_slice(&season.to_be_bytes());
-    expected_journal[104..136].copy_from_slice(&ctx);
+    // The expected journal is the fixture's journal literal, which the JavaScript reference
+    // built with independent field encoding. Comparing the guest journal against THIS (not
+    // against host-serialized bytes) is what proves the guest agrees with the JS gateway
+    // decoder, per the review finding.
+    let expected_journal: [u8; 136] = hex::decode(&g.journal_left_hex)
+        .expect("fixture journal hex")
+        .try_into()
+        .expect("journal is 136 bytes");
 
     RegWitness { d, secret, siblings, bits, root, season, ctx, expected_journal }
 }
