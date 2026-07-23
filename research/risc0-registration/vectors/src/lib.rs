@@ -11,7 +11,7 @@
 //! node = SHA-256(0x01 || left || right), empty leaf = 20 zero bytes, depth 16.
 
 use ark_bn254::Fr;
-use ark_ff::PrimeField;
+use ark_ff::{BigInteger, PrimeField};
 use light_poseidon::{Poseidon, PoseidonHasher};
 use sha2::{Digest, Sha256};
 
@@ -56,6 +56,21 @@ pub const D2_LIMBS: [u64; 4] = [
 
 pub fn fr_dec(x: Fr) -> String {
     x.into_bigint().to_string()
+}
+
+/// A pinned decimal field-element constant as 32 big-endian bytes, the journal encoding.
+pub fn dec_to_be32(s: &str) -> [u8; 32] {
+    use core::str::FromStr;
+    let v = Fr::from_str(s).expect("constant must be a canonical decimal field element");
+    fr_to_be32(v)
+}
+
+/// A field element as 32 big-endian bytes, left-padded, the journal encoding.
+pub fn fr_to_be32(v: Fr) -> [u8; 32] {
+    let bytes = v.into_bigint().to_bytes_be();
+    let mut out = [0u8; 32];
+    out[32 - bytes.len()..].copy_from_slice(&bytes);
+    out
 }
 
 pub fn sha256(data: &[u8]) -> [u8; 32] {
@@ -111,6 +126,17 @@ mod tests {
         let ctx = Fr::from(999u64);
         assert_eq!(fr_dec(h3.hash(&[kh1, season, ctx]).unwrap()), RN_D1);
         assert_eq!(fr_dec(h3.hash(&[kh2, season, ctx]).unwrap()), RN_D2);
+    }
+
+    #[test]
+    fn decimal_to_journal_bytes_round_trips() {
+        use core::str::FromStr;
+        for c in [POSEIDON1_OF_1, POSEIDON1_OF_P_MINUS_1, KH_D1, KH_D2, RN_D1, RN_D2] {
+            let bytes = dec_to_be32(c);
+            let back = Fr::from_str(c).unwrap();
+            assert_eq!(fr_to_be32(back), bytes);
+            assert_eq!(fr_dec(back), c);
+        }
     }
 
     #[test]

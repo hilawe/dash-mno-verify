@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 methods = { path = "../methods" }
+vectors = { path = "../vectors" }
 risc0-zkvm = { version = "3.0" }
 # Exact pins to match the guest and the workspace acceleration patch.
 k256 = { version = "=0.13.3", features = ["arithmetic"] }

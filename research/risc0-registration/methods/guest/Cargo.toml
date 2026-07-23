@@ -21,8 +21,18 @@ path = "src/bin/registration_sig.rs"
 name = "registration_rec"
 path = "src/bin/registration_rec.rs"
 
+[[bin]]
+name = "registration_reg"
+path = "src/bin/registration_reg.rs"
+
 [dependencies]
 risc0-zkvm = { version = "3.0", default-features = false, features = ["std"] }
+# The production-statement guest (registration_reg) computes its commitment and nullifier
+# with circomlib-parameterized Poseidon, matched against circomlibjs by the vectors crate.
+# Unaccelerated field arithmetic, fine at a few hashes per proof.
+light-poseidon = "0.4"
+ark-bn254 = "0.5"
+ark-ff = "0.5"
 # Default features on, matching the RISC Zero precompile documentation, so the sec1
 # encoding path (to_encoded_point) is available. The exact version pins let the patch apply.
 k256 = { version = "=0.13.3", features = ["arithmetic"] }

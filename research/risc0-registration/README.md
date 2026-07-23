@@ -46,9 +46,14 @@ committed.
   accelerator and to avoid any hash migration, and it is representative for the memory measurement. It
   is not the exact production tree, and the roots-and-hashes section of `docs/REDUCING_PROVING_COST.md`
   covers that separately.
-- This measures the derive-the-key statement. The signature-verifying variant is the next measurement,
-  per the statement joint-optimization in the cost doc, and belongs in a sibling guest so the two can be
-  compared on the same backend.
+- This measures the derive-the-key statement. The signature-verifying (`sig`) and recovery-hinted
+  (`rec`) variants are sibling guests measured on the same backend, per the statement
+  joint-optimization in the cost doc, and their results are recorded there.
+- The `reg` variant is guest v2, the production five-claim statement of `docs/ZKVM_INTEGRATION.md`
+  (commitment and registration nullifier via circomlib-parameterized Poseidon, the frozen 136-byte
+  journal). Its host run uses the pinned golden-vector witness, so the entire journal is asserted
+  against the circomlibjs-pinned constants of the `vectors/` crate, and the bench's capped step runs
+  this variant, since it is the statement that ships.
 
 ## Layout
 
@@ -112,7 +117,7 @@ test, does the proof fit a roughly 16 GB masternode-class box. If the run step i
 is the answer. If it completes, read the `Maximum resident set size` line. For a target larger than the
 runner, use a native x86_64 Linux box with more memory instead.
 
-The workflow's final step re-runs the derive variant inside an enforced 8 GB cgroup (`systemd-run`
+The workflow's final step re-runs the production `reg` variant inside an enforced 8 GB cgroup (`systemd-run`
 with `MemoryMax=8G` and swap off), the acceptance bar as tightened on 2026-07-23. That step passing
 demonstrates the 8 GB fit the cost doc currently marks as pending; an out-of-memory termination is
 the honest negative answer. It caps the prover alone, so it does not yet represent a box that is
