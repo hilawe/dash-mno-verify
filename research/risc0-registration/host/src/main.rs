@@ -72,6 +72,88 @@ fn build_merkle(key_id: &[u8; 20]) -> (Vec<[u8; 32]>, Vec<u8>, [u8; 32]) {
     (siblings, bits, node)
 }
 
+// The pinned golden-vector witness for the production (reg) statement: d = 1 (the generator
+// key) and secret = 1 in the vectors-crate two-leaf tree, so every journal byte is
+// predictable from the circomlibjs-pinned constants.
+struct RegWitness {
+    d: [u8; 32],
+    secret: [u8; 32],
+    siblings: Vec<[u8; 32]>,
+    bits: Vec<u8>,
+    root: [u8; 32],
+    season: u64,
+    ctx: [u8; 32],
+    expected_journal: [u8; 136],
+}
+
+fn reg_witness() -> RegWitness {
+    use vectors::{
+        dec_to_be32, leaf_hash, node_hash, GEN_KEYID_HEX, POSEIDON1_OF_1, RN_D1,
+        ROOT_TWO_LEAVES_HEX,
+    };
+    let mut d = [0u8; 32];
+    d[31] = 1;
+    let mut secret = [0u8; 32];
+    secret[31] = 1;
+    let season: u64 = 7;
+    let mut ctx = [0u8; 32];
+    ctx[30..].copy_from_slice(&999u16.to_be_bytes());
+
+    let gen_keyid: [u8; 20] = {
+        let bytes = hex::decode(GEN_KEYID_HEX).expect("pinned keyid hex");
+        bytes.try_into().expect("keyid is 20 bytes")
+    };
+    let mut empty = vec![leaf_hash(&[0u8; 20])];
+    for i in 1..=TREE_DEPTH {
+        let prev = empty[i - 1];
+        empty.push(node_hash(&prev, &prev));
+    }
+    let mut siblings: Vec<[u8; 32]> = vec![leaf_hash(&[0x02u8; 20])];
+    siblings.extend(empty.iter().take(TREE_DEPTH).skip(1));
+    let bits = vec![0u8; TREE_DEPTH];
+    let mut node = leaf_hash(&gen_keyid);
+    for sib in siblings.iter() {
+        node = node_hash(&node, sib);
+    }
+    let root = node;
+    assert_eq!(hex::encode(root), ROOT_TWO_LEAVES_HEX, "host tree must match the pinned root");
+
+    let mut expected_journal = [0u8; 136];
+    expected_journal[0..32].copy_from_slice(&dec_to_be32(POSEIDON1_OF_1));
+    expected_journal[32..64].copy_from_slice(&dec_to_be32(RN_D1));
+    expected_journal[64..96].copy_from_slice(&root);
+    expected_journal[96..104].copy_from_slice(&season.to_be_bytes());
+    expected_journal[104..136].copy_from_slice(&ctx);
+
+    RegWitness { d, secret, siblings, bits, root, season, ctx, expected_journal }
+}
+
+// Optional segment-size override (MNO_SEGMENT_PO2). Prover peak memory tracks the segment
+// size, so forcing smaller segments trades proportionally more segments (time) for a lower
+// memory ceiling. Phase 0 ran everything at the default; this knob is the experiment that
+// checks whether the 9.6 GB tier was an artifact of the default segment size.
+fn apply_segment_po2(b: &mut risc0_zkvm::ExecutorEnvBuilder<'_>) {
+    if let Ok(v) = std::env::var("MNO_SEGMENT_PO2") {
+        let po2: u32 = v.parse().expect("MNO_SEGMENT_PO2 must be an integer");
+        eprintln!("[env] segment_limit_po2 forced to {po2}");
+        b.segment_limit_po2(po2);
+    }
+}
+
+fn reg_env(w: &RegWitness) -> risc0_zkvm::ExecutorEnv<'_> {
+    let mut b = ExecutorEnv::builder();
+    apply_segment_po2(&mut b);
+    b.write(&w.d).unwrap()
+        .write(&w.secret).unwrap()
+        .write(&w.siblings).unwrap()
+        .write(&w.bits).unwrap()
+        .write(&w.root).unwrap()
+        .write(&w.season).unwrap()
+        .write(&w.ctx).unwrap()
+        .build()
+        .unwrap()
+}
+
 fn report(mode: &str, elf: &[u8], info: &ProveInfo, elapsed: Duration) {
     let receipt = &info.receipt;
     let receipt_bytes = bincode::serialize(receipt).map(|b| b.len()).unwrap_or(0);
@@ -128,7 +210,9 @@ fn main() {
             let sig: Signature = signing.sign_prehash(&msg_hash).expect("signing failed");
             let sig_bytes = sig.to_bytes().to_vec();
             let (siblings, bits, root) = build_merkle(&key_id);
-            let env = ExecutorEnv::builder()
+            let mut b = ExecutorEnv::builder();
+            apply_segment_po2(&mut b);
+            let env = b
                 .write(&pubkey_bytes).unwrap()
                 .write(&sig_bytes).unwrap()
                 .write(&siblings).unwrap()
@@ -190,84 +274,90 @@ fn main() {
         }
         "reg" => {
             // Guest v2, the production five-claim statement (docs/ZKVM_INTEGRATION.md, work-plan
-            // step 2). The witness is the pinned golden-vector case, d = 1 (the generator key) and
-            // secret = 1 in a two-leaf tree, so every journal byte is predictable from the vectors
-            // crate's circomlibjs-pinned constants and the whole 136-byte journal is asserted, the
-            // cross-implementation correctness check riding along with the measurement.
+            // step 2), on the pinned golden-vector witness, so the whole 136-byte journal is
+            // asserted and the cross-implementation check rides along with the measurement. The
+            // verified receipt is also written to disk, so the `verify` mode can time the
+            // unwrapped candidate's gateway-side cost on a real receipt.
             use methods::{REGISTRATION_REG_ELF, REGISTRATION_REG_ID};
-            use vectors::{
-                dec_to_be32, leaf_hash, node_hash, GEN_KEYID_HEX, POSEIDON1_OF_1, RN_D1,
-                ROOT_TWO_LEAVES_HEX,
-            };
-
-            let mut d = [0u8; 32];
-            d[31] = 1;
-            let mut secret = [0u8; 32];
-            secret[31] = 1;
-            let season: u64 = 7;
-            let mut ctx = [0u8; 32];
-            ctx[30..].copy_from_slice(&999u16.to_be_bytes());
-
-            // The vectors-crate two-leaf tree: [generator keyID, 0x02 * 20], our leaf at index 0.
-            let gen_keyid: [u8; 20] = {
-                let mut out = [0u8; 20];
-                let bytes = (0..20)
-                    .map(|i| u8::from_str_radix(&GEN_KEYID_HEX[2 * i..2 * i + 2], 16).unwrap())
-                    .collect::<Vec<u8>>();
-                out.copy_from_slice(&bytes);
-                out
-            };
-            let mut empty = vec![leaf_hash(&[0u8; 20])];
-            for i in 1..=TREE_DEPTH {
-                let prev = empty[i - 1];
-                empty.push(node_hash(&prev, &prev));
-            }
-            let mut siblings: Vec<[u8; 32]> = vec![leaf_hash(&[0x02u8; 20])];
-            siblings.extend(empty.iter().take(TREE_DEPTH).skip(1));
-            let bits = vec![0u8; TREE_DEPTH];
-            let mut node = leaf_hash(&gen_keyid);
-            for (sib, _) in siblings.iter().zip(bits.iter()) {
-                node = node_hash(&node, sib);
-            }
-            let root = node;
-            assert_eq!(
-                root.iter().map(|b| format!("{b:02x}")).collect::<String>(),
-                ROOT_TWO_LEAVES_HEX,
-                "host-built tree must match the pinned root"
-            );
-
-            let env = ExecutorEnv::builder()
-                .write(&d).unwrap()
-                .write(&secret).unwrap()
-                .write(&siblings).unwrap()
-                .write(&bits).unwrap()
-                .write(&root).unwrap()
-                .write(&season).unwrap()
-                .write(&ctx).unwrap()
-                .build()
-                .unwrap();
+            let w = reg_witness();
+            let env = reg_env(&w);
             eprintln!("[reg] proving (tree depth {TREE_DEPTH}) ...");
             let start = Instant::now();
             let info = default_prover().prove(env, REGISTRATION_REG_ELF).expect("proving failed");
             let elapsed = start.elapsed();
             info.receipt.verify(REGISTRATION_REG_ID).expect("receipt failed to verify");
-
-            // Assert the full frozen journal against the circomlibjs-pinned constants.
-            let mut expected = [0u8; 136];
-            expected[0..32].copy_from_slice(&dec_to_be32(POSEIDON1_OF_1));
-            expected[32..64].copy_from_slice(&dec_to_be32(RN_D1));
-            expected[64..96].copy_from_slice(&root);
-            expected[96..104].copy_from_slice(&season.to_be_bytes());
-            expected[104..136].copy_from_slice(&ctx);
             assert_eq!(
-                info.receipt.journal.bytes, expected,
+                info.receipt.journal.bytes, w.expected_journal,
                 "journal must equal the circomlibjs-pinned 136-byte expected set"
             );
             eprintln!("[reg] journal matches the circomlibjs-pinned expected bytes");
+            let bytes = bincode::serialize(&info.receipt).expect("receipt serialization");
+            std::fs::write("receipt_reg.bin", &bytes).expect("writing receipt_reg.bin");
+            eprintln!("[reg] receipt written to receipt_reg.bin ({} bytes)", bytes.len());
             report("reg", REGISTRATION_REG_ELF, &info, elapsed);
         }
+        "wrap" => {
+            // Work-plan step 3, the wrapped-receipt candidate: the same reg statement proved
+            // with the STARK-to-SNARK wrap (Groth16 over BN254). Needs docker, which is how
+            // RISC Zero runs its Groth16 prover locally, itself a data point: the member's
+            // machine needs docker too on this path. Reports combined prove-and-wrap time,
+            // receipt and seal sizes, repeated verification timings for the wrapped receipt,
+            // and dumps the seal, journal, and claim digest as hex for the Node-side
+            // verification experiment.
+            use methods::{REGISTRATION_REG_ELF, REGISTRATION_REG_ID};
+            use risc0_zkvm::sha::Digestible;
+            use risc0_zkvm::ProverOpts;
+            let w = reg_witness();
+            let env = reg_env(&w);
+            eprintln!("[wrap] proving with the Groth16 wrap (docker required) ...");
+            let start = Instant::now();
+            let info = default_prover()
+                .prove_with_opts(env, REGISTRATION_REG_ELF, &ProverOpts::groth16())
+                .expect("groth16 proving failed");
+            let elapsed = start.elapsed();
+            info.receipt.verify(REGISTRATION_REG_ID).expect("wrapped receipt failed to verify");
+            assert_eq!(
+                info.receipt.journal.bytes, w.expected_journal,
+                "journal must equal the circomlibjs-pinned 136-byte expected set"
+            );
+            let g = info.receipt.inner.groth16().expect("receipt is not groth16");
+            println!("[wrap] seal_bytes: {}", g.seal.len());
+            println!("[wrap] claim_digest: {}", hex::encode(g.claim.digest().as_bytes()));
+            let vstart = Instant::now();
+            for _ in 0..10 {
+                info.receipt.verify(REGISTRATION_REG_ID).expect("re-verify failed");
+            }
+            println!(
+                "[wrap] verify_ms_avg_of_10: {:.2}",
+                vstart.elapsed().as_secs_f64() * 100.0
+            );
+            std::fs::write("wrap_seal.hex", hex::encode(&g.seal)).expect("writing seal");
+            std::fs::write("wrap_journal.hex", hex::encode(&info.receipt.journal.bytes))
+                .expect("writing journal");
+            eprintln!("[wrap] seal and journal hex written for the Node-side verification step");
+            report("wrap", REGISTRATION_REG_ELF, &info, elapsed);
+        }
+        "verify" => {
+            // Work-plan step 3, the unwrapped candidate's gateway-side cost: read the receipt
+            // the reg mode wrote and time repeated verifications, which is what a gateway
+            // sidecar would do per registration.
+            use methods::REGISTRATION_REG_ID;
+            let path = std::env::args().nth(2).unwrap_or_else(|| "receipt_reg.bin".to_string());
+            let bytes = std::fs::read(&path).expect("reading the receipt file (run 'reg' first)");
+            let receipt: risc0_zkvm::Receipt =
+                bincode::deserialize(&bytes).expect("receipt deserialization");
+            println!("[verify] receipt_bytes: {}", bytes.len());
+            let start = Instant::now();
+            for _ in 0..10 {
+                receipt.verify(REGISTRATION_REG_ID).expect("verification failed");
+            }
+            println!(
+                "[verify] verify_ms_avg_of_10: {:.2}",
+                start.elapsed().as_secs_f64() * 100.0
+            );
+        }
         other => {
-            eprintln!("unknown mode '{other}', use 'derive', 'sig', 'rec', or 'reg'");
+            eprintln!("unknown mode '{other}', use 'derive', 'sig', 'rec', 'reg', 'wrap', or 'verify'");
             std::process::exit(2);
         }
     }

@@ -82,13 +82,43 @@ jobs:
           echo "asserts the full 136-byte journal against the circomlibjs-pinned vectors"
           /usr/bin/time -v ./target/release/host reg
 
-      - name: Production statement under an enforced 8 GB cap
+      - name: Production statement at small segments (po2 19) under an enforced 8 GB cap
         working-directory: research/risc0-registration
         run: |
           echo "re-runs the production-statement prover inside an 8 GB cgroup with swap off,"
-          echo "so a pass DEMONSTRATES the fit on an 8 GB machine instead of inferring it from"
-          echo "the 16 GB runner's headroom (docs/REDUCING_PROVING_COST.md, the gate section)."
-          echo "An out-of-memory termination here is the honest negative answer."
-          sudo env "PATH=$PATH" systemd-run --scope --collect \
+          echo "at segment_limit_po2=19, since prover peak memory tracks segment size and the"
+          echo "default segments put this statement at 9.6 GB. A pass DEMONSTRATES the 8 GB"
+          echo "fit at the cost of proportionally more segments; an out-of-memory termination"
+          echo "is the honest negative answer (docs/REDUCING_PROVING_COST.md, gate section)."
+          sudo env "PATH=$PATH" MNO_SEGMENT_PO2=19 systemd-run --scope --collect \
             -p MemoryMax=8G -p MemorySwapMax=0 \
             /usr/bin/time -v ./target/release/host reg
+
+      - name: Signature statement at small segments (po2 19), memory re-check
+        working-directory: research/risc0-registration
+        run: |
+          echo "re-measures the wallet-custody signature statement at segment_limit_po2=19."
+          echo "If the peak drops from 9.6 GB toward the small-segment tier, the wallet-custody"
+          echo "rejection was partly an artifact of the default segment size and the decision"
+          echo "gets revisited on this evidence."
+          MNO_SEGMENT_PO2=19 /usr/bin/time -v ./target/release/host sig
+
+      - name: Unwrapped candidate, gateway-side verification cost
+        working-directory: research/risc0-registration
+        run: |
+          echo "times repeated STARK-receipt verifications on the receipt the reg step wrote,"
+          echo "the per-registration cost a gateway verifier sidecar would pay (step 3)"
+          ./target/release/host verify receipt_reg.bin
+
+      - name: Wrapped candidate, prove-and-wrap measurement
+        working-directory: research/risc0-registration
+        run: |
+          echo "the Groth16-wrapped candidate (step 3). RISC Zero runs its Groth16 prover in"
+          echo "docker, so this measures combined prove-and-wrap wall time, seal and receipt"
+          echo "sizes, and wrapped-verification timings, and dumps the seal for the Node-side"
+          echo "verification experiment. The wrap's memory runs inside the docker daemon's"
+          echo "process tree, so the time -v peak below covers the host process only; the"
+          echo "docker requirement itself is a member-side operational cost of this candidate."
+          docker --version
+          MNO_SEGMENT_PO2=19 /usr/bin/time -v ./target/release/host wrap
+          echo "seal head:"; head -c 200 wrap_seal.hex; echo
