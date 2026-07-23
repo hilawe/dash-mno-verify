@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["host", "methods"]
+members = ["host", "methods", "vectors"]
 
 # Acceleration for the guest. These forks expose RISC Zero precompiles for the
 # secp256k1 curve arithmetic (k256) and SHA-256 (sha2), which are the dominant

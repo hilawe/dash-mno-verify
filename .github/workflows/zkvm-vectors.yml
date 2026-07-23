@@ -1,0 +1,22 @@
+name: zkvm-vectors
+
+# Work-plan step 1 of docs/ZKVM_INTEGRATION.md, the Rust half of the cross-implementation
+# golden vectors. Runs light-poseidon and the SHA-256 tree spec against the constants that
+# test/zkvm_vectors.test.js pins from circomlibjs. A plain cargo test, no zkVM toolchain,
+# so it is cheap enough to run on every change to the research workspace. This passing is
+# the design's hard prerequisite (circomlib-compatible Poseidon in Rust).
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "research/risc0-registration/**"
+      - ".github/workflows/zkvm-vectors.yml"
+
+jobs:
+  vectors:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Poseidon and tree-spec golden vectors
+        working-directory: research/risc0-registration
+        run: cargo test -p vectors --release

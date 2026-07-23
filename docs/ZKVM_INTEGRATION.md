@@ -215,3 +215,19 @@ an earlier measurement.
 Steps 1 through 3 live entirely in `research/` and the bench, so they are cheap to iterate and
 nothing ships until step 4. The committed PLONK keys stay valid throughout, and single-tier mode is
 unaffected at every step.
+
+## Appendix, frozen protocol bytes (work-plan step 1)
+
+The journal is exactly 136 bytes, committed by the guest as one slice, in this order:
+
+1. commitment, 32 bytes, big-endian field element
+2. regNullifier, 32 bytes, big-endian field element
+3. root, 32 bytes, the SHA-256 tree root
+4. season, 8 bytes, big-endian unsigned integer
+5. contextHash, 32 bytes, big-endian field element
+
+The cross-implementation golden vectors (both Poseidon formula forms with the 4x64 little-endian
+limb layout, and the SHA-256 tree spec including the empty-leaf construction) are pinned twice, in
+`test/zkvm_vectors.test.js` (computed by circomlibjs, the reference the circuits are built against)
+and in `research/risc0-registration/vectors/` (reproduced by light-poseidon and sha2 in Rust, run
+by the zkvm-vectors CI workflow). A drift on either side fails that side's suite.
