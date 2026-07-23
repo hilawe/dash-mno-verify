@@ -181,7 +181,7 @@ A measurement limitation is recorded honestly here rather than papered over. RIS
 Groth16 wrap in a docker container in its own cgroup, and it does not expose docker's
 `--cgroup-parent`, so on a shared GitHub runner the combined prove-and-wrap peak cannot be enforced
 under one 8 GB cgroup or read reliably. The bench therefore reports the host-process peak, the wall
-time, and an indicative sum of docker container `memory.peak` samples, and a definitive capped
+time, and the indicative maximum single docker container `memory.peak` observed, and a definitive capped
 wrapped-memory number needs a dedicated runner with a slice-scoped or rootless docker whose whole
 process tree is one cgroup. Until that exists, the wrapped candidate's 8 GB fit is not settled, which
 is itself an input to the decision (the unwrapped path has no such measurement obstacle).

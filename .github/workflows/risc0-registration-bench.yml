@@ -125,20 +125,27 @@ jobs:
           # OOM kill. Any other failure (a compile break, a missing binary, a systemd-run error)
           # propagates and fails the step (review finding: blanket "nonzero == OOM" masked real
           # failures). A pass or a genuine OOM both let the later receipt-path steps run.
-          SCOPE="mno-reg-cap-$$"
+          # Name the scope (no --collect) so its structured Result survives for inspection.
+          # The ONLY accepted negative signal is a scope-local OOM: systemd's Result=oom-kill on
+          # this exact unit, or the classic SIGKILL exit 137 that a MemoryMax kill produces. Any
+          # other nonzero exit is a real failure and propagates (the earlier classifier wrongly
+          # folded MemoryPeak and a global dmesg into the boolean, so every nonzero exit passed).
+          SCOPE="mno-reg-cap-$$.scope"
           set +e
-          sudo env "PATH=$PATH" MNO_SEGMENT_PO2=19 systemd-run --scope --unit "$SCOPE" --collect \
+          sudo env "PATH=$PATH" MNO_SEGMENT_PO2=19 systemd-run --scope --unit "$SCOPE" \
             -p MemoryMax=8G -p MemorySwapMax=0 \
             /usr/bin/time -v ./target/release/host reg
           RC=$?
           set -e
-          OOM=$(systemctl show "$SCOPE" -p MemoryPeak 2>/dev/null; journalctl -u "$SCOPE" 2>/dev/null | grep -ic "out of memory\|oom-kill" || true)
+          RESULT=$(systemctl show "$SCOPE" -p Result --value 2>/dev/null || echo "")
+          echo "scope Result=$RESULT exit=$RC"
+          sudo systemctl reset-failed "$SCOPE" 2>/dev/null || true
           if [ $RC -eq 0 ]; then
             echo "RESULT: reg fits under the 8 GB cap at po2 19"
-          elif dmesg 2>/dev/null | tail -50 | grep -qi "oom-kill\|Out of memory" || [ "${OOM:-0}" != "0" ]; then
-            echo "RESULT: reg did NOT fit under the 8 GB cap at po2 19 (OOM-killed), the valid negative answer"
+          elif [ "$RESULT" = "oom-kill" ] || [ $RC -eq 137 ]; then
+            echo "RESULT: reg did NOT fit under the 8 GB cap at po2 19 (scope-local OOM-kill), the valid negative answer"
           else
-            echo "ERROR: reg failed with exit $RC and no OOM was recorded, this is a real failure"
+            echo "ERROR: reg failed with exit $RC and no scope-local OOM was recorded, this is a real failure"
             exit $RC
           fi
 
@@ -176,8 +183,8 @@ jobs:
           echo "a transient systemd scope, and it does not expose --cgroup-parent to us, so on a"
           echo "shared GitHub runner the combined prove-and-wrap peak CANNOT be enforced or read"
           echo "reliably here (review finding). So this measures what it honestly can: the host"
-          echo "process peak, the wall time, and the sum of every docker container's own"
-          echo "memory.peak sampled during the run, reported as INDICATIVE ONLY. A definitive"
+          echo "process peak, the wall time, and the maximum single docker container's own"
+          echo "memory.peak observed during the run, reported as INDICATIVE ONLY. A definitive"
           echo "capped number needs a dedicated runner with a slice-scoped or rootless docker"
           echo "whose whole process tree is one cgroup (tracked in docs/ZKVM_INTEGRATION.md)."
           docker --version
@@ -199,7 +206,7 @@ jobs:
           set -e
           kill "$POLLER" 2>/dev/null || true
           echo "host-process peak is the time -v line above (does NOT include the docker prover)"
-          echo "indicative docker container peak bytes: $(cat /tmp/docker_peak 2>/dev/null || echo unknown)"
+          echo "indicative MAX single-container peak bytes: $(cat /tmp/docker_peak 2>/dev/null || echo unknown)"
           if [ $RC -ne 0 ]; then
             echo "WRAP failed with exit $RC (real failure or docker unavailable), not treated as an 8 GB verdict"
             exit $RC

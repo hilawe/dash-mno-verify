@@ -52,6 +52,18 @@ prioritized punch list.
   container is a separate cgroup with no `--cgroup-parent`, so a definitive capped wrapped number
   needs a dedicated runner). The Rust half of this fold is validated by CI, not locally (no Rust
   toolchain in-session).
+- 2026-07-23, a FOURTH (confirming) pass again found no statement-soundness hole and confirmed the
+  varied fixture and reworked check are genuine, but caught four defects in the third fold's own
+  scaffolding, now folded. The notable one: the third fold's OOM classifier was itself buggy (it
+  folded `MemoryPeak=...`, never "0", into the OOM boolean, so every nonzero exit still passed as an
+  OOM), now replaced with a scope-local signal only (systemd `Result=oom-kill` on the named unit or
+  exit 137), so a real prover failure propagates. Also: the extra-sibling negative case no longer
+  also adds a bit (it could not isolate the sibling-length boundary), split into extra-sibling-only
+  and extra-bit-only; `verify --repeat` rejects zero and malformed values instead of dividing latency
+  by zero or silently skipping the verify; and the docker-peak wording is consistently "maximum
+  single-container peak" in the workflow and design doc, not "sum". Four rounds have now converged
+  with no statement-soundness hole ever found; remaining findings have all been in research-bench
+  test and measurement scaffolding.
 - 2026-07-23 (earlier), a full multi-reviewer round over the oracle change set was folded. The findings and
   their fixes: the tip guard now compares block hash as well as height, so a same-height branch
   swap mid-read forces a retry instead of publishing a torn signed snapshot, with a retry backoff

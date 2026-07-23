@@ -475,7 +475,8 @@ fn main() {
                 ("path bit = 2", bad(&|w| w.bits[0] = 2), None),
                 ("short siblings only", bad(&|w| { w.siblings.pop(); }), None),
                 ("short bits only", bad(&|w| { w.bits.pop(); }), None),
-                ("extra sibling", bad(&|w| { w.siblings.push([0u8; 32]); w.bits.push(0); }), None),
+                ("extra sibling only", bad(&|w| { w.siblings.push([0u8; 32]); }), None),
+                ("extra bit only", bad(&|w| { w.bits.push(0); }), None),
                 ("wrong root", bad(&|w| w.root[0] ^= 0xff), None),
             ];
 
@@ -530,12 +531,19 @@ fn main() {
             let args: Vec<String> = std::env::args().collect();
             let path = args.get(2).cloned().unwrap_or_else(|| "receipt_reg.bin".to_string());
             let expect_id = args.get(3).filter(|a| !a.starts_with("--")).cloned();
-            let repeat: u32 = args
-                .iter()
-                .position(|a| a == "--repeat")
-                .and_then(|i| args.get(i + 1))
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(1);
+            // --repeat N averages N verifications; default 1. A present-but-invalid or zero N is
+            // an error, not a silent fall-through to 1 (which would divide latency by zero or
+            // skip the verify entirely).
+            let repeat: u32 = match args.iter().position(|a| a == "--repeat") {
+                None => 1,
+                Some(i) => match args.get(i + 1).and_then(|v| v.parse::<u32>().ok()) {
+                    Some(n) if n >= 1 => n,
+                    _ => {
+                        eprintln!("[verify] --repeat needs a positive integer");
+                        std::process::exit(2);
+                    }
+                },
+            };
             let bytes = std::fs::read(&path).expect("reading the receipt file (run 'reg' first)");
             let receipt: risc0_zkvm::Receipt =
                 bincode::deserialize(&bytes).expect("receipt deserialization");
