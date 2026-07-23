@@ -8,6 +8,12 @@ name: risc0-registration-bench
 # proof fit a roughly 16 GB masternode-class box. If the run step is killed for
 # memory, that is itself the answer (it needs more than the runner has). If it
 # completes, the "Maximum resident set size" line is the measured peak.
+#
+# The final step re-runs the chosen derive variant inside an enforced 8 GB cgroup
+# with swap off, the acceptance bar as tightened on 2026-07-23 (see the gate
+# section of docs/REDUCING_PROVING_COST.md). That step passing demonstrates the
+# 8 GB fit; the step failing on an out-of-memory termination is the honest
+# negative answer.
 on:
   workflow_dispatch:
   push:
@@ -66,3 +72,14 @@ jobs:
         run: |
           echo "the Maximum resident set size line below is the Phase 0 gate number (rec)"
           /usr/bin/time -v ./target/release/host rec
+
+      - name: Derive-key statement under an enforced 8 GB cap
+        working-directory: research/risc0-registration
+        run: |
+          echo "re-runs the derive prover inside an 8 GB cgroup with swap off, so a pass"
+          echo "DEMONSTRATES the fit on an 8 GB machine instead of inferring it from the"
+          echo "16 GB runner's headroom (docs/REDUCING_PROVING_COST.md, the gate section)."
+          echo "An out-of-memory termination here is the honest negative answer."
+          sudo env "PATH=$PATH" systemd-run --scope --collect \
+            -p MemoryMax=8G -p MemorySwapMax=0 \
+            /usr/bin/time -v ./target/release/host derive

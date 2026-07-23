@@ -112,6 +112,12 @@ test, does the proof fit a roughly 16 GB masternode-class box. If the run step i
 is the answer. If it completes, read the `Maximum resident set size` line. For a target larger than the
 runner, use a native x86_64 Linux box with more memory instead.
 
+The workflow's final step re-runs the derive variant inside an enforced 8 GB cgroup (`systemd-run`
+with `MemoryMax=8G` and swap off), the acceptance bar as tightened on 2026-07-23. That step passing
+demonstrates the 8 GB fit the cost doc currently marks as pending; an out-of-memory termination is
+the honest negative answer. It caps the prover alone, so it does not yet represent a box that is
+also running Dash Core at full cache; a representative-box run stays worthwhile beyond it.
+
 ## Version alignment
 
 The RISC Zero crate versions and the fork tags in the `[patch.crates-io]` block are set to the 3.0.5
