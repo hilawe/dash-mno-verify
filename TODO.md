@@ -38,7 +38,7 @@ follow-up below.
 
 ### P0 follow-up, the shared Dash Platform registration backend
 
-- [ ] Back the registration store with Dash Platform so several gateways share one record set, mirroring the `nullifier` backend. The `registration` document type already exists in the contract with the unique index on (season, contextHash, regNullifier). Until this lands, `MNO_MODE=two-tier` with `MNO_STORE=platform` fails loudly at boot rather than running a non-shared store and risking a double grant. Needs a funded testnet identity and DAPI seed config. (`core/platform_store.js`, `core/gateway.js`, `scripts/register_contract.mjs`)
+- [ ] Back the registration store with Dash Platform so several gateways share one record set, mirroring the `nullifier` backend. The `registration` document type already exists in the contract with the unique index on (season, contextHash, regNullifier). Until this lands, `MNO_MODE=two-tier` with `MNO_STORE=platform` fails loudly at boot rather than running a non-shared store and risking a double grant. Needs a funded testnet identity and DAPI seed config. When this work happens, use the community `dash-platform-sdk` (github.com/pshenmic/dash-platform-sdk) as the JS SDK, per the owner's 2026-07-23 direction, evaluating it against the wired official `dash` package at the same time. It is Platform-only (fine here, the oracle talks to Core directly) and its v1.4.x error handling is happy-path, so wrap its calls defensively. (`core/platform_store.js`, `core/gateway.js`, `scripts/register_contract.mjs`)
 
 ## P1, before any non-local or public deployment
 
