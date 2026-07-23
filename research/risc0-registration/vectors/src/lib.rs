@@ -39,6 +39,24 @@ pub struct Fixture {
     pub root_two_leaves_hex: String,
     pub root_two_leaves_right_hex: String,
     pub journal_left_hex: String,
+    pub varied: Varied,
+}
+
+/// A fully-varied second witness so the guest check validates a whole journal that differs in
+/// every field, not just the all-ones base case.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Varied {
+    pub d_hex: String,
+    pub secret: String,
+    pub season: String,
+    pub context_hash: String,
+    pub keyid_hex: String,
+    pub sibling0_hex: String,
+    pub commitment: String,
+    pub reg_nullifier: String,
+    pub root_hex: String,
+    pub journal_hex: String,
 }
 
 /// The parsed golden fixture, embedded from the main repository at compile time.
@@ -193,5 +211,22 @@ mod tests {
         journal.extend_from_slice(&dec_to_be32(&g.context_hash));
         assert_eq!(journal.len(), 136);
         assert_eq!(hex::encode(journal), g.journal_left_hex);
+    }
+
+    #[test]
+    fn the_varied_witness_journal_reproduces_the_javascript_literal() {
+        // Every field of the varied witness differs from the base case (season above 2^32, a
+        // nontrivial secret and context, the right-hand root), so reproducing its JS-authored
+        // journal literal from Rust pins the layout across the whole value range, not just the
+        // all-ones case.
+        let v = &golden().varied;
+        let mut journal = Vec::with_capacity(136);
+        journal.extend_from_slice(&dec_to_be32(&v.commitment));
+        journal.extend_from_slice(&dec_to_be32(&v.reg_nullifier));
+        journal.extend_from_slice(&hex::decode(&v.root_hex).unwrap());
+        let season: u64 = v.season.parse().unwrap();
+        journal.extend_from_slice(&season.to_be_bytes());
+        journal.extend_from_slice(&dec_to_be32(&v.context_hash));
+        assert_eq!(hex::encode(journal), v.journal_hex);
     }
 }

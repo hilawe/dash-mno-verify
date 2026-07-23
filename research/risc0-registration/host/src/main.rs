@@ -182,11 +182,16 @@ fn raw_env(w: &RawReg) -> risc0_zkvm::ExecutorEnv<'_> {
         .unwrap()
 }
 
-// Run the guest under the executor (no proof) and return whether it completed. A guest
-// assertion aborts execution, so Err means the witness was rejected, which is what the
-// negative cases want.
-fn guest_executes(elf: &[u8], w: &RawReg) -> bool {
-    risc0_zkvm::default_executor().execute(raw_env(w), elf).is_ok()
+// Run the guest under the executor (no proof) and return the committed journal bytes if it
+// completed, or None if a guest assertion aborted execution (a rejected witness). Returning
+// the journal, not just a bool, lets an accepted case assert the journal is CORRECT, not
+// merely that execution succeeded (review finding: a bool-only check passes a guest that
+// runs but commits the wrong root, season, or context).
+fn guest_journal(elf: &[u8], w: &RawReg) -> Option<Vec<u8>> {
+    match risc0_zkvm::default_executor().execute(raw_env(w), elf) {
+        Ok(session) => Some(session.journal.bytes),
+        Err(_) => None,
+    }
 }
 
 fn report(mode: &str, elf: &[u8], info: &ProveInfo, elapsed: Duration) {
@@ -410,37 +415,34 @@ fn main() {
                 ctx: base.ctx,
             };
 
-            // The valid right-hand path: put the generator leaf at index 1, sibling is the
-            // 0x02 leaf, and rebuild the root the guest expects for that placement.
-            let right = {
+            // The fully-varied valid witness (fixture "varied"): d = n-2, a nontrivial secret,
+            // a season above 2^32, a different context, and the generator... no, its own keyID
+            // at index 1 (right child) with a 0x03 sibling leaf. Its journal differs in every
+            // field from the base case, so validating it against the JS-authored journal
+            // catches a guest that ignores upper key bits or hardcodes season, context, or root.
+            let varied = {
                 use vectors::{leaf_hash, node_hash};
-                let gen_keyid: [u8; 20] =
-                    hex::decode(&g.gen_keyid_hex).unwrap().try_into().unwrap();
+                let dv: [u8; 32] = hex::decode(&g.varied.d_hex).unwrap().try_into().unwrap();
+                let keyid: [u8; 20] = hex::decode(&g.varied.keyid_hex).unwrap().try_into().unwrap();
+                let sib0: [u8; 32] = hex::decode(&g.varied.sibling0_hex).unwrap().try_into().unwrap();
+                let secret = vectors::dec_to_be32(&g.varied.secret);
+                let ctx = vectors::dec_to_be32(&g.varied.context_hash);
+                let season: u64 = g.varied.season.parse().unwrap();
                 let mut empty = vec![leaf_hash(&[0u8; 20])];
                 for i in 1..=TREE_DEPTH {
                     let prev = empty[i - 1];
                     empty.push(node_hash(&prev, &prev));
                 }
-                let mut siblings: Vec<[u8; 32]> = vec![leaf_hash(&[0x02u8; 20])];
+                let mut siblings: Vec<[u8; 32]> = vec![sib0];
                 siblings.extend(empty.iter().take(TREE_DEPTH).skip(1));
                 let mut bits = vec![0u8; TREE_DEPTH];
-                bits[0] = 1; // our leaf is the right child at level 0
-                let mut node = leaf_hash(&gen_keyid);
-                // level 0: sibling on the left because bit = 1
-                node = node_hash(&siblings[0], &node);
+                bits[0] = 1;
+                let mut node = node_hash(&sib0, &leaf_hash(&keyid));
                 for sib in siblings.iter().take(TREE_DEPTH).skip(1) {
                     node = node_hash(&node, sib);
                 }
-                assert_eq!(hex::encode(node), g.root_two_leaves_right_hex);
-                RawReg {
-                    d: base.d,
-                    secret: base.secret,
-                    siblings,
-                    bits,
-                    root: node,
-                    season: base.season,
-                    ctx: base.ctx,
-                }
+                assert_eq!(hex::encode(node), g.varied.root_hex, "varied host tree must match fixture");
+                RawReg { d: dv, secret, siblings, bits, root: node, season, ctx }
             };
 
             let bad = |mutate: &dyn Fn(&mut RawReg)| {
@@ -457,31 +459,51 @@ fn main() {
                 w
             };
 
-            let cases: Vec<(&str, RawReg, bool)> = vec![
-                ("pinned-left-path", valid_left, true),
-                ("valid-right-path", right, true),
-                ("d = 0", bad(&|w| w.d = [0u8; 32]), false),
-                ("d = n", bad(&|w| w.d = n), false),
-                ("d = n + 1", bad(&|w| w.d = n_plus_1), false),
-                ("non-canonical secret (p)", bad(&|w| w.secret = p_be), false),
-                ("non-canonical contextHash (p)", bad(&|w| w.ctx = p_be), false),
-                ("path bit = 2", bad(&|w| w.bits[0] = 2), false),
-                ("short path", bad(&|w| { w.siblings.pop(); w.bits.pop(); }), false),
-                ("wrong root", bad(&|w| w.root[0] ^= 0xff), false),
+            let left_journal = hex::decode(&g.journal_left_hex).unwrap();
+            let varied_journal = hex::decode(&g.varied.journal_hex).unwrap();
+
+            // Each case: name, witness, and either the exact expected journal (accept) or None
+            // (reject). An accepted case must produce EXACTLY that journal, not merely execute.
+            let cases: Vec<(&str, RawReg, Option<Vec<u8>>)> = vec![
+                ("pinned-left-path", valid_left, Some(left_journal)),
+                ("fully-varied-right-path", varied, Some(varied_journal)),
+                ("d = 0", bad(&|w| w.d = [0u8; 32]), None),
+                ("d = n", bad(&|w| w.d = n), None),
+                ("d = n + 1", bad(&|w| w.d = n_plus_1), None),
+                ("non-canonical secret (p)", bad(&|w| w.secret = p_be), None),
+                ("non-canonical contextHash (p)", bad(&|w| w.ctx = p_be), None),
+                ("path bit = 2", bad(&|w| w.bits[0] = 2), None),
+                ("short siblings only", bad(&|w| { w.siblings.pop(); }), None),
+                ("short bits only", bad(&|w| { w.bits.pop(); }), None),
+                ("extra sibling", bad(&|w| { w.siblings.push([0u8; 32]); w.bits.push(0); }), None),
+                ("wrong root", bad(&|w| w.root[0] ^= 0xff), None),
             ];
 
             let mut failures = 0;
-            for (name, w, want_ok) in &cases {
-                let got_ok = guest_executes(elf, w);
-                let pass = got_ok == *want_ok;
+            for (name, w, want_journal) in &cases {
+                let got = guest_journal(elf, w);
+                let pass = match (want_journal, &got) {
+                    // accept: must execute AND commit exactly the expected journal
+                    (Some(exp), Some(j)) => j == exp,
+                    // accept expected but rejected, or a wrong journal committed
+                    (Some(_), None) => false,
+                    // reject expected: must NOT execute
+                    (None, None) => true,
+                    (None, Some(_)) => false,
+                };
                 if !pass {
                     failures += 1;
                 }
+                let outcome = match &got {
+                    Some(j) if want_journal.as_ref() == Some(j) => "accept+journal-ok".to_string(),
+                    Some(_) => "accept (journal MISMATCH)".to_string(),
+                    None => "reject".to_string(),
+                };
                 println!(
-                    "[check] {:<32} expect {:<6} got {:<6} {}",
+                    "[check] {:<28} expect {:<20} got {:<26} {}",
                     name,
-                    if *want_ok { "accept" } else { "reject" },
-                    if got_ok { "accept" } else { "reject" },
+                    if want_journal.is_some() { "accept+journal" } else { "reject" },
+                    outcome,
                     if pass { "ok" } else { "FAIL" }
                 );
             }
@@ -498,33 +520,54 @@ fn main() {
             // It also prints image_id and journal_hex so the Node harness
             // (scripts/verify_receipt.mjs) can drive it as the gateway verifier and confirm
             // the image-id binding by rejecting a wrong id.
+            // Args: verify <receipt-path> [expect-image-id-hex] [--repeat N]
+            // By default it verifies ONCE and reports single-request latency, the real
+            // gateway per-request cost. --repeat N averages N for a stable microbenchmark
+            // (review finding: a fixed 10x loop conflated the two). It also flips a journal
+            // byte and confirms verification rejects the tampered receipt, the binding check.
             use methods::REGISTRATION_REG_ID;
             use risc0_zkvm::sha::Digest;
-            let path = std::env::args().nth(2).unwrap_or_else(|| "receipt_reg.bin".to_string());
-            // Optional expected image id (hex); if it does not match, reject, which is how the
-            // Node harness checks the binding.
-            let expect_id = std::env::args().nth(3);
+            let args: Vec<String> = std::env::args().collect();
+            let path = args.get(2).cloned().unwrap_or_else(|| "receipt_reg.bin".to_string());
+            let expect_id = args.get(3).filter(|a| !a.starts_with("--")).cloned();
+            let repeat: u32 = args
+                .iter()
+                .position(|a| a == "--repeat")
+                .and_then(|i| args.get(i + 1))
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(1);
             let bytes = std::fs::read(&path).expect("reading the receipt file (run 'reg' first)");
             let receipt: risc0_zkvm::Receipt =
                 bincode::deserialize(&bytes).expect("receipt deserialization");
             let image_id_hex = hex::encode(Digest::from(REGISTRATION_REG_ID).as_bytes());
-            if let Some(want) = expect_id {
-                if want != image_id_hex {
+            if let Some(want) = &expect_id {
+                if *want != image_id_hex {
                     eprintln!("[verify] image id mismatch: want {want}, have {image_id_hex}");
                     std::process::exit(1);
                 }
             }
             println!("[verify] receipt_bytes: {}", bytes.len());
             println!("[verify] image_id: {image_id_hex}");
+            // Single-request latency (repeat=1 by default), the gateway's real per-request cost.
             let start = Instant::now();
-            for _ in 0..10 {
+            for _ in 0..repeat {
                 receipt.verify(REGISTRATION_REG_ID).expect("verification failed");
             }
-            println!(
-                "[verify] verify_ms_avg_of_10: {:.2}",
-                start.elapsed().as_secs_f64() * 100.0
-            );
+            let per = start.elapsed().as_secs_f64() * 1000.0 / (repeat as f64);
+            println!("[verify] verify_ms_single: {per:.2} (avg of {repeat})");
             println!("[verify] journal_hex: {}", hex::encode(&receipt.journal.bytes));
+
+            // Binding check: a tampered journal must fail verification, because the journal is
+            // part of the receipt claim. Flip one byte on a clone and confirm rejection.
+            let mut tampered = receipt.clone();
+            tampered.journal.bytes[0] ^= 0xff;
+            match tampered.verify(REGISTRATION_REG_ID) {
+                Ok(_) => {
+                    eprintln!("[verify] SECURITY: tampered journal verified, receipt is not bound");
+                    std::process::exit(1);
+                }
+                Err(_) => println!("[verify] rejects_tampered_journal: true"),
+            }
         }
         other => {
             eprintln!("unknown mode '{other}', use 'derive', 'sig', 'rec', 'reg', 'check', 'wrap', or 'verify'");

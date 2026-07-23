@@ -36,6 +36,22 @@ prioritized punch list.
   oracle recency window (the sharpest catch, root freshness versus a long proof, tracked as a gateway
   work item); and season is pinned to u64 across both engines since the zkVM journal encodes it as 8
   bytes while PLONK would accept any field element. No new statement-soundness hole was found.
+- 2026-07-23, a THIRD full pass (the follow-up-rounds discipline) again found no statement-soundness
+  hole and caught six weaknesses in the fold's own test and measurement scaffolding, now folded. The
+  key one: the guest `check` compared only pass/fail, so it proved the guest RAN but not that it
+  committed the right journal, and every accepted case used d=1/secret=1. Fixed by adding a
+  fully-varied second golden witness (d=n-2, nontrivial secret, season above 2^32, different context,
+  right-hand path with a 0x03 sibling), pinned in the shared fixture and both vector suites, and by
+  making `check` assert each accepted case's exact 136-byte journal (via `guest_journal` returning
+  the bytes), so a guest that ignored upper key bits or hardcoded a field would now fail. Also: the
+  Node harness now actually decodes the request body and verifies the decoded bytes with wrong-image
+  and corrupt-receipt rejections, the host `verify` reports single-request latency (not a 10x loop)
+  and asserts tampered-journal rejection, the capped bench step treats only a kernel-recorded OOM as
+  a valid negative and propagates any other failure, the bench watches the shared fixture path, and
+  the docker-wrap memory measurement is recorded as an honest limitation (RISC Zero's Groth16
+  container is a separate cgroup with no `--cgroup-parent`, so a definitive capped wrapped number
+  needs a dedicated runner). The Rust half of this fold is validated by CI, not locally (no Rust
+  toolchain in-session).
 - 2026-07-23 (earlier), a full multi-reviewer round over the oracle change set was folded. The findings and
   their fixes: the tip guard now compares block hash as well as height, so a same-height branch
   swap mid-read forces a retry instead of publishing a torn signed snapshot, with a retry backoff

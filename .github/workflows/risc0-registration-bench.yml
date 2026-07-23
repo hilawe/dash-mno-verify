@@ -21,6 +21,7 @@ on:
   push:
     paths:
       - "research/risc0-registration/**"
+      - "test/vectors/zkvm_golden.json"
       - ".github/workflows/risc0-registration-bench.yml"
 
 jobs:
@@ -119,19 +120,26 @@ jobs:
           echo "default segments put this statement at 9.6 GB. A pass DEMONSTRATES the 8 GB"
           echo "fit at the cost of proportionally more segments; an out-of-memory termination"
           echo "is the honest negative answer (docs/REDUCING_PROVING_COST.md, gate section)."
-          # Capture the exit status rather than letting an OOM kill the job: an OOM here is a
-          # valid, informative negative result, and the later receipt-path measurements must
-          # still run (review finding). A non-memory failure still fails the step.
+          # Run in a NAMED transient scope so its cgroup memory.events can be inspected, and
+          # accept a nonzero result as a valid negative ONLY if the kernel actually recorded an
+          # OOM kill. Any other failure (a compile break, a missing binary, a systemd-run error)
+          # propagates and fails the step (review finding: blanket "nonzero == OOM" masked real
+          # failures). A pass or a genuine OOM both let the later receipt-path steps run.
+          SCOPE="mno-reg-cap-$$"
           set +e
-          sudo env "PATH=$PATH" MNO_SEGMENT_PO2=19 systemd-run --scope --collect \
+          sudo env "PATH=$PATH" MNO_SEGMENT_PO2=19 systemd-run --scope --unit "$SCOPE" --collect \
             -p MemoryMax=8G -p MemorySwapMax=0 \
             /usr/bin/time -v ./target/release/host reg
           RC=$?
           set -e
+          OOM=$(systemctl show "$SCOPE" -p MemoryPeak 2>/dev/null; journalctl -u "$SCOPE" 2>/dev/null | grep -ic "out of memory\|oom-kill" || true)
           if [ $RC -eq 0 ]; then
             echo "RESULT: reg fits under the 8 GB cap at po2 19"
+          elif dmesg 2>/dev/null | tail -50 | grep -qi "oom-kill\|Out of memory" || [ "${OOM:-0}" != "0" ]; then
+            echo "RESULT: reg did NOT fit under the 8 GB cap at po2 19 (OOM-killed), the valid negative answer"
           else
-            echo "RESULT: reg did NOT fit under the 8 GB cap at po2 19 (exit $RC, likely OOM), recorded as the negative answer"
+            echo "ERROR: reg failed with exit $RC and no OOM was recorded, this is a real failure"
+            exit $RC
           fi
 
       - name: Signature statement at small segments (po2 19), memory re-check
@@ -160,30 +168,43 @@ jobs:
           echo "image id: $IMAGE_ID"
           node scripts/verify_receipt.mjs unwrapped "$IMAGE_ID"
 
-      - name: Wrapped candidate, prove-and-wrap under the 8 GB cap (cgroup-scoped)
+      - name: Wrapped candidate, prove-and-wrap measurement (with a stated limitation)
         working-directory: research/risc0-registration
         run: |
-          echo "the Groth16-wrapped candidate (step 3), under the SAME 8 GB cap as the prove."
-          echo "RISC Zero's Groth16 prover runs in docker, so the systemd scope alone would"
-          echo "miss the daemon's memory. This runs docker under the same cgroup slice AND"
-          echo "polls the docker cgroup peak, so the true combined peak is captured, not just"
-          echo "the host process (the unanimous review finding)."
+          echo "the Groth16-wrapped candidate (step 3). RISC Zero runs its Groth16 prover in a"
+          echo "docker container in a SEPARATE cgroup (docker-<id>.scope) that does not inherit"
+          echo "a transient systemd scope, and it does not expose --cgroup-parent to us, so on a"
+          echo "shared GitHub runner the combined prove-and-wrap peak CANNOT be enforced or read"
+          echo "reliably here (review finding). So this measures what it honestly can: the host"
+          echo "process peak, the wall time, and the sum of every docker container's own"
+          echo "memory.peak sampled during the run, reported as INDICATIVE ONLY. A definitive"
+          echo "capped number needs a dedicated runner with a slice-scoped or rootless docker"
+          echo "whose whole process tree is one cgroup (tracked in docs/ZKVM_INTEGRATION.md)."
           docker --version
-          # Start a background poller of the whole docker cgroup's peak memory.
+          # Sample the max over all docker container cgroups' own memory.peak. Indicative.
           ( PEAK=0
             for _ in $(seq 1 3600); do
-              CUR=$(cat /sys/fs/cgroup/system.slice/docker.service/memory.peak 2>/dev/null || echo 0)
-              [ "$CUR" -gt "$PEAK" ] && PEAK=$CUR
+              for f in /sys/fs/cgroup/system.slice/docker-*.scope/memory.peak; do
+                [ -f "$f" ] || continue
+                CUR=$(cat "$f" 2>/dev/null || echo 0)
+                [ "$CUR" -gt "$PEAK" ] && PEAK=$CUR
+              done
               echo "$PEAK" > /tmp/docker_peak
               sleep 2
             done ) &
           POLLER=$!
-          sudo env "PATH=$PATH" MNO_SEGMENT_PO2=19 systemd-run --scope --collect \
-            -p MemoryMax=8G -p MemorySwapMax=0 \
-            /usr/bin/time -v ./target/release/host wrap || echo "WRAP STEP non-zero exit (OOM is a valid negative result)"
+          set +e
+          MNO_SEGMENT_PO2=19 /usr/bin/time -v ./target/release/host wrap
+          RC=$?
+          set -e
           kill "$POLLER" 2>/dev/null || true
-          echo "docker cgroup peak bytes: $(cat /tmp/docker_peak 2>/dev/null || echo unknown)"
-          echo "seal head:"; head -c 200 wrap_seal.hex; echo
+          echo "host-process peak is the time -v line above (does NOT include the docker prover)"
+          echo "indicative docker container peak bytes: $(cat /tmp/docker_peak 2>/dev/null || echo unknown)"
+          if [ $RC -ne 0 ]; then
+            echo "WRAP failed with exit $RC (real failure or docker unavailable), not treated as an 8 GB verdict"
+            exit $RC
+          fi
+          if [ -f wrap_seal.hex ]; then echo "seal head:"; head -c 200 wrap_seal.hex; echo; fi
 
       - name: Wrapped candidate, Node-side verification and request size
         working-directory: research/risc0-registration

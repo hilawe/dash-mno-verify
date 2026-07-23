@@ -95,3 +95,35 @@ test("the complete 136-byte journal regenerates from independently encoded field
   assert.equal(journal.length, 272);
   assert.equal(journal, FIXTURE.journalLeftHex);
 });
+
+test("the fully-varied witness journal regenerates from circomlibjs, every field distinct", async () => {
+  const p = await buildPoseidon();
+  const F = p.F;
+  const out = (x) => F.toObject(x).toString();
+  const v = FIXTURE.varied;
+
+  // Recompute the commitment and nullifier from the varied secret and d.
+  const dV = BigInt("0x" + v.dHex);
+  assert.equal(out(p([F.e(BigInt(v.secret))])), v.commitment);
+  const khV = p(limbs(dV).map((x) => F.e(x)));
+  assert.equal(
+    out(p([khV, F.e(BigInt(v.season)), F.e(BigInt(v.contextHash))])),
+    v.regNullifier
+  );
+
+  // Recompute the right-hand root: varied keyID at index 1, sibling0 is the 0x03 leaf.
+  const empty = [leafHash(Buffer.alloc(20))];
+  for (let i = 1; i <= 16; i++) empty.push(nodeHash(empty[i - 1], empty[i - 1]));
+  let node = nodeHash(Buffer.from(v.sibling0Hex, "hex"), leafHash(Buffer.from(v.keyidHex, "hex")));
+  for (let i = 1; i < 16; i++) node = nodeHash(node, empty[i]);
+  assert.equal(node.toString("hex"), v.rootHex);
+
+  // And the full journal, independently encoded, matches the pinned literal.
+  const journal =
+    be32hex(v.commitment) +
+    be32hex(v.regNullifier) +
+    v.rootHex +
+    be8hex(v.season) +
+    be32hex(v.contextHash);
+  assert.equal(journal, v.journalHex);
+});

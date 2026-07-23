@@ -177,9 +177,17 @@ Two candidates, decided by measurement in work-plan step 3, not before:
   subprocess or a WASM build). Fully transparent, no new setup, at the cost of a non-JavaScript
   component in the deployment and a larger receipt.
 
+A measurement limitation is recorded honestly here rather than papered over. RISC Zero runs its
+Groth16 wrap in a docker container in its own cgroup, and it does not expose docker's
+`--cgroup-parent`, so on a shared GitHub runner the combined prove-and-wrap peak cannot be enforced
+under one 8 GB cgroup or read reliably. The bench therefore reports the host-process peak, the wall
+time, and an indicative sum of docker container `memory.peak` samples, and a definitive capped
+wrapped-memory number needs a dedicated runner with a slice-scoped or rootless docker whose whole
+process tree is one cgroup. Until that exists, the wrapped candidate's 8 GB fit is not settled, which
+is itself an input to the decision (the unwrapped path has no such measurement obstacle).
+
 Step 3 measures, for both candidates: member-side cost (the wrap step's memory under the same 8 GB
-cap as the prove, with the docker cgroup's peak captured separately since RISC Zero runs its Groth16
-prover in docker outside the host process, and its time), the encoded HTTP request-body size against
+cap as the prove where measurable, with the limitation above, and its time), the encoded HTTP request-body size against
 the gateway's existing 2 MB limit (raised deliberately or not at all), gateway verification time
 (which sets the registration rate limit and a global verification-concurrency bound), and end-to-end
 verification FROM NODE, not just from Rust, because the gateway is a Node process. The Node harness
