@@ -75,10 +75,12 @@ prioritized punch list.
 2. The Phase 0 statement decision is made (2026-07-23). The 9.6 GB wallet-custody variants are
    rejected as exceeding acceptable member hardware, and the derive-the-key statement at 4.8 GB is
    the chosen path, recorded with the acceptance-bar history in `docs/REDUCING_PROVING_COST.md`.
-   Two follow-ons before integration is claimed: the 8 GB-cap confirmation run (the 4.8 GB peak was
-   measured on a 16 GB runner, so the 8 GB fit is inferred, not demonstrated), and the integration
-   scope in `TODO.md` (the measured guest is a benchmark statement, its journal does not yet match
-   the registration publics and its tree hash differs, so wiring it in starts with a design pass).
+   The 8 GB-cap confirmation run passed on 2026-07-23 (4:56, 4.8 GB peak, no page faults, under an
+   enforced 8 GB cgroup, prover alone), so the 8 GB fit is demonstrated. What remains before
+   integration is claimed is the integration scope in `TODO.md` (the measured guest is a benchmark
+   statement, its journal does not yet match the registration publics and its tree hash differs, so
+   wiring it in starts with a design pass), plus measuring the STARK-to-SNARK wrap step if the
+   design picks a wrapped receipt.
    The still-open owner decision is whether to fund the purpose-built efficient-ECDSA circuit as
    the wallet-custody research track.
 3. The P1 remainder in `TODO.md`, chiefly the chain-anchored (SPV) oracle, the Platform-backed
