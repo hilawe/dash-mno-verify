@@ -23,9 +23,11 @@ prioritized punch list.
   regenerate and compare, an executor-only guest soundness gate (`host check`, rejecting d in {0, n,
   n+1}, non-canonical fields, bad path bits and lengths, plus a valid right-hand path), a Node-side
   receipt verification harness with request-size and image-id-binding checks, the wrap step run under
-  the 8 GB cap with docker-cgroup peak capture, the RISC Zero release pinned to 3.0.5 with lockfiles
-  committed, and doc corrections (the journal root is raw bytes not hex, the direct-node read needs a
-  ChainLocked tip not "read at the ChainLocked block", and the stale 8 GB-demonstrated claim).
+  the 8 GB cap with docker-cgroup peak capture, the RISC Zero release pinned to 3.0.5 with a
+  version-recording CI step (committing the Cargo.lock files is a follow-up needing a local cargo
+  run, since no Rust toolchain is available in-session), and doc corrections (the journal root is raw
+  bytes not hex, the direct-node read needs a ChainLocked tip not "read at the ChainLocked block",
+  and the stale 8 GB-demonstrated claim).
 - 2026-07-23 (earlier), a full multi-reviewer round over the oracle change set was folded. The findings and
   their fixes: the tip guard now compares block hash as well as height, so a same-height branch
   swap mid-read forces a retry instead of publishing a torn signed snapshot, with a retry backoff

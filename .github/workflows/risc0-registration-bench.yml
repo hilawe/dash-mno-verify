@@ -60,9 +60,9 @@ jobs:
           echo "== rustc"; rustc --version
           echo "== Cargo.lock present:"; ls -l Cargo.lock host/Cargo.lock methods/guest/Cargo.lock 2>/dev/null || true
 
-      - name: Build host and guest (release, locked)
+      - name: Build host and guest (release)
         working-directory: research/risc0-registration
-        run: cargo build --release --locked -p host
+        run: cargo build --release -p host
 
       - name: Guest soundness checks (executor only, fast)
         working-directory: research/risc0-registration

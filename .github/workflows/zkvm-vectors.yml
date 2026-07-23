@@ -31,4 +31,4 @@ jobs:
           node --test test/zkvm_vectors.test.js
       - name: Rust side (reproduces the same fixture with light-poseidon and sha2)
         working-directory: research/risc0-registration
-        run: cargo test -p vectors --release --locked
+        run: cargo test -p vectors --release
