@@ -216,10 +216,13 @@ caveats keep the claim from being oversold.
   resistance of a younger arithmetization-friendly hash.
 - It is silently reversible. To shrink a proof, a zkVM wraps its STARK in a Groth16 or PLONK proof,
   which brings a setup back. Verification here is off-chain on a small server and tolerates a large
-  proof, so the honest position is to ship the raw unwrapped proof and pin "no wrapper" as a design
-  constraint, which keeps the no-setup property true. At community scale, a few thousand proofs per
-  multi-hour window at tens of milliseconds each is seconds of parallelizable CPU, so no wrapper is
-  needed for throughput either.
+  proof, so the default position is to ship the raw unwrapped proof, which keeps the no-setup
+  property true. At community scale, a few thousand proofs per multi-hour window at tens of
+  milliseconds each is seconds of parallelizable CPU, so no wrapper is needed for throughput
+  either. (This "no wrapper" position is no longer pinned as a constraint. It is one of the two
+  candidates in the gated receipt-path decision of `docs/ZKVM_INTEGRATION.md`, work-plan step 3,
+  weighed against the wrapped path's pure-JavaScript verification, and whichever wins, this
+  section gets the measured result and the accepted tradeoff recorded.)
 
 ## Phase 0, the ablation-first benchmark
 
@@ -259,3 +262,9 @@ A no-large-key anonymous masternode membership proof is a genuine contribution, 
 optimization, and it is a natural collaboration with the people already doing zero-knowledge work in
 Dash. It is tracked as the durable fix for the member-side cost, to run as a research track in parallel
 with deployment rather than as a blocker on it.
+
+## Where the integration is specified
+
+The decided statement's path into production (journal layout, the dual-root snapshot, receipt
+verification at the gateway, the engine cutover rule, and the ordered work plan) is in
+`docs/ZKVM_INTEGRATION.md`.

@@ -76,11 +76,14 @@ prioritized punch list.
    rejected as exceeding acceptable member hardware, and the derive-the-key statement at 4.8 GB is
    the chosen path, recorded with the acceptance-bar history in `docs/REDUCING_PROVING_COST.md`.
    The 8 GB-cap confirmation run passed on 2026-07-23 (4:56, 4.8 GB peak, no page faults, under an
-   enforced 8 GB cgroup, prover alone), so the 8 GB fit is demonstrated. What remains before
-   integration is claimed is the integration scope in `TODO.md` (the measured guest is a benchmark
-   statement, its journal does not yet match the registration publics and its tree hash differs, so
-   wiring it in starts with a design pass), plus measuring the STARK-to-SNARK wrap step if the
-   design picks a wrapped receipt.
+   enforced 8 GB cgroup, prover alone), so the 8 GB fit is demonstrated. The integration design is
+   written and revised once through an independent design review, `docs/ZKVM_INTEGRATION.md`. Its
+   settled parts: two-tier retained, zkVM replaces registration only, an engine-neutral claims
+   object, a pinned SHA-256 tree spec, a dual-root v2 snapshot with a deployment-scoped downgrade
+   rule, circomlib-compatible Poseidon as a hard prerequisite, and a durable engine declaration
+   with season-boundary cutover. Still gated on measurement: the receipt verification path (wrapped
+   Groth16 versus an unwrapped STARK verifier), decided in work-plan step 3. Next build steps are
+   work-plan items 1 through 3, all inside `research/` and the bench.
    The still-open owner decision is whether to fund the purpose-built efficient-ECDSA circuit as
    the wallet-custody research track.
 3. The P1 remainder in `TODO.md`, chiefly the chain-anchored (SPV) oracle, the Platform-backed
