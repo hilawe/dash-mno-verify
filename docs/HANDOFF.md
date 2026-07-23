@@ -82,8 +82,13 @@ prioritized punch list.
    object, a pinned SHA-256 tree spec, a dual-root v2 snapshot with a deployment-scoped downgrade
    rule, circomlib-compatible Poseidon as a hard prerequisite, and a durable engine declaration
    with season-boundary cutover. Still gated on measurement: the receipt verification path (wrapped
-   Groth16 versus an unwrapped STARK verifier), decided in work-plan step 3. Next build steps are
-   work-plan items 1 through 3, all inside `research/` and the bench.
+   Groth16 versus an unwrapped STARK verifier), decided in work-plan step 3. Step 1 is done
+   (2026-07-23): the protocol bytes are frozen (the 136-byte journal appendix in the design doc)
+   and the cross-implementation golden vectors pass on both sides, circomlibjs in
+   `test/zkvm_vectors.test.js` and light-poseidon in `research/risc0-registration/vectors/` via
+   the zkvm-vectors workflow, so the hard prerequisite (circomlib-compatible Poseidon in Rust) is
+   answered yes and cross-engine nullifier identity holds. Next are steps 2 (guest v2) and 3
+   (receipt-path measurement), both inside `research/` and the bench.
    The still-open owner decision is whether to fund the purpose-built efficient-ECDSA circuit as
    the wallet-custody research track.
 3. The P1 remainder in `TODO.md`, chiefly the chain-anchored (SPV) oracle, the Platform-backed
