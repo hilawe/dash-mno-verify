@@ -170,18 +170,26 @@ The step-3 numbers are in, and they draw the two candidates sharply.
 | | Unwrapped STARK | Wrapped Groth16 |
 | --- | --- | --- |
 | Receipt size | about 4.8 MB | 769 bytes |
-| HTTP request body | about 6.4 MB, EXCEEDS the 2 MB limit | about 1.1 KB, well within |
+| HTTP request body | about 4.8 MB binary, or 6.4 MB if base64 in JSON | about 0.8 KB, or 1.1 KB base64 |
 | Gateway verify time | about 410 ms (Rust), 820 ms (Node subprocess) | about 5 to 14 ms |
 | Trusted setup | none (transparent) | reintroduces a circuit-specific Groth16 ceremony |
 | Member proving cost | the prove alone (about 86 min, 4.8 GB) | prove plus wrap, about 119 min, docker required, indicative 7.7 GB container peak (see the limitation above) |
 
 Both paths verified end to end from Node with genuine rejections (wrong image id, corrupt receipt, and
-the host also rejects a tampered journal). The unwrapped path's 4.8 MB receipt overruns the gateway's
-2 MB request-body limit as it stands, so the unwrapped path forces either a raised limit and a chunked
-or streamed upload, or a smaller receipt. The wrapped path is tiny and fast to verify but costs the
-member about 33 extra minutes, a docker dependency, and the trusted-setup property the transparency
-argument counts against. This is the decision the owner makes; the measurements do not force it, they
-frame it.
+the host also rejects a tampered journal). On size, the unwrapped receipt is 4.8 MB, which is small in
+absolute terms for a once-per-season upload to a server, and larger only relative to the gateway's
+current `MNO_MAX` request-body cap of 2 MB, which is a configuration default chosen for the small
+PLONK-era proofs, not a protocol or network limit. The 6.4 MB figure is the base64 tax of carrying the
+receipt in a JSON field; a binary or multipart upload carries the raw 4.8 MB. So the unwrapped path
+needs a raised body cap (a one-line config change) and preferably a binary upload, and it warrants a
+deliberate choice about how many unauthenticated bytes the registration endpoint parses before the
+proof check (bounded by the rate limit and the cap). None of that is a real obstacle. The wrapped path
+is tiny and fast to verify but costs the member about 33 extra minutes, a docker dependency, and the
+trusted-setup property the transparency argument counts against. Weighed on the properties, the
+unwrapped path's only genuine costs are gateway verify time (sub-second) and a config change, so it is
+the leaning recommendation, with the wrapped path reserved for a deployment that specifically needs the
+tiny fast receipt more than transparency. This is the owner's decision; the measurements frame it, they
+do not force it.
 
 ## Receipt verification at the gateway, a gated decision
 

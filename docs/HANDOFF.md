@@ -14,10 +14,12 @@ prioritized punch list.
   about 2 extra minutes (86 vs 84). The wallet-custody rejection is REOPENED, because the memory
   ceiling is set by segment size not statement, so the signature variant also dropped to 4.8 GB at
   po2 19: custody is now available at 4.8 GB for more proving time, an owner decision, not a
-  rejection. Receipt path measured: unwrapped STARK is transparent but a 4.8 MB receipt (6.4 MB
-  request) overruns the 2 MB limit and verifies in about 400-820 ms; wrapped Groth16 is 769 bytes,
-  verifies in about 5-14 ms, fits the limit, but adds about 33 min and a docker dependency to the
-  member's prove and reintroduces a trusted setup. Both fold into `docs/REDUCING_PROVING_COST.md` and
+  rejection. Receipt path measured: unwrapped STARK is transparent, a 4.8 MB receipt (small for a
+  once-per-season upload; exceeds only the configurable 2 MB `MNO_MAX` default, not a real limit, and
+  the 6.4 MB was the avoidable base64 tax of JSON) verifying in about 400-820 ms; wrapped Groth16 is
+  769 bytes, verifies in about 5-14 ms, but adds about 33 min and a docker dependency to the member's
+  prove and reintroduces a trusted setup. Leaning unwrapped on the properties (a config change beats a
+  trusted setup plus docker on every member). Both fold into `docs/REDUCING_PROVING_COST.md` and
   `docs/ZKVM_INTEGRATION.md`. Two owner decisions now open: wallet custody vs derive, and the
   receipt path.
 
