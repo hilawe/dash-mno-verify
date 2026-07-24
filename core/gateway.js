@@ -456,14 +456,18 @@ const server = createServer(async (req, res) => {
         vkey: regVkey,
         proof,
         publicSignals,
-        expected: { rootStore: dmlRoots, season, contextHash: ctx },
+        // This is the PLONK registration path, so the deployment engine is plonk and the statement
+        // is derive (PLONK supports only derive). The durable declaration binds this (season, context)
+        // to (plonk, derive), so a later zkVM or custody registration for the same bucket is rejected
+        // with statement-mismatch, keeping the registration nullifiers comparable.
+        expected: { rootStore: dmlRoots, season, contextHash: ctx, engine: "plonk", statement: "derive" },
         registrationStore,
         // The durable record and the members-tree mirror happen together inside the season
         // serialization, re-checking the season so a rollover during the proof verify above cannot
         // publish a stale-season root (the M2 race). The commit targets this context's tree.
-        commit: ({ season: s, commitment, contextHash: c, regNullifier: n }) =>
+        commit: ({ season: s, commitment, contextHash: c, regNullifier: n, engine, statement }) =>
           seasonMembers.commit(s, c, commitment, () =>
-            registrationStore.append({ season: s, contextHash: c, regNullifier: n, commitment }),
+            registrationStore.append({ season: s, contextHash: c, regNullifier: n, commitment, engine, statement }),
           ),
       });
       if (!result.ok) return send(res, 200, result);

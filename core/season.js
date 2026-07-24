@@ -109,6 +109,10 @@ export class SeasonMembers {
       const c = await this._materialize(contextHash);
       const res = await appendDurable();
       if (res.duplicate) return { ok: false, reason: "already-registered" };
+      // A bucket bound to a different (engine, statement), or an impossible engine/statement pair:
+      // no durable record was written, so nothing is appended to the tree either.
+      if (res.conflict) return { ok: false, reason: "statement-mismatch", declared: res.declared };
+      if (res.invalid) return { ok: false, reason: "invalid-engine-statement" };
       c.tree.append(commitment);
       const membersRoot = c.tree.root();
       c.roots.update([{ height: c.tree.size(), root: membersRoot, ts: this.nowSec() }]);

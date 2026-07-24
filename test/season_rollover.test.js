@@ -19,6 +19,40 @@ const CTX_B = "67890";
 const newStore = () => new RegistrationStore(new MemoryRegistrationBackend());
 const newSeason = (store) => new SeasonMembers({ store, rootWindow: 8, nowSec: () => 0, emptyRoot: EMPTY_ROOT });
 
+test("a commit into a bucket declared for a different statement is rejected, tree unchanged", async () => {
+  const store = newStore();
+  const m = newSeason(store);
+  await m.ensureContext(0, CTX);
+
+  // First registration declares (plonk, derive) for this (season, context).
+  const first = await m.commit(0, CTX, "111", () =>
+    store.append({ season: 0, contextHash: CTX, regNullifier: "n0", commitment: "111", engine: "plonk", statement: "derive" }),
+  );
+  assert.equal(first.ok, true);
+  assert.equal(m.size(CTX), 1);
+  const rootAfterFirst = m.root(CTX);
+
+  // A custody registration for the same bucket is rejected with statement-mismatch, and the members
+  // tree is not touched (no durable record was written).
+  const mismatch = await m.commit(0, CTX, "222", () =>
+    store.append({ season: 0, contextHash: CTX, regNullifier: "n1", commitment: "222", engine: "zkvm", statement: "custody" }),
+  );
+  assert.equal(mismatch.ok, false);
+  assert.equal(mismatch.reason, "statement-mismatch");
+  assert.deepEqual(mismatch.declared, { engine: "plonk", statement: "derive" });
+  assert.equal(m.size(CTX), 1, "the members tree was not appended to");
+  assert.equal(m.root(CTX), rootAfterFirst);
+
+  // An impossible engine/statement pair (plonk custody) is rejected the same way, tree untouched.
+  const invalid = await m.commit(0, CTX, "333", () =>
+    store.append({ season: 0, contextHash: CTX, regNullifier: "n2", commitment: "333", engine: "plonk", statement: "custody" }),
+  );
+  assert.equal(invalid.ok, false);
+  assert.equal(invalid.reason, "invalid-engine-statement");
+  assert.equal(m.size(CTX), 1);
+  assert.equal(m.root(CTX), rootAfterFirst);
+});
+
 test("a member is scoped to its season: present on that season's rebuild, absent on another", async () => {
   const store = newStore();
   const m = newSeason(store);

@@ -49,15 +49,16 @@ test("the zkVM decoder rejects a wrong-length journal and a non-canonical field 
 
 test("both decoders feed the same engine-neutral core, which runs one policy pipeline", async () => {
   const claims = { commitment: "9", regNullifier: "7", root: "abc", season: "5", contextHash: "3" };
-  const expected = { rootStore: { isRecent: (r) => r === "abc" }, season: "5", contextHash: "3" };
+  const expected = { rootStore: { isRecent: (r) => r === "abc" }, season: "5", contextHash: "3", engine: "plonk", statement: "derive" };
   const registrationStore = { has: async () => false };
   let committed = null;
   const commit = async (c) => ((committed = c), { ok: true, index: 0, membersRoot: "R", size: 1 });
 
-  // happy path: injected verify passes, the core commits the decoded claims.
+  // happy path: injected verify passes, the core commits the decoded claims plus the gateway-chosen
+  // engine and statement (which bind the bucket's durable declaration).
   const ok = await verifyRegistrationCore({ claims, verifyProof: async () => true, expected, registrationStore, commit });
   assert.deepEqual(ok, { ok: true, index: 0, membersRoot: "R", size: 1 });
-  assert.deepEqual(committed, { season: "5", contextHash: "3", regNullifier: "7", commitment: "9" });
+  assert.deepEqual(committed, { season: "5", contextHash: "3", regNullifier: "7", commitment: "9", engine: "plonk", statement: "derive" });
 
   // a stale root is rejected before the crypto check
   let verifyCalled = false;

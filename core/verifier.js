@@ -218,12 +218,16 @@ export async function verifyRegistrationCore({ claims, verifyProof, expected, re
   if (!(await verifyProof())) return { ok: false, reason: "invalid-proof" };
 
   // 6) the atomic, season-serialized commit. expected.season is the gateway's authoritative season
-  //    (equal to claims.season by check 2), used for the season re-check inside commit.
+  //    (equal to claims.season by check 2), used for the season re-check inside commit. The engine
+  //    and statement are gateway-chosen (the deployment's engine and the request's declared
+  //    statement), never taken from the proof, so the durable declaration binds the bucket to them.
   return commit({
     season: expected.season,
     contextHash: claims.contextHash,
     regNullifier: claims.regNullifier,
     commitment: claims.commitment,
+    engine: expected.engine,
+    statement: expected.statement,
   });
 }
 

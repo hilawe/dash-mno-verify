@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { writeFile, readFile } from "node:fs/promises";
 import {
   RegistrationStore,
   MemoryRegistrationBackend,
@@ -72,8 +73,44 @@ for (const [name, makeStore] of [
     assert.deepEqual(s5.map((r) => r.commitment), ["ca", "cb"]);
     const s6 = await store.forSeasonContext(6, "ctx");
     assert.deepEqual(s6.map((r) => r.commitment), ["cc"]);
-    assert.deepEqual(await store.forSeasonContext(5, "ctx2"), [{ season: 5, contextHash: "ctx2", regNullifier: "d", commitment: "cd", index: 0 }]);
+    assert.deepEqual(await store.forSeasonContext(5, "ctx2"), [
+      { season: 5, contextHash: "ctx2", regNullifier: "d", commitment: "cd", engine: "plonk", statement: "derive", index: 0 },
+    ]);
     assert.deepEqual(await store.forSeasonContext(99, "ctx"), []); // a fresh season starts empty
+  });
+
+  test(`${name}: a bucket is bound to one (engine, statement); a mismatch is rejected`, async () => {
+    const { store } = await makeStore();
+    await store.ready();
+    // The first registration declares the bucket. Default engine/statement is plonk/derive.
+    const first = await store.append({ season: 1, contextHash: "ctx", regNullifier: "n1", commitment: "c1" });
+    assert.equal(first.duplicate, false);
+    assert.deepEqual(await store.declarationFor(1, "ctx"), { engine: "plonk", statement: "derive" });
+
+    // A later registration for the same bucket under a different statement is a conflict, not written.
+    const conflict = await store.append({ season: 1, contextHash: "ctx", regNullifier: "n2", commitment: "c2", engine: "zkvm", statement: "custody" });
+    assert.equal(conflict.conflict, true);
+    assert.deepEqual(conflict.declared, { engine: "plonk", statement: "derive" });
+    assert.equal(await store.has(1, "ctx", "n2"), false, "the conflicting registration was not stored");
+
+    // A matching later registration is accepted.
+    const ok = await store.append({ season: 1, contextHash: "ctx", regNullifier: "n3", commitment: "c3", engine: "plonk", statement: "derive" });
+    assert.equal(ok.duplicate, false);
+    assert.equal(ok.index, 1);
+
+    // A different bucket can declare a different statement.
+    const other = await store.append({ season: 1, contextHash: "ctx2", regNullifier: "n4", commitment: "c4", engine: "zkvm", statement: "custody" });
+    assert.equal(other.duplicate, false);
+    assert.deepEqual(await store.declarationFor(1, "ctx2"), { engine: "zkvm", statement: "custody" });
+  });
+
+  test(`${name}: an impossible engine/statement pair is rejected`, async () => {
+    const { store } = await makeStore();
+    await store.ready();
+    // PLONK supports only derive, so plonk/custody is invalid and never declares a bucket.
+    const bad = await store.append({ season: 1, contextHash: "ctx", regNullifier: "n1", commitment: "c1", engine: "plonk", statement: "custody" });
+    assert.equal(bad.invalid, true);
+    assert.equal(await store.declarationFor(1, "ctx"), null, "no bucket was declared");
   });
 }
 
@@ -95,6 +132,50 @@ test("file: registrations survive a restart (durability)", async () => {
     // and the spend set is enforced after the restart, so no member registers twice
     const dup = await reopened.append({ season: 3, contextHash: "ctx", regNullifier: "n1", commitment: "c1" });
     assert.equal(dup.duplicate, true);
+  });
+});
+
+test("file: two concurrent first registrations with different declarations, exactly one wins", async () => {
+  await withTempFile(async (path) => {
+    const store = new RegistrationStore(new FileBackend(path));
+    await store.ready();
+    // Fire a derive and a custody first-registration for the same bucket concurrently. The append
+    // mutex serializes them, so exactly one declares the bucket and the other conflicts, reporting
+    // the winner's declaration. Both must not be written.
+    const [a, b] = await Promise.all([
+      store.append({ season: 1, contextHash: "ctx", regNullifier: "nA", commitment: "cA", engine: "plonk", statement: "derive" }),
+      store.append({ season: 1, contextHash: "ctx", regNullifier: "nB", commitment: "cB", engine: "zkvm", statement: "custody" }),
+    ]);
+    const wins = [a, b].filter((r) => r.duplicate === false);
+    const conflicts = [a, b].filter((r) => r.conflict === true);
+    assert.equal(wins.length, 1, "exactly one registration is written");
+    assert.equal(conflicts.length, 1, "the other conflicts");
+    // The loser reports the winner's declaration, and the bucket holds exactly one record.
+    const decl = await store.declarationFor(1, "ctx");
+    assert.deepEqual(conflicts[0].declared, decl);
+    const recs = await store.forSeasonContext(1, "ctx");
+    assert.equal(recs.length, 1);
+  });
+});
+
+test("file: a legacy record (no engine/statement) reopens as plonk/derive and rejects custody", async () => {
+  await withTempFile(async (path) => {
+    // Seed a real legacy JSON-lines record, the pre-declaration shape with no engine/statement.
+    await writeFile(path, JSON.stringify({ season: 2, contextHash: "ctx", regNullifier: "legacy", commitment: "cL", index: 0 }) + "\n");
+
+    const store = new RegistrationStore(new FileBackend(path));
+    await store.ready();
+    assert.equal(await store.has(2, "ctx", "legacy"), true, "the legacy record loads");
+    assert.deepEqual(await store.declarationFor(2, "ctx"), { engine: "plonk", statement: "derive" });
+
+    // A custody registration into the legacy (derive-declared) bucket is rejected and not written.
+    const conflict = await store.append({ season: 2, contextHash: "ctx", regNullifier: "new", commitment: "cN", engine: "zkvm", statement: "custody" });
+    assert.equal(conflict.conflict, true);
+    assert.deepEqual(conflict.declared, { engine: "plonk", statement: "derive" });
+    assert.equal(await store.has(2, "ctx", "new"), false);
+    // The file still holds only the legacy record.
+    const lines = (await readFile(path, "utf8")).trim().split("\n").filter(Boolean);
+    assert.equal(lines.length, 1);
   });
 });
 

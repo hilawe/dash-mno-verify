@@ -25,6 +25,29 @@
 import { open, readFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 
+// The statement a (season, contextHash) is registered under. The registration nullifier is derived
+// differently per statement (docs/ZKVM_INTEGRATION.md, "Two statements"): the derive statement keys
+// it on the private key, the custody statement cannot, so the two produce different nullifiers for
+// the same node. Mixing them in one (season, contextHash) would let one node register twice, so a
+// bucket is bound to a single statement, declared by its first registration and enforced on every
+// later one. The engine (which proof system produced it) is recorded alongside for observability, and
+// PLONK only supports derive.
+export const ENGINE_STATEMENTS = Object.freeze({
+  plonk: Object.freeze(["derive"]),
+  zkvm: Object.freeze(["derive", "custody"]),
+});
+export function isValidEngineStatement(engine, statement) {
+  // Object.hasOwn, not `ENGINE_STATEMENTS[engine]`, so an inherited property name like "constructor",
+  // "toString", or "__proto__" returns false instead of reading a function and throwing on .includes.
+  if (typeof engine !== "string" || typeof statement !== "string") return false;
+  if (!Object.hasOwn(ENGINE_STATEMENTS, engine)) return false;
+  return ENGINE_STATEMENTS[engine].includes(statement);
+}
+// Backward compatibility: a record written before this field existed is a PLONK derive registration,
+// the only kind that existed then.
+const DEFAULT_ENGINE = "plonk";
+const DEFAULT_STATEMENT = "derive";
+
 // The backend contract:
 //   has({season, contextHash, regNullifier})    -> Promise<boolean>
 //   append({season, contextHash, regNullifier, commitment})
@@ -46,17 +69,39 @@ export class RegistrationStore {
       regNullifier: String(regNullifier),
     });
   }
-  append({ season, contextHash, regNullifier, commitment }) {
+  append({ season, contextHash, regNullifier, commitment, engine = DEFAULT_ENGINE, statement = DEFAULT_STATEMENT }) {
+    // Reject an impossible engine/statement pair up front (for example PLONK custody), so a bucket
+    // can never be declared under one. The per-bucket consistency check is the backend's, inside the
+    // serialized append.
+    if (!isValidEngineStatement(engine, statement)) {
+      return Promise.resolve({ invalid: true, engine: String(engine), statement: String(statement) });
+    }
     return this.backend.append({
       season: Number(season),
       contextHash: String(contextHash),
       regNullifier: String(regNullifier),
       commitment: String(commitment),
+      engine: String(engine),
+      statement: String(statement),
     });
   }
   forSeasonContext(season, contextHash) {
     return this.backend.forSeasonContext(Number(season), String(contextHash));
   }
+  // The (engine, statement) a (season, contextHash) is declared under, or null if it has no
+  // registration yet. The first record's declaration, so it is stable for the bucket's life.
+  declarationFor(season, contextHash) {
+    return this.backend.declarationFor(Number(season), String(contextHash));
+  }
+}
+
+// The declaration a bucket is bound to: the first record's (engine, statement), defaulting a legacy
+// record with neither field to PLONK derive.
+function declarationOfRecord(record) {
+  return { engine: record.engine ?? DEFAULT_ENGINE, statement: record.statement ?? DEFAULT_STATEMENT };
+}
+function sameDeclaration(a, b) {
+  return a.engine === b.engine && a.statement === b.statement;
 }
 
 // The unique key spends one registration nullifier per (season, contextHash). The bucket key is
@@ -84,12 +129,21 @@ export class MemoryRegistrationBackend {
     if (this.seen.has(k)) return { duplicate: true };
     const b = bucketOf(d);
     const recs = this.byBucket.get(b) ?? [];
+    // A bucket is bound to one (engine, statement): the first record declares it, a later record
+    // with a different declaration is a conflict and is rejected without being written.
+    const want = declarationOfRecord(d);
+    if (recs.length > 0) {
+      const declared = declarationOfRecord(recs[0]);
+      if (!sameDeclaration(declared, want)) return { conflict: true, declared };
+    }
     const index = recs.length;
     const record = {
       season: d.season,
       contextHash: d.contextHash,
       regNullifier: d.regNullifier,
       commitment: d.commitment,
+      engine: d.engine,
+      statement: d.statement,
       index,
     };
     this.seen.add(k);
@@ -99,6 +153,10 @@ export class MemoryRegistrationBackend {
   }
   async forSeasonContext(season, contextHash) {
     return [...(this.byBucket.get(`${season}:${contextHash}`) ?? [])];
+  }
+  async declarationFor(season, contextHash) {
+    const recs = this.byBucket.get(`${season}:${contextHash}`);
+    return recs && recs.length > 0 ? declarationOfRecord(recs[0]) : null;
   }
 }
 
@@ -165,12 +223,21 @@ export class FileBackend {
     const k = keyOf(d);
     if (this.seen.has(k)) return { duplicate: true };
     const recs = this.byBucket.get(bucketOf(d)) ?? [];
+    // The bucket's declaration is enforced inside this serialized section, so two concurrent first
+    // registrations cannot set conflicting declarations: the second sees the first's record.
+    const want = declarationOfRecord(d);
+    if (recs.length > 0) {
+      const declared = declarationOfRecord(recs[0]);
+      if (!sameDeclaration(declared, want)) return { conflict: true, declared };
+    }
     const index = recs.length;
     const record = {
       season: d.season,
       contextHash: d.contextHash,
       regNullifier: d.regNullifier,
       commitment: d.commitment,
+      engine: d.engine,
+      statement: d.statement,
       index,
     };
     const fh = await open(this.path, "a");
@@ -187,5 +254,11 @@ export class FileBackend {
   async forSeasonContext(season, contextHash) {
     await this.ready();
     return [...(this.byBucket.get(`${season}:${contextHash}`) ?? [])];
+  }
+
+  async declarationFor(season, contextHash) {
+    await this.ready();
+    const recs = this.byBucket.get(`${season}:${contextHash}`);
+    return recs && recs.length > 0 ? declarationOfRecord(recs[0]) : null;
   }
 }
