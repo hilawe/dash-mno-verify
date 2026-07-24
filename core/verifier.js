@@ -254,7 +254,43 @@ export async function verifyRegistration({
   commit,
   verifyProof = () => snarkjs.plonk.verify(vkey, publicSignals, proof),
 }) {
+  // This wrapper is the PLONK engine, so it pins its own engine, and a mismatched declaration from a
+  // mis-wired dispatcher is rejected before anything is decoded or committed. Otherwise the zkVM and
+  // PLONK wrappers could each commit a record under the other's label, corrupting the durable
+  // declaration and the seasonHasEngine downgrade signal.
+  if (expected.engine !== "plonk") return { ok: false, reason: "engine-mismatch" };
   const decoded = decodePlonkRegistrationClaims(publicSignals);
   if (decoded.error) return { ok: false, reason: decoded.error };
   return verifyRegistrationCore({ claims: decoded.claims, verifyProof, expected, registrationStore, commit });
+}
+
+// The zkVM-facing registration verify, the engine sibling of verifyRegistration. It decodes the
+// frozen 136-byte journal from the receipt (untrusted at this point, exactly as the PLONK path reads
+// publicSignals before verifying), runs the same engine-neutral core, and its crypto check is the
+// injected verifyReceipt: it must confirm the STARK receipt verifies against the pinned guest image
+// AND that the receipt's committed journal equals the bytes the claims were decoded from, so a caller
+// cannot pair a valid receipt with a different journal. The policy checks (root, season, context,
+// duplicate) run on the decoded claims BEFORE the expensive receipt verify, like the PLONK path.
+//
+// expected.rootStore is the SHA-256 view (dmlRoots.shaView()), so the root claim is checked against
+// the SHA-256 window, and expected.engine/statement are the gateway-chosen zkVM declaration.
+//
+// verifyReceipt(receipt, journalBytes) -> Promise<boolean> is injected because it needs the RISC Zero
+// verifier (a pinned r0vm subprocess or a WASM build), which is deferred and artifact-gated. A unit
+// test injects a stub. A gateway configured for the zkVM engine must supply a real one or refuse to
+// boot (there is no default, so an unconfigured zkVM verify fails closed rather than skips the check).
+export async function verifyZkvmRegistration({ receipt, journalBytes, verifyReceipt, expected, registrationStore, commit }) {
+  // This wrapper is the zkVM engine, so it pins its own engine (see the PLONK wrapper's note), so a
+  // mismatched declaration cannot commit a zkVM registration under a PLONK label.
+  if (expected.engine !== "zkvm") return { ok: false, reason: "engine-mismatch" };
+  const decoded = decodeZkvmRegistrationClaims(journalBytes);
+  if (decoded.error) return { ok: false, reason: decoded.error };
+  if (typeof verifyReceipt !== "function") return { ok: false, reason: "zkvm-verifier-not-configured" };
+  return verifyRegistrationCore({
+    claims: decoded.claims,
+    verifyProof: () => verifyReceipt(receipt, journalBytes),
+    expected,
+    registrationStore,
+    commit,
+  });
 }

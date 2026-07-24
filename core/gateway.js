@@ -290,6 +290,18 @@ async function refreshRoots() {
 // what closes the season-rollover race. See core/season.js.
 let vkey, regVkey, membersVkey, registrationStore, seasonMembers;
 
+// The zkVM registration engine needs the live receipt verifier (a pinned r0vm subprocess or a WASM
+// build), which is deferred and artifact-gated. Refuse to boot in that mode rather than run a
+// registration path whose crypto check is unconfigured (verifyZkvmRegistration would fail closed on
+// every request anyway). The PLONK engine is the shipping default. See docs/ZKVM_INTEGRATION.md.
+if (twoTier && config.registrationEngine === "zkvm") {
+  throw new Error(
+    "MNO_REGISTRATION_ENGINE=zkvm needs the RISC Zero receipt verifier, which is not wired yet. " +
+      "Use the default plonk engine; the zkVM registration path is the tracked follow-up in " +
+      "docs/ZKVM_INTEGRATION.md (step 5, the live STARK verifier).",
+  );
+}
+
 if (twoTier) {
   // The two-tier + Platform-store combination is rejected up front (see the guard near the top).
   regVkey = await loadVerificationKey(config.registrationVkeyPath);
@@ -464,11 +476,13 @@ const server = createServer(async (req, res) => {
         vkey: regVkey,
         proof,
         publicSignals,
-        // This is the PLONK registration path, so the deployment engine is plonk and the statement
-        // is derive (PLONK supports only derive). The durable declaration binds this (season, context)
-        // to (plonk, derive), so a later zkVM or custody registration for the same bucket is rejected
-        // with statement-mismatch, keeping the registration nullifiers comparable.
-        expected: { rootStore: dmlRoots, season, contextHash: ctx, engine: "plonk", statement: "derive" },
+        // The gateway's configured registration engine and statement (plonk/derive by default; a zkvm
+        // gateway is refused at boot until the receipt verifier lands). They bind this (season,
+        // context)'s durable declaration, so a registration under a different engine or statement for
+        // the same bucket is rejected with statement-mismatch, keeping the nullifiers comparable. The
+        // Poseidon root store here is the PLONK view; the zkVM path (deferred) would use
+        // dmlRoots.shaView() via verifyZkvmRegistration.
+        expected: { rootStore: dmlRoots, season, contextHash: ctx, engine: config.registrationEngine, statement: config.registrationStatement },
         registrationStore,
         // The durable record and the members-tree mirror happen together inside the season
         // serialization, re-checking the season so a rollover during the proof verify above cannot

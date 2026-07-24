@@ -9,6 +9,8 @@ import {
   decodePlonkRegistrationClaims,
   decodeZkvmRegistrationClaims,
   verifyRegistrationCore,
+  verifyRegistration,
+  verifyZkvmRegistration,
   REG_JOURNAL_BYTES,
 } from "../core/verifier.js";
 
@@ -82,4 +84,86 @@ test("both decoders feed the same engine-neutral core, which runs one policy pip
   });
   assert.equal(dup.reason, "already-registered");
   assert.equal(v2, false);
+});
+
+test("verifyZkvmRegistration decodes the journal, policy-checks, then verifies the receipt", async () => {
+  const journal = Buffer.from(FIXTURE.journalLeftHex, "hex");
+  // expected uses the SHA-256 root (the fixture's tree root) and the zkVM declaration.
+  const expected = {
+    rootStore: { isRecent: (r) => r === FIXTURE.rootTwoLeavesHex },
+    season: FIXTURE.season,
+    contextHash: FIXTURE.contextHash,
+    engine: "zkvm",
+    statement: "custody",
+  };
+  const registrationStore = { has: async () => false };
+  let committed = null;
+  const commit = async (c) => ((committed = c), { ok: true, index: 0, membersRoot: "R", size: 1 });
+
+  // happy path: the injected receipt verifier passes, the core commits the decoded claims.
+  let receivedReceipt = null;
+  const ok = await verifyZkvmRegistration({
+    receipt: { fake: true },
+    journalBytes: journal,
+    verifyReceipt: async (receipt, jb) => ((receivedReceipt = receipt), jb === journal),
+    expected, registrationStore, commit,
+  });
+  assert.equal(ok.ok, true);
+  assert.deepEqual(receivedReceipt, { fake: true }, "the receipt verifier saw the receipt");
+  assert.equal(committed.regNullifier, FIXTURE.rn_d1);
+  assert.equal(committed.engine, "zkvm");
+  assert.equal(committed.statement, "custody");
+
+  // an unconfigured verifier fails closed, before any commit.
+  const noVerifier = await verifyZkvmRegistration({
+    receipt: {}, journalBytes: journal, verifyReceipt: undefined, expected, registrationStore, commit,
+  });
+  assert.equal(noVerifier.reason, "zkvm-verifier-not-configured");
+
+  // a receipt that does not verify is rejected after the policy checks.
+  const badReceipt = await verifyZkvmRegistration({
+    receipt: {}, journalBytes: journal, verifyReceipt: async () => false, expected, registrationStore, commit,
+  });
+  assert.equal(badReceipt.reason, "invalid-proof");
+
+  // a stale root is rejected before the receipt verify.
+  let verified = false;
+  const stale = await verifyZkvmRegistration({
+    receipt: {}, journalBytes: journal,
+    verifyReceipt: async () => ((verified = true), true),
+    expected: { ...expected, rootStore: { isRecent: () => false } },
+    registrationStore, commit,
+  });
+  assert.equal(stale.reason, "stale-or-unknown-root");
+  assert.equal(verified, false);
+
+  // a malformed journal is rejected.
+  const shortJournal = await verifyZkvmRegistration({
+    receipt: {}, journalBytes: Buffer.alloc(100), verifyReceipt: async () => true, expected, registrationStore, commit,
+  });
+  assert.equal(shortJournal.reason, "bad-journal-length");
+
+  // each wrapper pins its own engine: the zkVM wrapper rejects a plonk declaration outright, so a
+  // mis-wired dispatcher cannot commit a zkVM registration under a PLONK label (and vice versa).
+  let committedMismatch = false;
+  const wrongEngine = await verifyZkvmRegistration({
+    receipt: {}, journalBytes: journal, verifyReceipt: async () => true,
+    expected: { ...expected, engine: "plonk", statement: "derive" },
+    registrationStore, commit: async () => ((committedMismatch = true), { ok: true }),
+  });
+  assert.equal(wrongEngine.reason, "engine-mismatch");
+  assert.equal(committedMismatch, false, "nothing was committed under the wrong engine");
+});
+
+test("the PLONK wrapper rejects a non-plonk engine declaration", async () => {
+  const r = await verifyRegistration({
+    vkey: {},
+    proof: {},
+    publicSignals: ["1", "2", "3", "4", "5"],
+    expected: { rootStore: { isRecent: () => true }, season: "3", contextHash: "5", engine: "zkvm", statement: "custody" },
+    registrationStore: { has: async () => false },
+    commit: async () => ({ ok: true }),
+    verifyProof: async () => true,
+  });
+  assert.equal(r.reason, "engine-mismatch");
 });

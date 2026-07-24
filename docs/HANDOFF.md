@@ -9,6 +9,16 @@ prioritized punch list.
 
 ### Where things stand
 
+- 2026-07-24, step 5 continued: per-request engine dispatch. `verifyZkvmRegistration` is the engine
+  sibling of `verifyRegistration`, decoding the frozen journal, running the same policy pipeline
+  before an injected receipt verify, and using the SHA-256 root view. Each wrapper pins its own
+  engine (a mismatched declaration is rejected before any decode/verify/commit).
+  `MNO_REGISTRATION_ENGINE`/`STATEMENT` configure the gateway (validated at boot), and a zkVM gateway
+  refuses to boot until the receipt verifier is wired (deferred, artifact-gated). PLONK stays the
+  default and its behavior is preserved. Reviewed by a different model (APPROVE-WITH-FIXES: pin the
+  engine per wrapper, folded; re-check APPROVE). Remaining step-5 pieces: the live STARK verifier and
+  the HTTP receipt-body routing, the registration lease, and the concurrency bound.
+
 - 2026-07-24, the three outside-reviewer packets came back on the full zkVM shipping surface. Two
   returned BLOCK and both were verified FALSE POSITIVES against ground truth: Gemini claimed the
   object-vs-positional `commit` signature broke all registrations, but the gateway wires an adapter

@@ -352,9 +352,14 @@ integration and have not started.
    a different declaration is rejected (`statement-mismatch`) inside the serialized append, so a
    bucket is bound to one statement and derive and custody cannot mix (which would allow a double
    registration). An impossible pair (PLONK custody) is rejected, and a legacy record defaults to
-   plonk/derive. STILL TO DO in step 5: the live non-JavaScript STARK verifier wired at boot and
-   pinned by image-id and artifact checksum (artifact-gated, like the Platform backend), engine
-   dispatch selecting the decoder and root store per request, the registration proof lease for root
+   plonk/derive. DONE (2026-07-24), per-request engine dispatch: `verifyZkvmRegistration` is the engine sibling of
+   `verifyRegistration` (decode the frozen journal, policy-check, then the injected receipt verify,
+   with the SHA-256 root view), each wrapper pins its own engine so a mis-wired dispatcher cannot
+   mislabel a record, `MNO_REGISTRATION_ENGINE`/`MNO_REGISTRATION_STATEMENT` configure the gateway's
+   registration engine (validated at boot), and a zkVM gateway refuses to boot until the receipt
+   verifier is wired. STILL TO DO in step 5: the live non-JavaScript STARK verifier wired at boot and
+   pinned by image-id and artifact checksum (artifact-gated, like the Platform backend) plus the HTTP
+   request-shape routing for a receipt body, the registration proof lease for root
    freshness, and the verification-concurrency bound. The Platform registration backend, when wired,
    will also need `declarationFor`, `seasonHasEngine`, and the same per-bucket enforcement.
 

@@ -102,7 +102,7 @@ test("verifyRegistration rejects a non-canonical public signal before the store 
     vkey: {},
     proof: {},
     publicSignals: ["1", "01", "3", "4", "5"],
-    expected: { rootStore: { isRecent: () => true }, season: "3", contextHash: "5" },
+    expected: { rootStore: { isRecent: () => true }, season: "3", contextHash: "5", engine: "plonk", statement: "derive" },
     registrationStore,
     commit,
   });

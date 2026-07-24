@@ -195,6 +195,20 @@ test("two-tier with the Platform store fails loud at boot, before any Platform c
   await assert.rejects(startGateway({ MNO_MODE: "two-tier", MNO_STORE: "platform" }), /not wired yet/);
 });
 
+test("a zkVM registration engine refuses to boot until the receipt verifier is wired", async () => {
+  await assert.rejects(
+    startGateway({ MNO_MODE: "two-tier", MNO_REGISTRATION_ENGINE: "zkvm", MNO_REGISTRATION_STATEMENT: "custody" }),
+    /needs the RISC Zero receipt verifier/,
+  );
+});
+
+test("an invalid registration engine/statement pair fails config validation at boot", async () => {
+  await assert.rejects(
+    startGateway({ MNO_MODE: "two-tier", MNO_REGISTRATION_ENGINE: "plonk", MNO_REGISTRATION_STATEMENT: "custody" }),
+    /is not a valid pair/,
+  );
+});
+
 test("a malformed numeric config value fails loud at boot rather than disabling a guard", async () => {
   // A non-numeric cap must not become NaN (which would make every size check false and silently
   // disable the pending-challenge cap). The gateway must refuse to start instead.

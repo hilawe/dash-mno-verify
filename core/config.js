@@ -1,5 +1,6 @@
 import process from "node:process";
 import { publicKeyFromRaw, rawPublicB64 } from "../common/oracle_sig.js";
+import { isValidEngineStatement } from "./registration_store.js";
 
 // Parse the trusted oracle public keys, a comma-separated list of raw Ed25519 keys (base64). Each is
 // turned into a key object once, at boot, failing loud on a malformed key rather than per refresh.
@@ -134,6 +135,14 @@ export const config = {
   membersVkeyPath: process.env.MNO_MEMBERS_VKEY ?? "circuits/build/mno_members_vkey.json",
   seasonSeconds: intEnv("MNO_SEASON_SECONDS", 90 * 24 * 3600),
 
+  // The registration engine and statement this gateway offers (two-tier). "plonk"/"derive" is the
+  // shipping default (the compiled mno_registration circuit). "zkvm" selects the RISC Zero
+  // registration path, which needs the live receipt verifier (deferred, artifact-gated), so a zkvm
+  // gateway refuses to boot until one is wired. The pair binds each (season, context) this gateway
+  // seeds, and it must be a valid engine/statement combination (validated at boot).
+  registrationEngine: process.env.MNO_REGISTRATION_ENGINE ?? "plonk",
+  registrationStatement: process.env.MNO_REGISTRATION_STATEMENT ?? "derive",
+
   // Durable, season-scoped registration records for the two-tier flow. Append-only JSON lines on
   // a single gateway, so registrations survive a restart and the members tree rebuilds from them.
   // With MNO_STORE=platform the records live on Dash Platform instead (the next step).
@@ -149,6 +158,14 @@ export const config = {
     appName: process.env.MNO_PLATFORM_APP ?? "mnoVerify",
   },
 };
+
+// The configured registration engine/statement must be a valid pair, or the gateway would seed
+// buckets under a declaration the store rejects. Validated here so a typo fails fast at boot.
+if (!isValidEngineStatement(config.registrationEngine, config.registrationStatement)) {
+  throw new Error(
+    `config: MNO_REGISTRATION_ENGINE/STATEMENT (${config.registrationEngine}/${config.registrationStatement}) is not a valid pair`,
+  );
+}
 
 // A quorum larger than the number of trusted keys can never be met, so the gateway would never adopt
 // a root. Catch that at boot rather than letting it look like a perpetually stale oracle.
