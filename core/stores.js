@@ -40,6 +40,24 @@ export class RootStore {
   }
 }
 
+// Update the Poseidon and SHA-256 root windows from one adopted snapshot, in lockstep: both get the
+// same height and ts, so they age together and a SHA-256 root check (shaRoots.isRecent) never sees a
+// different set of accepted snapshots than the Poseidon check (dmlRoots.isRecent). A snapshot with no
+// shaRoot (a v1 snapshot on a non-zkVM deployment) updates only the Poseidon window, leaving the
+// SHA-256 window empty, which is correct because nothing checks it there. A zkVM deployment requires
+// a v2 snapshot, so the two windows stay fully in step. Aging is the other coupled operation: the
+// caller drops both by the same cutoff (see enforceDmlFreshness in core/gateway.js).
+//
+// Planned refactor: fold both windows behind one RootWindows facade that owns adoption, pruning, and
+// both isRecent queries, so lockstep is structural rather than each caller remembering to touch both.
+// Deferred to the engine-dispatch step, which adds the callers that make it worthwhile (a reviewer
+// suggestion, and it would churn the current dmlRoots.isRecent/current call sites, so it waits for
+// that change rather than landing mid-slice).
+export function updateRootWindows(dmlRoots, shaRoots, { height, root, shaRoot, ts }) {
+  dmlRoots.update([{ height, root, ts }]);
+  if (shaRoot != null) shaRoots.update([{ height, root: shaRoot, ts }]);
+}
+
 // Load a published oracle snapshot from a URL or a local file.
 //
 // A URL source is fetched over the network, so it is hardened against a hostile or unreachable

@@ -9,6 +9,15 @@ prioritized punch list.
 
 ### Where things stand
 
+- 2026-07-24, step 5 continued: the SHA-256 root window. A second `RootStore` (`shaRoots`) is kept in
+  lockstep with the Poseidon `dmlRoots` by the `updateRootWindows` helper on adoption and a paired
+  `dropOlderThan` on aging, so a zkVM registration root check sees exactly the snapshots the Poseidon
+  check does. Pinned by `test/root_windows.test.js` (v2 populates both, v1 only Poseidon, both age by
+  one cutoff, ring-buffer bound in step). Reviewed by a different model, APPROVE, no findings; its
+  suggestion to fold both windows behind one `RootWindows` facade is deferred to the engine-dispatch
+  step (it would churn the current call sites and that step adds the callers that make it worth it).
+  162 tests green.
+
 - 2026-07-24, step 5 (first slice) of the zkVM integration: the engine-neutral registration-verify
   spine. `verifyRegistration` is split into `verifyRegistrationCore` (one policy pipeline for any
   engine) plus per-engine decoders (`decodePlonkRegistrationClaims`, the existing five-signal array,

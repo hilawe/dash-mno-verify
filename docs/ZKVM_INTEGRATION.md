@@ -342,12 +342,16 @@ integration and have not started.
    five-signal array) and `decodeZkvmRegistrationClaims` (the frozen 136-byte journal, pinned against
    the fixture), with the crypto check injected so the zkVM path reuses the pipeline. The gateway
    serves the `shaRoot` on `/v1/dml`, and the registration endpoint has its own larger body cap
-   (`MNO_MAX_REGISTER_BODY_BYTES`) for the receipt while challenge and verify keep the small cap. STILL
-   TO DO in step 5: the SHA-256 root store or window (so a zkVM root check has somewhere to look), the
-   live non-JavaScript STARK verifier wired at boot and pinned by image-id and artifact checksum
-   (artifact-gated, like the Platform backend), engine dispatch selecting the decoder and root store
-   per request, the durable per-(season, context) engine-and-statement declaration, the registration
-   proof lease for root freshness, and the verification-concurrency bound.
+   (`MNO_MAX_REGISTER_BODY_BYTES`) for the receipt while challenge and verify keep the small cap. DONE
+   (2026-07-24), the SHA-256 root window: `shaRoots` (a second `RootStore`) is kept in lockstep with
+   the Poseidon `dmlRoots` by `updateRootWindows` on adoption and a paired `dropOlderThan` on aging,
+   so a zkVM root check sees exactly the snapshots the Poseidon check does, pinned by
+   `test/root_windows.test.js`. STILL TO DO in step 5: the live non-JavaScript STARK verifier wired at
+   boot and pinned by image-id and artifact checksum (artifact-gated, like the Platform backend),
+   engine dispatch selecting the decoder and root store per request (and, at that step, folding both
+   windows behind one `RootWindows` facade so lockstep is structural, a deferred reviewer suggestion),
+   the durable per-(season, context) engine-and-statement declaration, the registration proof lease
+   for root freshness, and the verification-concurrency bound.
 6. Member proving flow and docs, including the secret-file ordering fix, a binary receipt upload,
    and engine discovery.
 7. The custody statement guest, the production five-claim form of the benchmark `sig` variant

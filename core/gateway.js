@@ -26,7 +26,7 @@
 import { createServer } from "node:http";
 import { randomUUID, createHash, timingSafeEqual } from "node:crypto";
 import { config } from "./config.js";
-import { RootStore, NullifierStore, ChallengeStore, RateLimiter, loadOracle } from "./stores.js";
+import { RootStore, NullifierStore, ChallengeStore, RateLimiter, loadOracle, updateRootWindows } from "./stores.js";
 import { loadVerificationKey, verifyMembership, verifyRegistration } from "./verifier.js";
 import { SeasonMembers } from "./season.js";
 import { makeDmlRootHasher } from "./dml_root.js";
@@ -127,6 +127,12 @@ if (config.store === "platform") {
 
 // The DML root, fed by the oracle. Used by single-tier verify and by two-tier registration.
 const dmlRoots = new RootStore(config.rootWindow);
+// The SHA-256 DML root window, for the zkVM registration statement, kept in LOCKSTEP with dmlRoots:
+// both are updated from the same adopted v2 snapshot and aged by the same freshness cutoff, so a zkVM
+// root check (shaRoots.isRecent) sees exactly the snapshots the Poseidon check (dmlRoots.isRecent)
+// does. Empty on a non-zkVM (v1-only) deployment, which never checks it. The zkVM registration verify
+// (deferred with the live receipt verifier) uses shaRoots as its rootStore.
+const shaRoots = new RootStore(config.rootWindow);
 let latestDml = null; // the last verified oracle snapshot, so provers can fetch leaves and build paths
 const dmlRootFromLeaves = await makeDmlRootHasher(config.treeDepth);
 
@@ -203,6 +209,7 @@ function enforceDmlFreshness() {
   if (config.oracleMaxAgeSeconds <= 0) return;
   const cutoff = nowSec() - config.oracleMaxAgeSeconds;
   dmlRoots.dropOlderThan(cutoff);
+  shaRoots.dropOlderThan(cutoff); // lockstep aging, so the SHA-256 window never outlives the Poseidon one
   if (latestDml && Number(latestDml.ts) < cutoff) {
     console.error(`[gateway] oracle snapshot stale (ts ${latestDml.ts}), dropping root until a fresh one arrives`);
     latestDml = null;
@@ -255,7 +262,9 @@ async function refreshRoots() {
       // latestDml never diverges from RootStore.current(). Only a self-consistent snapshot reaches
       // here, so the ts that drives expiry is verified-fresh.
       latestDml = o;
-      dmlRoots.update([{ height: o.height, root: o.root, ts: o.ts ?? nowSec() }]);
+      // Update both root windows in lockstep (same height and ts). A v2 snapshot carries a shaRoot
+      // and populates both; a v1 snapshot populates only the Poseidon window (updateRootWindows).
+      updateRootWindows(dmlRoots, shaRoots, { height: o.height, root: o.root, shaRoot: o.shaRoot, ts: o.ts ?? nowSec() });
     }
   } catch (err) {
     console.error("[gateway] root refresh failed:", err.message);
