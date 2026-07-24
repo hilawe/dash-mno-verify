@@ -7,8 +7,8 @@ pass, and the cost questions are answered: the production statement fits an 8 GB
 `docs/REDUCING_PROVING_COST.md`). Settled: the shape (two-tier retained, the zero-knowledge virtual
 machine (zkVM) receipt replaces only the registration proof), the statement (derive the key), and the
 receipt path (the unwrapped STARK receipt, decided 2026-07-23 on the step-3 measurements, keeping the
-no-trusted-setup property). Still an open owner decision, separate from this design: whether to also
-offer the wallet-custody statement, now reachable at the same 4.8 GB for more proving time. Everything
+no-trusted-setup property), and wallet custody as an opt-in per community and season (decided
+2026-07-23, see the two-statements section for why the opt-in cannot be per member). Everything
 here is specified against the gateway and circuits as they exist today.
 
 ## The shape
@@ -86,6 +86,37 @@ nullifiers for the same key, season, and context, so the registration store's un
 (season, contextHash, regNullifier) deduplicates across engines and a node cannot hold one
 membership through each. This holds for the file store today and for the Platform contract's
 declared unique index when that backend lands.
+
+## Two statements, derive and wallet custody, and where the opt-in lives
+
+Both statements ship (owner decision, 2026-07-23): derive the key (the default) and wallet custody
+(the member signs, the key never enters the prover). Both emit the same five-claim journal, so the
+gateway verifies them identically and only needs to accept both guest image identifiers. The measured
+cost of custody is time, not memory, and both fit 4.8 GB at po2 19.
+
+The constraint that decides HOW the opt-in works, stated plainly because it is not obvious. The
+registration nullifier is `Poseidon(Poseidon(privkey), season, contextHash)`, keyed on the private
+key. That key choice is what makes one node yield one nullifier per (season, context) AND keeps the
+nullifier unlinkable to the node's public `hash160` leaf. The custody prover does not have the private
+key, so it cannot compute this nullifier. The alternatives do not work either: keying on the public
+key or `hash160` leaf would let anyone recompute a candidate's nullifier from the public DML and
+de-anonymize which node registered, and keying on a signature reintroduces a uniqueness problem,
+because an ECDSA signature over a fixed message is not unique unless the circuit also proves the nonce
+was generated deterministically (RFC 6979), which is expensive and itself a research problem. So the
+derive and custody statements produce DIFFERENT nullifiers for the same node, and no cheap change
+makes them match.
+
+The consequence: derive and custody cannot both be allowed for the same (season, contextHash), or one
+node could register once through each and hold two memberships, breaking one voting key, one
+membership. Therefore the opt-in is per community and season, not per member: a (season, contextHash)
+declares its statement (derive or custody), and every member of that community proves with the same
+one, so all its nullifiers are comparable and the unique index still holds. This reuses the durable
+engine-declaration mechanism (below), extended from engine to statement. An operator who wants to
+offer members a choice runs two communities, or accepts that per-member choice within one community
+waits on a sound shared-nullifier scheme (the deterministic-signature route above, if the nonce
+problem is ever solved cheaply). Recommendation: ship derive as the default statement, let operators
+opt a community into custody, and record per-member choice as blocked on the nullifier problem, not as
+a near-term feature.
 
 ## The SHA-256 DML tree, pinned
 
@@ -304,6 +335,12 @@ integration and have not started.
    verification concurrency), plus the registration proof lease for root freshness.
 6. Member proving flow and docs, including the secret-file ordering fix, a binary receipt upload,
    and engine discovery.
+7. The custody statement guest, the production five-claim form of the benchmark `sig` variant
+   (wallet signature verification plus the custody nullifier scheme for its communities), measured
+   in the bench like guest v2 and offered as the per-community opt-in. Its nullifier derivation
+   needs its own design note first, since it cannot be keyed on the private key the prover does not
+   have (a candidate is keying on the secret alone with the signature binding the key to the leaf,
+   which changes the uniqueness argument and must be reviewed before implementation).
 
 Steps 4 onward are the shipping integration; nothing ships until step 4. The committed PLONK keys
 stay valid throughout, and single-tier mode is unaffected at every step.

@@ -205,16 +205,18 @@ it removes the 2.3 GB proving-key download entirely (a zkVM has no structured pe
 fits an 8 GB masternode, and its custody posture matches what the current PLONK prover already
 requires, the voting key used locally on the member's own machine or masternode.
 
-The wallet-custody question is genuinely reopened by the same measurement, and it is now a real choice
-rather than a rejection. Because the segment size, not the statement, sets the memory ceiling, a
-wallet-custody statement (the member signs, the key never enters the prover) also fits about 4.8 GB at
-po2 19. The trade is time: wallet custody does more elliptic-curve work, so it proves slower than the
-derive path at the same memory. So the axis is no longer "derive fits, custody does not," it is
-"custody is available at 4.8 GB for more proving time, if the stronger key-hygiene property is worth
-that time." This is an owner decision, recorded here as open, not silently defaulted. The
-purpose-built efficient-ECDSA circuit (the spartan-ecdsa-class effort above) remains the durable way
-to make custody cheap in time as well as memory, but it is no longer the ONLY way to reach custody at
-all.
+The wallet-custody question was reopened by the same measurement and then decided (owner,
+2026-07-23): custody ships as an opt-in. Because the segment size, not the statement, sets the memory
+ceiling, a wallet-custody statement (the member signs, the key never enters the prover) also fits
+about 4.8 GB at po2 19, and the trade is proving time, not memory. The opt-in is per community and
+season, not per member, because the two statements necessarily produce different registration
+nullifiers for the same node (the nullifier is keyed on the private key, which the custody prover
+does not have, and the sound alternatives all fail, see the two-statements section of
+`docs/ZKVM_INTEGRATION.md`), so mixing them in one community would let a node register twice. Derive
+is the default statement, an operator can opt a community into custody, and per-member choice is
+recorded as blocked on the shared-nullifier problem. The purpose-built efficient-ECDSA circuit (the
+spartan-ecdsa-class effort above) remains the durable way to make custody cheap in time as well as
+memory.
 
 ## Roots and hashes, no forced migration and no in-circuit bridge
 

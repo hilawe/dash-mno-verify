@@ -21,8 +21,12 @@ prioritized punch list.
   prove and reintroduces a trusted setup. Both fold into `docs/REDUCING_PROVING_COST.md` and
   `docs/ZKVM_INTEGRATION.md`. Receipt path DECIDED 2026-07-23 (owner): the unwrapped STARK receipt,
   keeping the no-trusted-setup property. The accepted cost is a non-JavaScript verifier in the
-  gateway (checksum-pinned) plus a raised `MNO_MAX` and a binary receipt upload. Still open: wallet
-  custody vs derive (recommendation, ship derive, offer custody as opt-in).
+  gateway (checksum-pinned) plus a raised `MNO_MAX` and a binary receipt upload. Wallet custody DECIDED
+  2026-07-23 (owner): ships as an opt-in, per community and season, NOT per member, because the two
+  statements necessarily emit different registration nullifiers for the same node (keyed on the
+  private key the custody prover lacks), so mixing them in one community would allow a double
+  registration. Derive is the default. The custody guest's nullifier scheme needs its own design
+  note and review before implementation (work-plan step 7 in `docs/ZKVM_INTEGRATION.md`).
 
 - 133 tests green (`npm test`, about two minutes).
 - 2026-07-23, the oracle snapshot assembly is factored into `oracle/snapshot.js` behind an
