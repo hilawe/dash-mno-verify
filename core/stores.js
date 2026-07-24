@@ -180,6 +180,43 @@ export class RateLimiter {
   }
 }
 
+// A bounded concurrency gate for the expensive cryptographic verify (the PLONK proof check, or the
+// zkVM receipt check). The per-client rate limiter bounds one source, but a distributed flood of
+// clients each under their own limit could still spawn unbounded concurrent verifies and exhaust CPU
+// and memory (a documented residual). This caps how many run at once (`max`) and how many may wait
+// (`maxQueue`); a request that arrives when the queue is full is SHED (run() throws "overloaded") so
+// the gateway sheds load instead of growing an unbounded backlog. Only the expensive verify is gated,
+// so the cheap policy rejections never consume a slot or a queue place.
+export class Semaphore {
+  constructor({ max = 4, maxQueue = 256 } = {}) {
+    this.max = Math.max(1, max);
+    this.maxQueue = Math.max(0, maxQueue);
+    this.active = 0;
+    this.queue = []; // pending resolvers, FIFO
+  }
+  async run(fn) {
+    if (this.active < this.max) {
+      this.active += 1; // take a free slot
+    } else if (this.queue.length < this.maxQueue) {
+      // Wait for a slot to be HANDED to us by release below. active is not re-incremented on
+      // wake, because the releasing task transfers its slot rather than freeing it, which avoids
+      // a race where a new caller and a woken waiter both claim the same freed slot.
+      await new Promise((resolve) => this.queue.push(resolve));
+    } else {
+      const err = new Error("overloaded");
+      err.overloaded = true;
+      throw err;
+    }
+    try {
+      return await fn();
+    } finally {
+      const next = this.queue.shift();
+      if (next) next(); // transfer this slot to the next waiter (active unchanged)
+      else this.active -= 1; // no waiter, free the slot
+    }
+  }
+}
+
 // Nullifier (claim) store interface, shared with DocumentNullifierStore (core/platform_store.js) and
 // enforced by test/nullifier_store_contract.test.js. The verifier depends on all three:
 //   has(epoch, contextHash, nf)            -> boolean              whether the tag is spent
@@ -244,6 +281,24 @@ export class ChallengeStore {
     this.pending.delete(nonce);
     if (Date.now() > v.expires) return null;
     return v;
+  }
+  // Put back a taken challenge that was NOT actually processed (the gateway shed the request under
+  // verify overload), so a transient overload does not burn the member's one-time nonce. The original
+  // expiry is preserved, unlike put(), so restoring cannot extend a challenge's life under repeated
+  // overload. It RESPECTS the maxPending cap (with a sweep first), so the store stays bounded: an
+  // earlier cap-bypass let a take/fill/restore cycle grow the store past maxPending, so the cap is
+  // enforced here too. Returns false if the challenge expired OR the store is genuinely full; the
+  // caller (the gateway) then tells the member to request a new challenge rather than retry the same
+  // nonce. Same-nonce retry is thus guaranteed except under a real flood that has filled the store,
+  // which is an acceptable, honest degradation.
+  restore(nonce, value) {
+    if (Date.now() > value.expires) return false;
+    if (this.pending.size >= this.maxPending) {
+      this.sweep();
+      if (this.pending.size >= this.maxPending) return false;
+    }
+    this.pending.set(nonce, value);
+    return true;
   }
   sweep() {
     const now = Date.now();

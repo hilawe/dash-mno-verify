@@ -26,7 +26,7 @@
 import { createServer } from "node:http";
 import { randomUUID, createHash, timingSafeEqual } from "node:crypto";
 import { config } from "./config.js";
-import { RootWindows, NullifierStore, ChallengeStore, RateLimiter, loadOracle } from "./stores.js";
+import { RootWindows, NullifierStore, ChallengeStore, RateLimiter, Semaphore, loadOracle } from "./stores.js";
 import { loadVerificationKey, verifyMembership, verifyRegistration } from "./verifier.js";
 import { SeasonMembers } from "./season.js";
 import { makeDmlRootHasher } from "./dml_root.js";
@@ -66,6 +66,11 @@ const challengeLimiter = new RateLimiter({ windowSeconds: config.rateWindowSecon
 const verifyLimiter = new RateLimiter({ windowSeconds: config.rateWindowSeconds, max: config.verifyRateMax });
 const registerLimiter = new RateLimiter({ windowSeconds: config.rateWindowSeconds, max: config.registerRateMax });
 const membersLimiter = new RateLimiter({ windowSeconds: config.rateWindowSeconds, max: config.membersRateMax });
+// Global cap on concurrent expensive verifies, so a distributed flood cannot exhaust CPU or memory
+// with unbounded parallel proof checks. The expensive verify is run inside verifyProofGated, which
+// wraps only the cryptographic check (the policy checks run first, outside the gate), and sheds with
+// an "overloaded" error when the wait queue is full.
+const verifySem = new Semaphore({ max: config.verifyConcurrency, maxQueue: config.verifyQueueMax });
 // Adapter authentication for the account-bearing endpoints. When MNO_ADAPTER_SECRET is set, a
 // caller must present it as a bearer token, so the account on /v1/challenge and /v1/verify is
 // vouched for by an authenticated adapter rather than chosen by any HTTP caller (this is what makes
@@ -439,19 +444,37 @@ const server = createServer(async (req, res) => {
         await seasonMembers.ensureContext(seasonNow(config.seasonSeconds, nowSec()), pending.contextHash);
         rootStore = seasonMembers.rootStore(pending.contextHash);
       }
-      const result = await verifyMembership({
-        vkey: twoTier ? membersVkey : vkey,
-        proof,
-        publicSignals,
-        nullifiers,
-        expected: {
-          rootStore,
-          epoch: pending.epoch,
-          contextHash: pending.contextHash,
-          signalHash: pending.signalHash,
-          account: pending.account,
-        },
-      });
+      let result;
+      try {
+        result = await verifyMembership({
+          vkey: twoTier ? membersVkey : vkey,
+          proof,
+          publicSignals,
+          nullifiers,
+          gate: (fn) => verifySem.run(fn),
+          expected: {
+            rootStore,
+            epoch: pending.epoch,
+            contextHash: pending.contextHash,
+            signalHash: pending.signalHash,
+            account: pending.account,
+          },
+        });
+      } catch (err) {
+        // The verify concurrency gate shed this request. The challenge was taken but NOT processed
+        // (the crypto verify never ran), so restore it (original expiry) rather than burn the
+        // member's one-time nonce for a transient overload, then shed with 503. restore fails only if
+        // the challenge expired meanwhile or the store is genuinely full, in which case the nonce
+        // could not be preserved and the member must request a new challenge (say so, rather than tell
+        // them to retry a dead nonce).
+        if (err && err.overloaded) {
+          const restored = challenges.restore(nonce, pending);
+          return restored
+            ? send(res, 503, { error: "overloaded, retry later" })
+            : send(res, 503, { error: "overloaded, the challenge could not be preserved, request a new challenge" });
+        }
+        throw err;
+      }
       if (!result.ok) return send(res, 200, result);
       const expiresAt = (pending.epoch + 1) * config.epochSeconds;
       // regranted is true when this was an idempotent re-verify of an already-spent tag by the same
@@ -476,6 +499,7 @@ const server = createServer(async (req, res) => {
         vkey: regVkey,
         proof,
         publicSignals,
+        gate: (fn) => verifySem.run(fn),
         // The gateway's configured registration engine and statement (plonk/derive by default; a zkvm
         // gateway is refused at boot until the receipt verifier lands). They bind this (season,
         // context)'s durable declaration, so a registration under a different engine or statement for
@@ -537,6 +561,9 @@ const server = createServer(async (req, res) => {
 
     return send(res, 404, { error: "not found" });
   } catch (err) {
+    // The verify concurrency gate sheds load with an "overloaded" error when its wait queue is full;
+    // report that as 503 (try again) rather than 400 (bad request), since the request was well-formed.
+    if (err && err.overloaded) return send(res, 503, { error: "overloaded, retry later" });
     return send(res, 400, { error: err.message });
   }
 });

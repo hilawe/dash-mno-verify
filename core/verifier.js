@@ -66,6 +66,7 @@ export async function verifyMembership({
   expected,
   nullifiers,
   verifyProof = (vk, ps, pf) => snarkjs.plonk.verify(vk, ps, pf),
+  gate = (fn) => fn(),
 }) {
   // The public signals must be canonical before any of them is read or used as a nullifier key.
   if (!signalsAreCanonical(publicSignals, Object.keys(SIGNAL_INDEX).length))
@@ -104,12 +105,12 @@ export async function verifyMembership({
   //    proof. The has() check rejects an ordinary replay before the expensive proof verify.
   if (await nullifiers.has(s.epoch, s.contextHash, s.nullifier)) {
     if (!(await claimedBySameAccount())) return { ok: false, reason: "already-used" };
-    if (!(await verifyProof(vkey, publicSignals, proof))) return { ok: false, reason: "invalid-proof" };
+    if (!(await gate(() => verifyProof(vkey, publicSignals, proof)))) return { ok: false, reason: "invalid-proof" };
     return { ok: true, nullifier: s.nullifier, epoch: s.epoch, regranted: true };
   }
 
   // 6) first claim: verify the proof, then record the spend and the granting account together.
-  if (!(await verifyProof(vkey, publicSignals, proof))) return { ok: false, reason: "invalid-proof" };
+  if (!(await gate(() => verifyProof(vkey, publicSignals, proof)))) return { ok: false, reason: "invalid-proof" };
 
   // With a shared store, a duplicate here means another request recorded the spend first in a race.
   // Re-grant only if that prior claim belongs to this same account, otherwise it is already used.
@@ -203,7 +204,7 @@ export function decodeZkvmRegistrationClaims(journal) {
 // engine. It takes already-decoded `claims`, the engine's crypto check as an injected async
 // `verifyProof()`, and `expected.rootStore` (the Poseidon root store for PLONK, the SHA-256 root
 // store for the zkVM engine), so the engines differ only outside this function.
-export async function verifyRegistrationCore({ claims, verifyProof, expected, registrationStore, commit }) {
+export async function verifyRegistrationCore({ claims, verifyProof, expected, registrationStore, commit, gate = (fn) => fn() }) {
   // 0) the caller (the gateway) must name a valid engine and statement, which bind this bucket's
   //    durable declaration. They are gateway-chosen, never taken from the proof, and must be present
   //    and valid, so an engine dispatcher cannot omit them and silently default a custody
@@ -222,8 +223,10 @@ export async function verifyRegistrationCore({ claims, verifyProof, expected, re
   if (await registrationStore.has(claims.season, claims.contextHash, claims.regNullifier))
     return { ok: false, reason: "already-registered" };
 
-  // 5) the proof itself (PLONK verify, or the zkVM receipt verify against the pinned image id)
-  if (!(await verifyProof())) return { ok: false, reason: "invalid-proof" };
+  // 5) the proof itself (PLONK verify, or the zkVM receipt verify against the pinned image id). Run
+  //    it through `gate` so the gateway can bound global concurrency of the expensive verify. The
+  //    gate wraps ONLY this crypto check, so the cheap policy rejections above never consume a slot.
+  if (!(await gate(verifyProof))) return { ok: false, reason: "invalid-proof" };
 
   // 6) the atomic, season-serialized commit. expected.season is the gateway's authoritative season
   //    (equal to claims.season by check 2), used for the season re-check inside commit. The engine
@@ -253,6 +256,7 @@ export async function verifyRegistration({
   registrationStore,
   commit,
   verifyProof = () => snarkjs.plonk.verify(vkey, publicSignals, proof),
+  gate = (fn) => fn(),
 }) {
   // This wrapper is the PLONK engine, so it pins its own engine, and a mismatched declaration from a
   // mis-wired dispatcher is rejected before anything is decoded or committed. Otherwise the zkVM and
@@ -261,7 +265,7 @@ export async function verifyRegistration({
   if (expected.engine !== "plonk") return { ok: false, reason: "engine-mismatch" };
   const decoded = decodePlonkRegistrationClaims(publicSignals);
   if (decoded.error) return { ok: false, reason: decoded.error };
-  return verifyRegistrationCore({ claims: decoded.claims, verifyProof, expected, registrationStore, commit });
+  return verifyRegistrationCore({ claims: decoded.claims, verifyProof, expected, registrationStore, commit, gate });
 }
 
 // The zkVM-facing registration verify, the engine sibling of verifyRegistration. It decodes the
@@ -279,7 +283,7 @@ export async function verifyRegistration({
 // verifier (a pinned r0vm subprocess or a WASM build), which is deferred and artifact-gated. A unit
 // test injects a stub. A gateway configured for the zkVM engine must supply a real one or refuse to
 // boot (there is no default, so an unconfigured zkVM verify fails closed rather than skips the check).
-export async function verifyZkvmRegistration({ receipt, journalBytes, verifyReceipt, expected, registrationStore, commit }) {
+export async function verifyZkvmRegistration({ receipt, journalBytes, verifyReceipt, expected, registrationStore, commit, gate = (fn) => fn() }) {
   // This wrapper is the zkVM engine, so it pins its own engine (see the PLONK wrapper's note), so a
   // mismatched declaration cannot commit a zkVM registration under a PLONK label.
   if (expected.engine !== "zkvm") return { ok: false, reason: "engine-mismatch" };
@@ -292,5 +296,6 @@ export async function verifyZkvmRegistration({ receipt, journalBytes, verifyRece
     expected,
     registrationStore,
     commit,
+    gate,
   });
 }

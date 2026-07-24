@@ -9,6 +9,19 @@ prioritized punch list.
 
 ### Where things stand
 
+- 2026-07-24, step 5 continued: the verification-concurrency bound. A `Semaphore` (core/stores.js)
+  caps concurrent expensive verifies (`MNO_VERIFY_CONCURRENCY`, default 4) with a bounded wait queue
+  (`MNO_VERIFY_QUEUE_MAX`, default 256), gating ONLY the crypto check via an engine-agnostic `gate`
+  threaded through verifyMembership/verifyRegistration (default pass-through, so PLONK behavior is
+  preserved), and sheds a 503 when full. An overloaded `/v1/verify` restores the taken one-time
+  challenge (`ChallengeStore.restore`, cap-respecting so bounded) so a transient overload does not
+  burn the member's nonce; on a genuine flood it honestly tells the member to request a new one.
+  Reviewed by a different model over three iterations (the semaphore was confirmed correct first; then
+  a consumed-challenge defect, a restore-refused-on-full defect, and an unbounded cap-bypass were each
+  found and folded; final re-check APPROVE). 188 tests green. Only step-5 remainders now: the live
+  STARK verifier + HTTP receipt routing, and the registration proof lease (deferred for a prose
+  design pass on challenge-vs-window).
+
 - 2026-07-24, step 5 continued: per-request engine dispatch. `verifyZkvmRegistration` is the engine
   sibling of `verifyRegistration`, decoding the frozen journal, running the same policy pipeline
   before an injected receipt verify, and using the SHA-256 root view. Each wrapper pins its own

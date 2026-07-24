@@ -359,8 +359,15 @@ integration and have not started.
    registration engine (validated at boot), and a zkVM gateway refuses to boot until the receipt
    verifier is wired. STILL TO DO in step 5: the live non-JavaScript STARK verifier wired at boot and
    pinned by image-id and artifact checksum (artifact-gated, like the Platform backend) plus the HTTP
-   request-shape routing for a receipt body, the registration proof lease for root
-   freshness, and the verification-concurrency bound. The Platform registration backend, when wired,
+   request-shape routing for a receipt body, and the registration proof lease for root
+   freshness. DONE (2026-07-24), the verification-concurrency bound: a `Semaphore` caps concurrent
+   expensive verifies (`MNO_VERIFY_CONCURRENCY`) with a bounded wait queue (`MNO_VERIFY_QUEUE_MAX`),
+   gating only the crypto check (the policy rejections stay cheap), and sheds with a 503 when the
+   queue is full. An overloaded `/v1/verify` restores the taken one-time challenge (bounded by the
+   challenge cap) so a transient overload does not burn the member's nonce. STILL TO DO in step 5:
+   the live non-JavaScript STARK verifier and the HTTP receipt-body routing, and the registration
+   proof lease (which needs a small design decision, a registration challenge with an issuance time
+   versus a longer registration root window, so it is deferred for a prose design pass). The Platform registration backend, when wired,
    will also need `declarationFor`, `seasonHasEngine`, and the same per-bucket enforcement.
 
    A full multi-model round over the accumulated step-4-and-step-5 surface (2026-07-24) found three

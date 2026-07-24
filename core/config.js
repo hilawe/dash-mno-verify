@@ -107,6 +107,12 @@ export const config = {
   // so raising it for the receipt does not widen the unauthenticated challenge and verify endpoints.
   maxBodyBytes: intEnv("MNO_MAX_BODY_BYTES", 2_000_000, { min: 1024 }),
   maxRegisterBodyBytes: intEnv("MNO_MAX_REGISTER_BODY_BYTES", 2_000_000, { min: 1024 }),
+  // Global cap on how many expensive cryptographic verifies (the PLONK proof or zkVM receipt check)
+  // run at once, plus how many may wait before the gateway sheds load with a 503. The per-client rate
+  // limit bounds one source; this bounds the whole gateway against a distributed flood exhausting CPU
+  // and memory. Only the verify is gated, so cheap policy rejections never consume a slot.
+  verifyConcurrency: intEnv("MNO_VERIFY_CONCURRENCY", 4, { min: 1 }),
+  verifyQueueMax: intEnv("MNO_VERIFY_QUEUE_MAX", 256, { min: 0 }),
   // Honor the first X-Forwarded-For hop for the client key. Only enable behind a trusted proxy,
   // otherwise a client can spoof the header to dodge the limit.
   trustProxy: process.env.MNO_TRUST_PROXY === "1",
