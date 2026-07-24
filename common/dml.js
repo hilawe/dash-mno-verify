@@ -29,6 +29,15 @@ export function votingAddressToLeaf(address) {
   return BigInt("0x" + Buffer.from(hash160).toString("hex"));
 }
 
+// Decode a Dash votingAddress to its raw 20-byte keyID (the hash160), the leaf the
+// SHA-256 DML tree hashes directly (the Poseidon tree instead reads it big-endian as a
+// field element via votingAddressToLeaf). Same 20 bytes, two encodings.
+export function votingAddressToKeyId(address) {
+  const keyId = Buffer.from(bs58check.decode(address).slice(1));
+  if (keyId.length !== 20) throw new Error(`votingAddress decoded to ${keyId.length} bytes, expected 20`);
+  return keyId;
+}
+
 // Dash wallet import format (WIF) to a 32-byte private key. Drop the version byte,
 // drop the trailing compression flag if present.
 export function wifToPriv(wif) {

@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID, generateKeyPairSync } from "node:crypto";
 import { makeDmlRootHasher, FIELD_PRIME } from "../core/dml_root.js";
+import { shaRootFromLeaves } from "../common/dml_sha_root.js";
 import { signalHash } from "../common/index.js";
 import { addSignature, rawPublicB64 } from "../common/oracle_sig.js";
 
@@ -16,6 +17,7 @@ import { addSignature, rawPublicB64 } from "../common/oracle_sig.js";
 const rootHasher = await makeDmlRootHasher();
 const REAL_LEAVES = ["111", "222", "333"];
 const REAL_ROOT = rootHasher(REAL_LEAVES);
+const shaRootHasher = (leaves) => shaRootFromLeaves(leaves, 16);
 const snapshot = (over = {}) => ({ height: 1, blockHash: "ab".repeat(32), depth: 16, root: REAL_ROOT, leaves: REAL_LEAVES, ts: Math.floor(Date.now() / 1000), ...over });
 
 // Negative-path integration tests against the real gateway booted on a loopback port. The four
@@ -607,6 +609,75 @@ test("an unsigned snapshot is rejected when oracle keys are pinned, leaving no r
   } finally {
     await cleanup();
   }
+});
+
+// The deployment-scoped dual-root requirement (docs/ZKVM_INTEGRATION.md): a zkVM gateway
+// (MNO_REQUIRE_SHA_ROOT=1) refuses a v1 snapshot lacking the SHA-256 root, so a downgrade cannot
+// slip one in, and adopts a self-consistent v2 snapshot.
+test("a zkVM gateway refuses a v1 snapshot (downgrade), leaving no root", async () => {
+  const v1 = snapshot(); // no version, no shaRoot
+  const { g, cleanup } = await gatewayWithSnapshot(v1, { MNO_REQUIRE_SHA_ROOT: "1" });
+  try {
+    assert.equal(await mints(g.base), 503);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("a zkVM gateway adopts a v2 snapshot whose shaRoot hashes from its leaves", async () => {
+  const v2 = snapshot({ version: 2, shaRoot: shaRootHasher(REAL_LEAVES) });
+  const { g, cleanup } = await gatewayWithSnapshot(v2, { MNO_REQUIRE_SHA_ROOT: "1" });
+  try {
+    assert.equal(await mints(g.base), 200);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("a zkVM gateway rejects a v2 snapshot whose shaRoot does not hash from its leaves", async () => {
+  const v2 = snapshot({ version: 2, shaRoot: "00".repeat(32) }); // wrong shaRoot
+  const { g, cleanup } = await gatewayWithSnapshot(v2, { MNO_REQUIRE_SHA_ROOT: "1" });
+  try {
+    assert.equal(await mints(g.base), 503);
+  } finally {
+    await cleanup();
+  }
+});
+
+// The full requirement is a v2 shaRoot under a v2 quorum SIGNATURE, so this matrix runs with a
+// pinned oracle key (not unsigned mode): signed v1 is fine without the flag, the same signed v1 is
+// refused with the flag (downgrade), a signed v2 is adopted with the flag, and a tampered-shaRoot v2
+// is rejected because its v2 signature no longer verifies.
+test("signed dual-root matrix under a pinned oracle key", async () => {
+  const { privateKey } = generateKeyPairSync("ed25519");
+  const pub = rawPublicB64(privateKey);
+  const v2ok = signedBy(snapshot({ version: 2, shaRoot: shaRootHasher(REAL_LEAVES) }), privateKey);
+  const v1 = signedBy(snapshot(), privateKey);
+
+  const a = await gatewayWithSnapshot(v1, { MNO_ORACLE_PUBKEYS: pub });
+  try { assert.equal(await mints(a.g.base), 200, "signed v1 adopts without the flag"); } finally { await a.cleanup(); }
+
+  const b = await gatewayWithSnapshot(v1, { MNO_ORACLE_PUBKEYS: pub, MNO_REQUIRE_SHA_ROOT: "1" });
+  try { assert.equal(await mints(b.g.base), 503, "signed v1 refused with the flag"); } finally { await b.cleanup(); }
+
+  const c = await gatewayWithSnapshot(v2ok, { MNO_ORACLE_PUBKEYS: pub, MNO_REQUIRE_SHA_ROOT: "1" });
+  try { assert.equal(await mints(c.g.base), 200, "signed v2 adopts with the flag"); } finally { await c.cleanup(); }
+
+  // Tamper the shaRoot AFTER signing: the recompute mismatch and the broken v2 signature both reject.
+  const v2tampered = { ...v2ok, shaRoot: shaRootHasher(REAL_LEAVES).replace(/.$/, (ch) => (ch === "0" ? "1" : "0")) };
+  const d = await gatewayWithSnapshot(v2tampered, { MNO_ORACLE_PUBKEYS: pub, MNO_REQUIRE_SHA_ROOT: "1" });
+  try { assert.equal(await mints(d.g.base), 503, "tampered-shaRoot v2 rejected"); } finally { await d.cleanup(); }
+});
+
+test("an unknown snapshot version and a non-string shaRoot both fail closed", async () => {
+  const unknown = snapshot({ version: 3, shaRoot: shaRootHasher(REAL_LEAVES) });
+  const u = await gatewayWithSnapshot(unknown, { MNO_REQUIRE_SHA_ROOT: "1" });
+  try { assert.equal(await mints(u.g.base), 503, "unknown version not adopted"); } finally { await u.cleanup(); }
+
+  // A shaRoot as a singleton array must not pass via String() coercion.
+  const arr = snapshot({ version: 2, shaRoot: [shaRootHasher(REAL_LEAVES)] });
+  const w = await gatewayWithSnapshot(arr, { MNO_REQUIRE_SHA_ROOT: "1" });
+  try { assert.equal(await mints(w.g.base), 503, "array shaRoot rejected"); } finally { await w.cleanup(); }
 });
 
 test("a snapshot signed by an untrusted key is rejected", async () => {

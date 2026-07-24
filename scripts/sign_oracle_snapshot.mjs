@@ -11,6 +11,7 @@ import { readFile, writeFile, rename } from "node:fs/promises";
 import process from "node:process";
 import { createPrivateKey } from "node:crypto";
 import { makeDmlRootHasher } from "../core/dml_root.js";
+import { shaRootFromLeaves } from "../common/dml_sha_root.js";
 import { addSignature } from "../common/oracle_sig.js";
 
 const file = process.argv[2];
@@ -29,6 +30,15 @@ const recomputed = (await makeDmlRootHasher(snapshot.depth))(snapshot.leaves ?? 
 if (recomputed !== String(snapshot.root)) {
   console.error(`refusing to sign: root ${snapshot.root} does not hash from the leaves (recomputed ${recomputed})`);
   process.exit(1);
+}
+// A v2 snapshot also carries the SHA-256 root, which the v2 signature covers, so recompute it from
+// the same leaves before signing. Refuse to attest a shaRoot that does not hash from the leaves.
+if (snapshot.shaRoot != null) {
+  const shaRecomputed = shaRootFromLeaves(snapshot.leaves ?? [], snapshot.depth);
+  if (shaRecomputed !== String(snapshot.shaRoot)) {
+    console.error(`refusing to sign: shaRoot ${snapshot.shaRoot} does not hash from the leaves (recomputed ${shaRecomputed})`);
+    process.exit(1);
+  }
 }
 
 const pem = keyEnv.includes("BEGIN") ? keyEnv : await readFile(keyEnv, "utf8");

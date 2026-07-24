@@ -59,16 +59,28 @@ test("a stable tip builds the snapshot in one attempt", async () => {
   assert.equal(calls.filter(([m]) => m === "masternodelist").length, 1);
 });
 
-test("golden snapshot, exact field set, order, and serialization", async () => {
+const SHA_ROOT_1_2 = "753074d0b441c621d485b92aaf2d6d07dffa068ff801096d5d02201d083a753a";
+
+test("golden snapshot, exact field set, order, and serialization (v2 dual-root)", async () => {
   const { call } = scriptedCall([100, 100]);
   const snap = await buildSnapshot({ call, now: () => 1234 });
 
-  assert.deepEqual(Object.keys(snap), ["height", "blockHash", "depth", "ts", "root", "leaves"]);
+  assert.deepEqual(Object.keys(snap), [
+    "version", "height", "blockHash", "depth", "ts", "root", "shaRoot", "leaves",
+  ]);
   assert.equal(
     JSON.stringify(snap),
-    `{"height":100,"blockHash":"hash-100","depth":16,"ts":1234,` +
-      `"root":"${ROOT_1_2}","leaves":["${LEAF_1}","${LEAF_2}"]}`
+    `{"version":2,"height":100,"blockHash":"hash-100","depth":16,"ts":1234,` +
+      `"root":"${ROOT_1_2}","shaRoot":"${SHA_ROOT_1_2}","leaves":["${LEAF_1}","${LEAF_2}"]}`
   );
+});
+
+test("the shaRoot is self-consistent with the published leaves", async () => {
+  const { call } = scriptedCall([100, 100]);
+  const snap = await buildSnapshot({ call, now: () => 1234 });
+  const { shaRootFromLeaves } = await import("../common/dml_sha_root.js");
+  assert.equal(snap.shaRoot, shaRootFromLeaves(snap.leaves, snap.depth));
+  assert.equal(snap.version, 2);
 });
 
 test("a block landing mid-read drives a retry, and the retried snapshot is consistent", async () => {

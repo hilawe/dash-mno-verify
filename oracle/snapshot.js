@@ -4,6 +4,7 @@
 // knowing which.
 import { votingAddressToLeaf } from "../common/dml.js";
 import { makeDmlRootHasher } from "../common/dml_root.js";
+import { makeShaDmlRootHasher, leafToKeyId } from "../common/dml_sha_root.js";
 
 export const TREE_DEPTH = 16; // up to 65536 leaves; raise if the network grows past that
 
@@ -70,17 +71,25 @@ export async function buildSnapshot({
     return leaf;
   });
 
-  // Same tree as the full-pad build (depth `depth`, empty slots 0, Poseidon(2) bottom up);
-  // test/dml_root.test.js pins the equivalence against MembersTree.
+  // Two roots over the SAME ordered leaves. The Poseidon root is the full-pad build (depth `depth`,
+  // empty slots 0, Poseidon(2) bottom up; test/dml_root.test.js pins the equivalence). The SHA-256
+  // root is the zkVM registration tree (docs/ZKVM_INTEGRATION.md), derived from the same leaves, so
+  // the two provably describe one leaf set and the gateway recomputes both.
   const rootFromLeaves = await makeDmlRootHasher(depth);
+  const shaRootFromKeyIds = makeShaDmlRootHasher(depth);
   const leaves = realLeaves.map((x) => x.toString());
 
   return {
+    // v2 snapshot: carries both roots. The version selects the signed-message form (common/oracle_sig.js)
+    // and lets a gateway with any zkVM context require v2, refusing a downgraded v1 snapshot.
+    version: 2,
     height,
     blockHash,
     depth,
     ts: now(),
     root: rootFromLeaves(leaves),
+    // The SHA-256 root for the zkVM statement, 64 lowercase hex. Derived from the same leaves.
+    shaRoot: shaRootFromKeyIds(realLeaves.map((x) => leafToKeyId(x))),
     // Publishing the ordered real leaves lets a prover rebuild the tree locally and pull
     // their own path. Which leaf is theirs is never revealed to anyone.
     leaves,

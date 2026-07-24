@@ -9,6 +9,15 @@ prioritized punch list.
 
 ### Where things stand
 
+- 2026-07-24, step 4 of the zkVM integration (the shipping code) landed: the oracle dual-root v2
+  snapshot. `buildSnapshot` now emits `version: 2` and a SHA-256 `shaRoot` derived from the same
+  leaves (`common/dml_sha_root.js`, pinned against the shared fixture), the signed message versions
+  to v2 covering the shaRoot (v1 byte-identical, neither signature replayable as the other), the
+  gateway recomputes the shaRoot alongside the Poseidon root, and `MNO_REQUIRE_SHA_ROOT=1` makes a
+  zkVM deployment refuse a downgraded v1 snapshot. 150 tests green (13 new). Next is step 5 (gateway
+  claims-object refactor, engine dispatch, the STARK verifier, the durable engine declaration, the
+  registration lease, and the measured limits).
+
 - 2026-07-24, the heavy bench reported and settles the cost questions. The production statement FITS
   8 GB: at `segment_limit_po2 = 19` it peaked at 4.8 GB under an enforced 8 GB cgroup (passed), for
   about 2 extra minutes (86 vs 84). The wallet-custody rejection is REOPENED, because the memory

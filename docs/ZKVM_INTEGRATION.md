@@ -327,8 +327,15 @@ integration and have not started.
    the bench (4.8 GB at po2 19 under the 8 GB cap, about 86 minutes).
 3. DONE. Receipt path measured and decided: the unwrapped STARK receipt (see the receipt section
    above), keeping the no-trusted-setup property.
-4. Oracle dual-root snapshot, the v2 signed message, and the deployment-scoped snapshot
-   requirement at the gateway.
+4. DONE (2026-07-24). Oracle dual-root snapshot: `buildSnapshot` emits `version: 2` and the SHA-256
+   `shaRoot` derived from the same leaves (`common/dml_sha_root.js`, pinned against the fixture in
+   `test/dml_sha_root.test.js`). The signed message versions to `mno-oracle-snapshot-v2` covering the
+   shaRoot, with v1 byte-identical for backward compatibility and neither signature replayable as the
+   other (`common/oracle_sig.js`). The gateway recomputes the shaRoot from the leaves alongside the
+   Poseidon root, and `MNO_REQUIRE_SHA_ROOT=1` makes a zkVM deployment refuse a v1 (rootless)
+   snapshot, the deployment-scoped downgrade rule (`core/gateway.js`, `core/config.js`). The quorum
+   signing script recomputes the shaRoot before attesting. Serving the shaRoot to provers and the
+   durable-declaration refinement of the require-flag land with step 5.
 5. Gateway claims-object refactor, the SHA-256 root store, engine dispatch with the pinned image
    identifier and the non-JavaScript STARK verifier (checksum-pinned), the durable engine
    declaration, and the measured limits (a raised `MNO_MAX` for the receipt, registration rate,

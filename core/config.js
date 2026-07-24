@@ -80,6 +80,13 @@ export const config = {
   oraclePubkeys: oraclePubkeys("MNO_ORACLE_PUBKEYS"),
   oracleQuorum: intEnv("MNO_ORACLE_QUORUM", 1, { min: 1 }),
   allowUnsignedOracle: process.env.MNO_ALLOW_UNSIGNED_ORACLE === "1",
+  // Deployment-scoped requirement for the zkVM dual-root snapshot. When any zkVM registration
+  // context is served, the gateway MUST adopt only a v2 snapshot carrying the SHA-256 root under a
+  // v2 quorum signature, so a downgraded v1 snapshot (which lacks the root the zkVM statement needs)
+  // cannot become current. Set MNO_REQUIRE_SHA_ROOT=1 for a zkVM deployment. Until the durable
+  // per-(season, context) engine declaration lands (step 5), this flag is the deployment-scoped
+  // signal; step 5 refines it to also require v2 whenever a current-season zkVM context is declared.
+  requireShaRoot: process.env.MNO_REQUIRE_SHA_ROOT === "1",
 
   // Unauthenticated-endpoint guards. Per-client fixed-window limits on /v1/challenge and /v1/verify
   // plus a hard cap on pending challenges, so one source cannot mint unlimited nonces or force

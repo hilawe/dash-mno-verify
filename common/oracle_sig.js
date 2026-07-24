@@ -13,14 +13,39 @@
 // The oracle signing key is a separate operational identity, unrelated to any masternode key.
 import { createPublicKey, createPrivateKey, sign, verify } from "node:crypto";
 
-const DOMAIN = "mno-oracle-snapshot-v1";
+const DOMAIN_V1 = "mno-oracle-snapshot-v1";
+const DOMAIN_V2 = "mno-oracle-snapshot-v2";
 
 // Canonical authenticated message for a snapshot. The oracle and the gateway derive it the same way
 // from the snapshot object, so the signed bytes match exactly. The domain prefix stops a signature
-// being replayed as one for a different message type.
+// being replayed as one for a different message type, and the version stops a v1 signature (which
+// never covered the SHA-256 root) from being replayed as a v2 one over an attacker-chosen shaRoot.
+//
+// v1: the original fields, unchanged, so existing v1 snapshots and their signatures verify exactly.
+// v2: appends the SHA-256 root and an explicit version, the zkVM dual-root snapshot. A v2 snapshot
+// MUST carry a shaRoot; the version field, set by the oracle, selects the form so a v1 snapshot with
+// a stray shaRoot cannot be verified as v2 (or vice versa).
 export function snapshotMessage(o) {
-  const fields = [DOMAIN, o.height, o.blockHash ?? "", o.depth, o.root, o.ts];
+  const version = snapshotVersion(o); // throws on any version other than absent/1/2
+  if (version === 2) {
+    if (typeof o.shaRoot !== "string") throw new Error("v2 snapshot message requires a string shaRoot");
+    const fields = [DOMAIN_V2, "2", o.height, o.blockHash ?? "", o.depth, o.root, o.shaRoot, o.ts];
+    return Buffer.from(fields.map((f) => String(f)).join("\n"), "utf8");
+  }
+  const fields = [DOMAIN_V1, o.height, o.blockHash ?? "", o.depth, o.root, o.ts];
   return Buffer.from(fields.map((f) => String(f)).join("\n"), "utf8");
+}
+
+// The canonical snapshot version, failing closed. An absent version or the integer 1 is v1, the
+// integer 2 is v2, and everything else (an unknown version, a string, a float) is rejected, so an
+// unknown-version snapshot can never be signed or verified under the legacy v1 message and slip
+// through with future fields unauthenticated. One dispatch point for the oracle, the signer, and the
+// gateway.
+export function snapshotVersion(o) {
+  const v = o?.version;
+  if (v == null || v === 1) return 1;
+  if (v === 2) return 2;
+  throw new Error(`unsupported oracle snapshot version: ${JSON.stringify(v)}`);
 }
 
 // A trusted public key object from the raw 32-byte Ed25519 key an operator pins (base64 or base64url).

@@ -30,9 +30,10 @@ import { RootStore, NullifierStore, ChallengeStore, RateLimiter, loadOracle } fr
 import { loadVerificationKey, verifyMembership, verifyRegistration } from "./verifier.js";
 import { SeasonMembers } from "./season.js";
 import { makeDmlRootHasher } from "./dml_root.js";
+import { shaRootFromLeaves } from "../common/dml_sha_root.js";
 import { isCanonicalField } from "../common/field.js";
 import { contextHash, signalHash, epochNow, seasonNow } from "../common/index.js";
-import { snapshotMessage, verifySnapshotSig } from "../common/oracle_sig.js";
+import { snapshotMessage, verifySnapshotSig, snapshotVersion } from "../common/oracle_sig.js";
 
 const twoTier = config.mode === "two-tier";
 const nowSec = () => Math.floor(Date.now() / 1000);
@@ -143,6 +144,24 @@ function validateSnapshot(o) {
   if (!Array.isArray(o.leaves)) throw new Error("snapshot leaves missing");
   if (o.leaves.length > 2 ** config.treeDepth) throw new Error("snapshot leaves exceed tree capacity");
   for (const l of o.leaves) if (!isCanonicalField(l)) throw new Error("snapshot leaf is not a canonical field element");
+  // Strict version, failing closed: absent/1 is v1, 2 is v2, anything else is rejected, so an
+  // unknown-version snapshot cannot be adopted under the legacy v1 message with future fields
+  // unauthenticated. One dispatch point shared with the signer (common/oracle_sig.js).
+  const version = snapshotVersion(o);
+  // A shaRoot, when present, must be a 64-lowercase-hex STRING (not a coercible array or number), so
+  // a malformed value cannot pass the recompute and signature paths via String() and land in
+  // latestDml. Checked regardless of deployment, so a non-zkVM gateway also rejects a malformed one.
+  if (o.shaRoot != null) {
+    if (typeof o.shaRoot !== "string" || !/^[0-9a-f]{64}$/.test(o.shaRoot)) {
+      throw new Error("snapshot shaRoot is not a 64 lowercase hex string");
+    }
+  }
+  // Deployment-scoped dual-root requirement (docs/ZKVM_INTEGRATION.md). A zkVM deployment refuses a
+  // v1 snapshot outright, since it lacks the SHA-256 root the zkVM statement is checked against, so a
+  // downgrade cannot slip a rootless snapshot in through the same refresh path.
+  if (config.requireShaRoot && (version !== 2 || o.shaRoot == null)) {
+    throw new Error("zkVM deployment requires a v2 snapshot with a shaRoot (downgrade refused)");
+  }
   if (config.oracleMaxAgeSeconds > 0) {
     const ts = Number(o.ts);
     if (!Number.isFinite(ts)) throw new Error("snapshot timestamp invalid");
@@ -202,10 +221,17 @@ async function refreshRoots() {
     // separate check that a trusted oracle key vouched for this leaf set, so a source that forges a
     // self-consistent pair over an attacker-chosen set is rejected unless it also holds a trusted key.
     const recomputed = dmlRootFromLeaves(o.leaves);
+    // Recompute the SHA-256 root from the SAME leaves too, so a v2 snapshot whose shaRoot does not
+    // hash from its leaves is rejected exactly like a mismatched Poseidon root. Both roots must be
+    // self-consistent before the signature check, so a source cannot pair a good Poseidon root with a
+    // forged shaRoot. The two provably describe one leaf set only because both recompute here.
+    const shaRecomputed = o.shaRoot != null ? shaRootFromLeaves(o.leaves, config.treeDepth) : null;
     if (recomputed !== String(o.root)) {
       // Reject the inconsistent snapshot, but do not early-return: the staleness check below must
       // still run, or an aged-out accepted root would keep being served while the source is bad.
       console.error(`[gateway] oracle root mismatch, snapshot rejected: claimed ${o.root}, recomputed ${recomputed}`);
+    } else if (shaRecomputed !== null && shaRecomputed !== String(o.shaRoot)) {
+      console.error(`[gateway] oracle shaRoot mismatch, snapshot rejected: claimed ${o.shaRoot}, recomputed ${shaRecomputed}`);
     } else if (!oracleSignaturesOk(o)) {
       // Self-consistent but not vouched for by the quorum of trusted oracle keys, so the leaf set is
       // unauthenticated. Reject, and fall through to the freshness sweep like the mismatch case.
