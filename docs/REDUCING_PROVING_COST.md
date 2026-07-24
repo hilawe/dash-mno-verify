@@ -247,10 +247,12 @@ caveats keep the claim from being oversold.
   proof, so the default position is to ship the raw unwrapped proof, which keeps the no-setup
   property true. At community scale, a few thousand proofs per multi-hour window at tens of
   milliseconds each is seconds of parallelizable CPU, so no wrapper is needed for throughput
-  either. (This "no wrapper" position is no longer pinned as a constraint. It is one of the two
-  candidates in the gated receipt-path decision of `docs/ZKVM_INTEGRATION.md`, work-plan step 3,
-  weighed against the wrapped path's pure-JavaScript verification, and whichever wins, this
-  section gets the measured result and the accepted tradeoff recorded.)
+  either. (This "no wrapper" position is now the decision, 2026-07-23. The step-3 measurements
+  confirmed the wrapped path buys only a tiny receipt the server does not need, at the price of a
+  circuit-specific Groth16 ceremony and about 33 extra minutes plus docker on every member's prove,
+  so the gateway ships the unwrapped STARK receipt and keeps the no-setup property. The accepted
+  cost is a non-JavaScript verifier component in the gateway, pinned by checksum. See the receipt
+  section of `docs/ZKVM_INTEGRATION.md`.)
 
 ## Phase 0, the ablation-first benchmark
 

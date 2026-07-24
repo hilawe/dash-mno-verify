@@ -18,10 +18,11 @@ prioritized punch list.
   once-per-season upload; exceeds only the configurable 2 MB `MNO_MAX` default, not a real limit, and
   the 6.4 MB was the avoidable base64 tax of JSON) verifying in about 400-820 ms; wrapped Groth16 is
   769 bytes, verifies in about 5-14 ms, but adds about 33 min and a docker dependency to the member's
-  prove and reintroduces a trusted setup. Leaning unwrapped on the properties (a config change beats a
-  trusted setup plus docker on every member). Both fold into `docs/REDUCING_PROVING_COST.md` and
-  `docs/ZKVM_INTEGRATION.md`. Two owner decisions now open: wallet custody vs derive, and the
-  receipt path.
+  prove and reintroduces a trusted setup. Both fold into `docs/REDUCING_PROVING_COST.md` and
+  `docs/ZKVM_INTEGRATION.md`. Receipt path DECIDED 2026-07-23 (owner): the unwrapped STARK receipt,
+  keeping the no-trusted-setup property. The accepted cost is a non-JavaScript verifier in the
+  gateway (checksum-pinned) plus a raised `MNO_MAX` and a binary receipt upload. Still open: wallet
+  custody vs derive (recommendation, ship derive, offer custody as opt-in).
 
 - 133 tests green (`npm test`, about two minutes).
 - 2026-07-23, the oracle snapshot assembly is factored into `oracle/snapshot.js` behind an

@@ -1,16 +1,15 @@
 # zkVM registration integration design
 
-Status: design under review, first draft 2026-07-23, revised the same day after two independent
-review rounds (a design-consistency round, then a full multi-reviewer round once guest v2 and the
-harness existed). Guest v2 is implemented and measured, the cross-implementation golden vectors pass,
-and its statement soundness was reviewed with no malleability path found, but the cost is not settled:
-the production statement measured 9.6 GB and 77 minutes at default segments (the three in-guest
-Poseidon hashes dominate), failed the 8 GB cap, and the segment-size reruns that decide the fit are in
-flight (see `docs/REDUCING_PROVING_COST.md`). What is settled is the shape (two-tier retained, the
-zero-knowledge virtual machine (zkVM) receipt replaces only the registration proof) and the statement
-(derive the key). What is deliberately NOT settled is the receipt verification path,
-which is a gated decision with two candidates measured in work-plan step 3. Everything here is
-specified against the gateway and circuits as they exist today.
+Status: design reviewed over four adversarial rounds (no statement-soundness hole found) and settled
+on its measured numbers. Guest v2 is implemented and measured, the cross-implementation golden vectors
+pass, and the cost questions are answered: the production statement fits an 8 GB machine at
+`segment_limit_po2 = 19` (4.8 GB measured under an enforced cap, about 86 minutes; see
+`docs/REDUCING_PROVING_COST.md`). Settled: the shape (two-tier retained, the zero-knowledge virtual
+machine (zkVM) receipt replaces only the registration proof), the statement (derive the key), and the
+receipt path (the unwrapped STARK receipt, decided 2026-07-23 on the step-3 measurements, keeping the
+no-trusted-setup property). Still an open owner decision, separate from this design: whether to also
+offer the wallet-custody statement, now reachable at the same 4.8 GB for more proving time. Everything
+here is specified against the gateway and circuits as they exist today.
 
 ## The shape
 
@@ -191,21 +190,31 @@ the leaning recommendation, with the wrapped path reserved for a deployment that
 tiny fast receipt more than transparency. This is the owner's decision; the measurements frame it, they
 do not force it.
 
-## Receipt verification at the gateway, a gated decision
+## Receipt verification at the gateway, decided: unwrapped STARK
 
-Two candidates, decided by measurement in work-plan step 3, not before:
+Decided 2026-07-23 (owner), on the step-3 measurements above: the gateway verifies the unwrapped
+STARK receipt, not the wrapped Groth16 form. The reasoning is the properties, not the raw sizes. The
+unwrapped path keeps the no-trusted-setup transparency the whole cost doc argues for, and its costs
+are gateway-side and cheap to absorb: sub-second verification and a receipt of about 4.8 MB, which is
+small for a once-per-season upload and larger only than the configurable `MNO_MAX` body default, not
+any real limit. The wrapped path would trade that transparency away, reintroducing a circuit-specific
+Groth16 ceremony, and would push about 33 extra minutes and a docker dependency onto every member's
+prove, to buy a tiny receipt the server does not need. A server absorbs a few-megabyte upload far
+more easily than a member absorbs docker and a longer prove, so the balance favors unwrapped.
 
-- Wrapped receipt (STARK-to-SNARK, Groth16 over BN254). Verifies in the gateway's existing
-  JavaScript stack with a tiny key, zero new operational surface. The cost: RISC Zero's wrap rests
-  on a circuit-specific Groth16 setup (their ceremony), which reintroduces exactly the
-  trusted-setup dependence the cost doc's transparency argument counts against the current PLONK
-  stack. Choosing it means revising that argument honestly, the setup moves from
-  "universal, Hermez" to "circuit-specific, RISC Zero's ceremony", and stating the accepted trust.
-- Unwrapped STARK receipt, verified by a small verifier the gateway invokes (a pinned-version
-  subprocess or a WASM build). Fully transparent, no new setup, at the cost of a non-JavaScript
-  component in the deployment and a larger receipt.
+What the decision commits the gateway to:
 
-A measurement limitation is recorded honestly here rather than papered over. RISC Zero runs its
+- A non-JavaScript STARK verifier the Node gateway invokes, either a pinned-version `r0vm`-based
+  subprocess or a WASM build of the verifier, pinned by artifact checksum (not version alone). This
+  is the accepted operational cost of transparency.
+- A raised `MNO_MAX` request-body cap sized to the receipt, and a binary or multipart receipt upload
+  rather than base64 in JSON (which added a needless 33% to the wire size), with the pre-verification
+  body size kept deliberate on the registration endpoint since the body is parsed before the proof
+  check.
+- The verification-binding order below is unchanged, and the wrap-only artifacts (seal, docker) are
+  dropped from the shipping path.
+
+A measurement limitation from the comparison is retained for the record. RISC Zero runs its
 Groth16 wrap in a docker container in its own cgroup, and it does not expose docker's
 `--cgroup-parent`, so on a shared GitHub runner the combined prove-and-wrap peak cannot be enforced
 under one 8 GB cgroup or read reliably. The bench therefore reports the host-process peak, the wall
@@ -277,27 +286,27 @@ engine declaration is the rule and the index is the backstop.
 Protocol bytes are settled before anything is measured against them, so no later step invalidates
 an earlier measurement.
 
-1. Pin the protocol bytes and the compatibility vectors. The SHA-256 tree spec above as executable
-   test vectors, the journal byte layout, and the Poseidon golden vectors (circomlibjs against
-   light-poseidon, both formula forms). This step decides the hard prerequisite and freezes every
-   byte the guest will commit to.
-2. Guest v2 in the research prototype, the five-claim statement above against the frozen bytes,
-   with journal correctness asserted against a circomlibjs-computed expected set, measured in the
-   bench (peak memory, proving time).
-3. Receipt-path measurement, both candidates: wrap memory and time under the 8 GB cap as one
-   combined prove-and-wrap run, receipt sizes, Node-side verification for each, gateway
-   verification time. Then decide the candidate, and update the cost doc's trusted-setup section to
-   match the decision.
+Steps 1 through 3 are done (in `research/` and the bench). Steps 4 onward are the shipping
+integration and have not started.
+
+1. DONE. Pinned the protocol bytes and the cross-implementation golden vectors (the frozen 136-byte
+   journal, the SHA-256 tree spec, the Poseidon forms; `test/vectors/zkvm_golden.json` regenerated
+   by circomlibjs and reproduced by light-poseidon).
+2. DONE. Guest v2, the five-claim statement, journal asserted against the fixture on CI, measured in
+   the bench (4.8 GB at po2 19 under the 8 GB cap, about 86 minutes).
+3. DONE. Receipt path measured and decided: the unwrapped STARK receipt (see the receipt section
+   above), keeping the no-trusted-setup property.
 4. Oracle dual-root snapshot, the v2 signed message, and the deployment-scoped snapshot
    requirement at the gateway.
-5. Gateway claims-object refactor, the second root store, engine dispatch with the pinned image
-   identifier, the durable engine declaration in the registration store, and the measured limits
-   (body size, registration rate, verification concurrency).
-6. Member proving flow and docs, including the secret-file ordering fix and engine discovery.
+5. Gateway claims-object refactor, the SHA-256 root store, engine dispatch with the pinned image
+   identifier and the non-JavaScript STARK verifier (checksum-pinned), the durable engine
+   declaration, and the measured limits (a raised `MNO_MAX` for the receipt, registration rate,
+   verification concurrency), plus the registration proof lease for root freshness.
+6. Member proving flow and docs, including the secret-file ordering fix, a binary receipt upload,
+   and engine discovery.
 
-Steps 1 through 3 live entirely in `research/` and the bench, so they are cheap to iterate and
-nothing ships until step 4. The committed PLONK keys stay valid throughout, and single-tier mode is
-unaffected at every step.
+Steps 4 onward are the shipping integration; nothing ships until step 4. The committed PLONK keys
+stay valid throughout, and single-tier mode is unaffected at every step.
 
 ## Appendix, frozen protocol bytes (work-plan step 1)
 
