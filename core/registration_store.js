@@ -69,10 +69,12 @@ export class RegistrationStore {
       regNullifier: String(regNullifier),
     });
   }
-  append({ season, contextHash, regNullifier, commitment, engine = DEFAULT_ENGINE, statement = DEFAULT_STATEMENT }) {
-    // Reject an impossible engine/statement pair up front (for example PLONK custody), so a bucket
-    // can never be declared under one. The per-bucket consistency check is the backend's, inside the
-    // serialized append.
+  append({ season, contextHash, regNullifier, commitment, engine, statement }) {
+    // Fail closed on a missing declaration: a NEW write must state engine and statement explicitly, so
+    // a caller that drops them cannot silently write a legacy plonk/derive record and mislabel a
+    // custody registration (the DEFAULT_* values are for READING old records, not writing new ones).
+    // isValidEngineStatement also rejects an impossible pair (for example PLONK custody). The
+    // per-bucket consistency check is the backend's, inside the serialized append.
     if (!isValidEngineStatement(engine, statement)) {
       return Promise.resolve({ invalid: true, engine: String(engine), statement: String(statement) });
     }

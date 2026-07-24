@@ -152,14 +152,16 @@ function validateSnapshot(o, requiresSha) {
   // unknown-version snapshot cannot be adopted under the legacy v1 message with future fields
   // unauthenticated. One dispatch point shared with the signer (common/oracle_sig.js).
   const version = snapshotVersion(o);
-  // A shaRoot, when present, must be a 64-lowercase-hex STRING (not a coercible array or number), so
-  // a malformed value cannot pass the recompute and signature paths via String() and land in
-  // latestDml. Checked regardless of deployment, so a non-zkVM gateway also rejects a malformed one.
-  if (o.shaRoot != null) {
-    if (typeof o.shaRoot !== "string" || !/^[0-9a-f]{64}$/.test(o.shaRoot)) {
-      throw new Error("snapshot shaRoot is not a 64 lowercase hex string");
-    }
+  // Version schema, enforced independent of deployment mode so a malformed snapshot is never adopted
+  // anywhere: v2 always carries a well-formed SHA-256 root, v1 never carries one. This closes a v2
+  // snapshot with no shaRoot being accepted on a non-zkVM or unsigned deployment, and a v1 snapshot
+  // smuggling a shaRoot. A shaRoot, when present, is a 64-lowercase-hex STRING (not a coercible array
+  // or number), so a malformed value cannot pass the recompute and signature paths via String().
+  if (o.shaRoot != null && (typeof o.shaRoot !== "string" || !/^[0-9a-f]{64}$/.test(o.shaRoot))) {
+    throw new Error("snapshot shaRoot is not a 64 lowercase hex string");
   }
+  if (version === 2 && o.shaRoot == null) throw new Error("v2 snapshot is missing its shaRoot");
+  if (version === 1 && o.shaRoot != null) throw new Error("v1 snapshot must not carry a shaRoot");
   // Deployment-scoped dual-root requirement (docs/ZKVM_INTEGRATION.md). A zkVM deployment refuses a
   // v1 snapshot outright, since it lacks the SHA-256 root the zkVM statement is checked against, so a
   // downgrade cannot slip a rootless snapshot in. `requiresSha` is judged by configured intent AND a

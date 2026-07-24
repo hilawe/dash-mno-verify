@@ -9,6 +9,18 @@ prioritized punch list.
 
 ### Where things stand
 
+- 2026-07-24, the three outside-reviewer packets came back on the full zkVM shipping surface. Two
+  returned BLOCK and both were verified FALSE POSITIVES against ground truth: Gemini claimed the
+  object-vs-positional `commit` signature broke all registrations, but the gateway wires an adapter
+  closure between `verifyRegistrationCore` (object) and `SeasonMembers.commit` (positional), and 172
+  tests pass; the Codex app claimed a quorum collapse from duplicate oracle keys, but
+  `config.oraclePubkeys` already deduplicates by canonical fingerprint. Grok returned APPROVE. The
+  Codex app also raised two REAL items, now folded: the registration store `append` fails closed on a
+  missing engine/statement (no silent legacy default on a new write, the read default stays only in
+  `declarationOfRecord`), and `validateSnapshot` enforces the version schema independent of mode (a
+  v2 snapshot must carry a well-formed shaRoot, a v1 must not). Its root-window drift finding was
+  already fixed by the RootWindows fold. Tests added for the fail-closed append and the v1/v2 schema.
+
 - 2026-07-24, step 5 continued: the durable per-(season, context) engine-and-statement declaration.
   Each (season, context) is bound to a single statement, declared by its first registration and
   enforced on every later one inside the serialized append, so derive and custody cannot mix in one

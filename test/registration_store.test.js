@@ -34,13 +34,13 @@ for (const [name, makeStore] of [
     await store.ready();
 
     assert.equal(await store.has(1, "ctx", "nf1"), false);
-    const first = await store.append({ season: 1, contextHash: "ctx", regNullifier: "nf1", commitment: "c1" });
+    const first = await store.append({ season: 1, contextHash: "ctx", regNullifier: "nf1", commitment: "c1", engine: "plonk", statement: "derive" });
     assert.deepEqual(first, { duplicate: false, index: 0 });
     assert.equal(await store.has(1, "ctx", "nf1"), true);
 
     // the same season, context, and registration nullifier is the same spend, even with a
     // different commitment: one voting key registers once per season and context
-    const dup = await store.append({ season: 1, contextHash: "ctx", regNullifier: "nf1", commitment: "c-other" });
+    const dup = await store.append({ season: 1, contextHash: "ctx", regNullifier: "nf1", commitment: "c-other", engine: "plonk", statement: "derive" });
     assert.equal(dup.duplicate, true);
 
     const recs = await store.forSeasonContext(1, "ctx");
@@ -51,7 +51,7 @@ for (const [name, makeStore] of [
   test(`${name}: season, context, and registration nullifier are independent`, async () => {
     const { store } = await makeStore();
     await store.ready();
-    await store.append({ season: 1, contextHash: "ctx", regNullifier: "nf", commitment: "c" });
+    await store.append({ season: 1, contextHash: "ctx", regNullifier: "nf", commitment: "c", engine: "plonk", statement: "derive" });
     assert.equal(await store.has(2, "ctx", "nf"), false); // different season
     assert.equal(await store.has(1, "ctx2", "nf"), false); // different community
     assert.equal(await store.has(1, "ctx", "nf2"), false); // different node
@@ -60,13 +60,13 @@ for (const [name, makeStore] of [
   test(`${name}: indexes are per (season, context) and assigned in insertion order`, async () => {
     const { store } = await makeStore();
     await store.ready();
-    const a = await store.append({ season: 5, contextHash: "ctx", regNullifier: "a", commitment: "ca" });
-    const b = await store.append({ season: 5, contextHash: "ctx", regNullifier: "b", commitment: "cb" });
-    const c = await store.append({ season: 6, contextHash: "ctx", regNullifier: "c", commitment: "cc" });
+    const a = await store.append({ season: 5, contextHash: "ctx", regNullifier: "a", commitment: "ca", engine: "plonk", statement: "derive" });
+    const b = await store.append({ season: 5, contextHash: "ctx", regNullifier: "b", commitment: "cb", engine: "plonk", statement: "derive" });
+    const c = await store.append({ season: 6, contextHash: "ctx", regNullifier: "c", commitment: "cc", engine: "plonk", statement: "derive" });
     assert.deepEqual([a.index, b.index, c.index], [0, 1, 0]);
 
     // A different community in the same season is a separate bucket, indexed from 0 (review B2).
-    const d = await store.append({ season: 5, contextHash: "ctx2", regNullifier: "d", commitment: "cd" });
+    const d = await store.append({ season: 5, contextHash: "ctx2", regNullifier: "d", commitment: "cd", engine: "plonk", statement: "derive" });
     assert.equal(d.index, 0);
 
     const s5 = await store.forSeasonContext(5, "ctx");
@@ -82,8 +82,8 @@ for (const [name, makeStore] of [
   test(`${name}: a bucket is bound to one (engine, statement); a mismatch is rejected`, async () => {
     const { store } = await makeStore();
     await store.ready();
-    // The first registration declares the bucket. Default engine/statement is plonk/derive.
-    const first = await store.append({ season: 1, contextHash: "ctx", regNullifier: "n1", commitment: "c1" });
+    // The first registration declares the bucket (plonk, derive here).
+    const first = await store.append({ season: 1, contextHash: "ctx", regNullifier: "n1", commitment: "c1", engine: "plonk", statement: "derive" });
     assert.equal(first.duplicate, false);
     assert.deepEqual(await store.declarationFor(1, "ctx"), { engine: "plonk", statement: "derive" });
 
@@ -113,6 +113,18 @@ for (const [name, makeStore] of [
     assert.equal(await store.declarationFor(1, "ctx"), null, "no bucket was declared");
   });
 
+  test(`${name}: a new write with no engine/statement fails closed, not a silent legacy default`, async () => {
+    const { store } = await makeStore();
+    await store.ready();
+    // Omitting the declaration on a NEW write is rejected, so a caller that drops the field cannot
+    // silently write a plonk/derive record and mislabel a custody registration.
+    const noDecl = await store.append({ season: 1, contextHash: "ctx", regNullifier: "n1", commitment: "c1" });
+    assert.equal(noDecl.invalid, true);
+    assert.equal(await store.has(1, "ctx", "n1"), false, "nothing was written");
+    const partial = await store.append({ season: 1, contextHash: "ctx", regNullifier: "n2", commitment: "c2", engine: "zkvm" });
+    assert.equal(partial.invalid, true, "a missing statement also fails closed");
+  });
+
   test(`${name}: seasonHasEngine reports a durable zkVM declaration (the downgrade-rule signal)`, async () => {
     const { store } = await makeStore();
     await store.ready();
@@ -132,8 +144,8 @@ test("file: registrations survive a restart (durability)", async () => {
   await withTempFile(async (path) => {
     const first = new RegistrationStore(new FileBackend(path));
     await first.ready();
-    await first.append({ season: 3, contextHash: "ctx", regNullifier: "n1", commitment: "c1" });
-    await first.append({ season: 3, contextHash: "ctx", regNullifier: "n2", commitment: "c2" });
+    await first.append({ season: 3, contextHash: "ctx", regNullifier: "n1", commitment: "c1", engine: "plonk", statement: "derive" });
+    await first.append({ season: 3, contextHash: "ctx", regNullifier: "n2", commitment: "c2", engine: "plonk", statement: "derive" });
 
     // a new gateway process reads the same file and recovers the full set
     const reopened = new RegistrationStore(new FileBackend(path));
@@ -144,7 +156,7 @@ test("file: registrations survive a restart (durability)", async () => {
     assert.deepEqual(recs.map((r) => r.commitment), ["c1", "c2"]);
 
     // and the spend set is enforced after the restart, so no member registers twice
-    const dup = await reopened.append({ season: 3, contextHash: "ctx", regNullifier: "n1", commitment: "c1" });
+    const dup = await reopened.append({ season: 3, contextHash: "ctx", regNullifier: "n1", commitment: "c1", engine: "plonk", statement: "derive" });
     assert.equal(dup.duplicate, true);
   });
 });
@@ -202,7 +214,7 @@ test("a tree rebuilt from records matches sequential registration (no member is 
     const store = new RegistrationStore(new FileBackend(path));
     await store.ready();
     for (let i = 0; i < commitments.length; i++) {
-      await store.append({ season: 7, contextHash: "ctx", regNullifier: `n${i}`, commitment: commitments[i] });
+      await store.append({ season: 7, contextHash: "ctx", regNullifier: `n${i}`, commitment: commitments[i], engine: "plonk", statement: "derive" });
       live.append(commitments[i]);
     }
 
@@ -220,8 +232,8 @@ test("file: concurrent first use loads the records exactly once", async () => {
     // seed two records, then open a fresh backend and hit it from several callers at once
     const seed = new RegistrationStore(new FileBackend(path));
     await seed.ready();
-    await seed.append({ season: 2, contextHash: "ctx", regNullifier: "n1", commitment: "c1" });
-    await seed.append({ season: 2, contextHash: "ctx", regNullifier: "n2", commitment: "c2" });
+    await seed.append({ season: 2, contextHash: "ctx", regNullifier: "n1", commitment: "c1", engine: "plonk", statement: "derive" });
+    await seed.append({ season: 2, contextHash: "ctx", regNullifier: "n2", commitment: "c2", engine: "plonk", statement: "derive" });
 
     const fresh = new RegistrationStore(new FileBackend(path));
     const [recs, has1] = await Promise.all([
@@ -241,7 +253,7 @@ test("a different season rebuilds an empty tree (stale-season access cannot carr
   await withTempFile(async (path) => {
     const store = new RegistrationStore(new FileBackend(path));
     await store.ready();
-    await store.append({ season: 10, contextHash: "ctx", regNullifier: "n", commitment: "c" });
+    await store.append({ season: 10, contextHash: "ctx", regNullifier: "n", commitment: "c", engine: "plonk", statement: "derive" });
 
     const next = await MembersTree.fromCommitments((await store.forSeasonContext(11, "ctx")).map((r) => r.commitment));
     const empty = await MembersTree.create();

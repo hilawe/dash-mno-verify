@@ -661,6 +661,27 @@ test("a zkVM gateway rejects a v2 snapshot whose shaRoot does not hash from its 
   }
 });
 
+// Version schema, enforced independent of deployment mode: v2 must carry a shaRoot, v1 must not.
+test("even a non-zkVM gateway rejects a v2 snapshot with no shaRoot (schema)", async () => {
+  const badV2 = snapshot({ version: 2 }); // v2 but no shaRoot
+  const { g, cleanup } = await gatewayWithSnapshot(badV2); // no MNO_REQUIRE_SHA_ROOT
+  try {
+    assert.equal(await mints(g.base), 503, "malformed v2 not adopted");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("a v1 snapshot carrying a shaRoot is rejected as malformed (schema)", async () => {
+  const badV1 = snapshot({ shaRoot: shaRootHasher(REAL_LEAVES) }); // v1 (no version) with a shaRoot
+  const { g, cleanup } = await gatewayWithSnapshot(badV1);
+  try {
+    assert.equal(await mints(g.base), 503, "malformed v1 not adopted");
+  } finally {
+    await cleanup();
+  }
+});
+
 // The full requirement is a v2 shaRoot under a v2 quorum SIGNATURE, so this matrix runs with a
 // pinned oracle key (not unsigned mode): signed v1 is fine without the flag, the same signed v1 is
 // refused with the flag (downgrade), a signed v2 is adopted with the flag, and a tampered-shaRoot v2
