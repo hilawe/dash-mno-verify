@@ -130,6 +130,59 @@ export const REG_SIGNAL_INDEX = {
   contextHash: 4,
 };
 
+// The engine-neutral registration claims a proof asserts, decoded by a per-engine decoder from that
+// engine's proof form (docs/ZKVM_INTEGRATION.md). Both engines produce the SAME five semantic values,
+// so the policy checks, the duplicate lookup, and the commit are engine-neutral (verifyRegistrationCore
+// below). The engines differ only in how the claims are decoded and how the crypto is checked, and in
+// the root's type: a canonical field element (the Poseidon root) for PLONK, a 64-hex SHA-256 root for
+// the zkVM engine, each checked against its own root store by the caller.
+//
+// PLONK decoder: the existing five-signal array, canonical-checked. Returns { claims } or { error }.
+export function decodePlonkRegistrationClaims(publicSignals) {
+  if (!signalsAreCanonical(publicSignals, Object.keys(REG_SIGNAL_INDEX).length)) {
+    return { error: "non-canonical-signal" };
+  }
+  return {
+    claims: {
+      commitment: publicSignals[REG_SIGNAL_INDEX.commitment],
+      regNullifier: publicSignals[REG_SIGNAL_INDEX.regNullifier],
+      root: publicSignals[REG_SIGNAL_INDEX.root],
+      season: publicSignals[REG_SIGNAL_INDEX.season],
+      contextHash: publicSignals[REG_SIGNAL_INDEX.contextHash],
+    },
+  };
+}
+
+// zkVM decoder: the frozen 136-byte journal (docs/ZKVM_INTEGRATION.md appendix), a single byte slice:
+//   commitment (32, big-endian field), regNullifier (32, big-endian field), root (32, the SHA-256
+//   tree root), season (8, big-endian u64), contextHash (32, big-endian field).
+// The commitment, regNullifier, and contextHash are BN254 field elements, canonical-checked exactly
+// like the PLONK signals since the gateway keys the durable record on them. The root is the SHA-256
+// root as 64 lowercase hex, an arbitrary 32-byte value (it cannot ride the field-element path, which
+// is the whole reason for the engine-neutral claims object). season is a plain u64.
+export const REG_JOURNAL_BYTES = 136;
+export function decodeZkvmRegistrationClaims(journal) {
+  const bytes = journal instanceof Uint8Array ? Buffer.from(journal) : journal;
+  if (!Buffer.isBuffer(bytes) || bytes.length !== REG_JOURNAL_BYTES) {
+    return { error: "bad-journal-length" };
+  }
+  const field = (off) => BigInt("0x" + bytes.subarray(off, off + 32).toString("hex")).toString();
+  const claims = {
+    commitment: field(0),
+    regNullifier: field(32),
+    root: bytes.subarray(64, 96).toString("hex"),
+    season: BigInt("0x" + bytes.subarray(96, 104).toString("hex")).toString(),
+    contextHash: field(104),
+  };
+  // The three field-element claims must be canonical, the same guard the PLONK path applies, so a
+  // journal carrying a non-canonical commitment, nullifier, or context cannot double-spend by string
+  // aliasing. The root is a SHA-256 hex string, checked for shape not field-canonicality.
+  if (![claims.commitment, claims.regNullifier, claims.contextHash].every(isCanonicalField)) {
+    return { error: "non-canonical-signal" };
+  }
+  return { claims };
+}
+
 // Verify a two-tier registration proof. On success it commits one durable registration record,
 // so one voting key registers exactly one commitment per season and context, and mirrors that
 // commitment into the in-memory members tree.
@@ -144,38 +197,52 @@ export const REG_SIGNAL_INDEX = {
 // the member on the next rebuild instead of stranding them for the season.
 //
 // commit({ season, contextHash, regNullifier, commitment }) -> { ok, reason?, index?, membersRoot?, size? }
-export async function verifyRegistration({ vkey, proof, publicSignals, expected, registrationStore, commit }) {
-  // Canonical before any signal is read or used as the registration-nullifier key (see above).
-  if (!signalsAreCanonical(publicSignals, Object.keys(REG_SIGNAL_INDEX).length))
-    return { ok: false, reason: "non-canonical-signal" };
-  const s = {
-    commitment: publicSignals[REG_SIGNAL_INDEX.commitment],
-    regNullifier: publicSignals[REG_SIGNAL_INDEX.regNullifier],
-    root: publicSignals[REG_SIGNAL_INDEX.root],
-    season: publicSignals[REG_SIGNAL_INDEX.season],
-    contextHash: publicSignals[REG_SIGNAL_INDEX.contextHash],
-  };
-
-  // 1) the DML root must be one the oracle published recently
-  if (!expected.rootStore.isRecent(s.root)) return { ok: false, reason: "stale-or-unknown-root" };
+//
+// The engine-neutral core: it runs the identical policy checks, duplicate lookup, and commit for any
+// engine. It takes already-decoded `claims`, the engine's crypto check as an injected async
+// `verifyProof()`, and `expected.rootStore` (the Poseidon root store for PLONK, the SHA-256 root
+// store for the zkVM engine), so the engines differ only outside this function.
+export async function verifyRegistrationCore({ claims, verifyProof, expected, registrationStore, commit }) {
+  // 1) the DML root must be one the oracle published recently (engine-specific store)
+  if (!expected.rootStore.isRecent(claims.root)) return { ok: false, reason: "stale-or-unknown-root" };
   // 2) the season must be the one being registered
-  if (String(s.season) !== String(expected.season)) return { ok: false, reason: "wrong-season" };
+  if (String(claims.season) !== String(expected.season)) return { ok: false, reason: "wrong-season" };
   // 3) the proof must be scoped to this community, platform, and role
-  if (String(s.contextHash) !== String(expected.contextHash)) return { ok: false, reason: "wrong-context" };
+  if (String(claims.contextHash) !== String(expected.contextHash)) return { ok: false, reason: "wrong-context" };
   // 4) one voting key registers once per season and context. A cheap read so an obvious replay is
   //    rejected before the expensive proof verify; the durable append in commit is the authority.
-  if (await registrationStore.has(s.season, s.contextHash, s.regNullifier)) return { ok: false, reason: "already-registered" };
+  if (await registrationStore.has(claims.season, claims.contextHash, claims.regNullifier))
+    return { ok: false, reason: "already-registered" };
 
-  // 5) the proof itself
-  const valid = await snarkjs.plonk.verify(vkey, publicSignals, proof);
-  if (!valid) return { ok: false, reason: "invalid-proof" };
+  // 5) the proof itself (PLONK verify, or the zkVM receipt verify against the pinned image id)
+  if (!(await verifyProof())) return { ok: false, reason: "invalid-proof" };
 
   // 6) the atomic, season-serialized commit. expected.season is the gateway's authoritative season
-  //    (equal to s.season by check 2), used for the season re-check inside commit.
+  //    (equal to claims.season by check 2), used for the season re-check inside commit.
   return commit({
     season: expected.season,
-    contextHash: s.contextHash,
-    regNullifier: s.regNullifier,
-    commitment: s.commitment,
+    contextHash: claims.contextHash,
+    regNullifier: claims.regNullifier,
+    commitment: claims.commitment,
   });
+}
+
+// The PLONK-facing registration verify, backward-compatible. Decodes the five-signal array to claims,
+// then runs the engine-neutral core with the PLONK crypto check. verifyProof is injectable (defaults
+// to snarkjs PLONK) so a unit test can drive the policy pipeline without a real proof, mirroring
+// verifyMembership. The zkVM registration path (deferred with the live receipt verifier and the
+// SHA-256 root store) decodes the journal with decodeZkvmRegistrationClaims and calls
+// verifyRegistrationCore with a receipt-verifying verifyProof and the SHA-256 root store.
+export async function verifyRegistration({
+  vkey,
+  proof,
+  publicSignals,
+  expected,
+  registrationStore,
+  commit,
+  verifyProof = () => snarkjs.plonk.verify(vkey, publicSignals, proof),
+}) {
+  const decoded = decodePlonkRegistrationClaims(publicSignals);
+  if (decoded.error) return { ok: false, reason: decoded.error };
+  return verifyRegistrationCore({ claims: decoded.claims, verifyProof, expected, registrationStore, commit });
 }

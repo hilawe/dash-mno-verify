@@ -118,6 +118,23 @@ test("missing fields are rejected", async () => {
   assert.equal(v.body.error, "missing fields");
 });
 
+test("an over-cap body is rejected cleanly, not hung or OOM", async () => {
+  // Post a body larger than the 2 MB general cap to /v1/challenge (the small-cap endpoint). The
+  // reader must reject (400 body too large) and destroy the request rather than keep buffering.
+  const big = "x".repeat(2_100_000);
+  const res = await fetch(gw.base + "/v1/challenge", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ platform: "p", communityId: "c", roleId: "r", account: "a", pad: big }),
+  }).catch((e) => ({ status: 0, err: String(e) }));
+  // The server closes the connection after destroy, so fetch may see a 400 or a connection reset.
+  // Either is acceptable; what matters is the server does not hang or crash, proven by the next call.
+  assert.ok(res.status === 400 || res.status === 0, `expected reject, got ${res.status}`);
+  // The gateway is still healthy after the over-cap request.
+  const health = await fetch(gw.base + "/v1/health");
+  assert.equal(health.status, 200);
+});
+
 test("an unknown nonce is rejected", async () => {
   const v = await post(gw.base, "/v1/verify", { nonce: randomUUID(), proof: {}, publicSignals: ["1", "2", "3", "4", "5"], account: "alice" });
   assert.equal(v.status, 410);

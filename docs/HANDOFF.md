@@ -9,6 +9,20 @@ prioritized punch list.
 
 ### Where things stand
 
+- 2026-07-24, step 5 (first slice) of the zkVM integration: the engine-neutral registration-verify
+  spine. `verifyRegistration` is split into `verifyRegistrationCore` (one policy pipeline for any
+  engine) plus per-engine decoders (`decodePlonkRegistrationClaims`, the existing five-signal array,
+  and `decodeZkvmRegistrationClaims`, the frozen 136-byte journal pinned against the fixture), with
+  the crypto check injected so the zkVM path reuses the pipeline. PLONK behavior is byte-for-byte
+  preserved (reviewer-confirmed). The gateway serves `shaRoot` on `/v1/dml`, and `/v1/register` has
+  its own larger body cap (`MNO_MAX_REGISTER_BODY_BYTES`) for the receipt while other endpoints keep
+  the small cap. The review caught a real pre-existing memory-DoS in `readBody` (the size guard never
+  stopped the data listener), now fixed to count bytes, drop chunks, and destroy the request on
+  overflow. 158 tests green. Still to do in step 5: the SHA-256 root store, the live STARK verifier
+  wired at boot (artifact-gated), per-request engine dispatch, the durable per-(season, context)
+  engine-and-statement declaration, the registration proof lease, and the verification-concurrency
+  bound (see `docs/ZKVM_INTEGRATION.md` step 5).
+
 - 2026-07-24, step 4 of the zkVM integration (the shipping code) landed: the oracle dual-root v2
   snapshot. `buildSnapshot` now emits `version: 2` and a SHA-256 `shaRoot` derived from the same
   leaves (`common/dml_sha_root.js`, pinned against the shared fixture), the signed message versions

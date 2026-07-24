@@ -302,21 +302,41 @@ function send(res, code, body) {
   res.end(JSON.stringify(body));
 }
 
-function readBody(req) {
+// Read and JSON-parse the request body under a hard byte cap. The cap counts RECEIVED BYTES (each
+// chunk is a Buffer), not string units, so a multibyte payload is measured correctly, and once the
+// cap is crossed it stops retaining chunks AND destroys the request, so an unauthenticated caller
+// cannot keep sending to exhaust memory (a single request would otherwise suffice, so the rate limit
+// does not help). Resolves or rejects exactly once.
+function readBody(req, maxBytes = config.maxBodyBytes) {
   return new Promise((resolve, reject) => {
-    let raw = "";
+    const chunks = [];
+    let total = 0;
+    let done = false;
+    const settle = (fn, arg) => {
+      if (done) return;
+      done = true;
+      fn(arg);
+    };
     req.on("data", (c) => {
-      raw += c;
-      if (raw.length > 2_000_000) reject(new Error("body too large"));
+      if (done) return;
+      total += c.length; // c is a Buffer, so .length is bytes
+      if (total > maxBytes) {
+        chunks.length = 0; // drop what we have, keep no more
+        req.destroy(); // stop receiving so the caller cannot keep growing the body
+        settle(reject, new Error("body too large"));
+        return;
+      }
+      chunks.push(c);
     });
     req.on("end", () => {
       try {
-        resolve(raw ? JSON.parse(raw) : {});
+        const raw = Buffer.concat(chunks).toString("utf8");
+        settle(resolve, raw ? JSON.parse(raw) : {});
       } catch {
-        reject(new Error("invalid json"));
+        settle(reject, new Error("invalid json"));
       }
     });
-    req.on("error", reject);
+    req.on("error", (e) => settle(reject, e));
   });
 }
 
@@ -415,7 +435,9 @@ const server = createServer(async (req, res) => {
       // proof-authenticated, and it carries no account to vouch for. Its guards are the registration
       // PLONK proof, the one-per-(season, context) registration nullifier, and the rate limit.
       if (!registerLimiter.allow(clientKey(req))) return send(res, 429, { error: "rate limited" });
-      const { platform, communityId, roleId, proof, publicSignals } = await readBody(req);
+      // Registration carries the (potentially multi-megabyte) proof, so it uses the larger register
+      // body cap, while challenge and verify keep the small general cap.
+      const { platform, communityId, roleId, proof, publicSignals } = await readBody(req, config.maxRegisterBodyBytes);
       if (!platform || !communityId || !roleId || !proof || !publicSignals) return send(res, 400, { error: "missing fields" });
 
       const ctx = contextHash({ platform, communityId, roleId }).toString();
@@ -452,9 +474,12 @@ const server = createServer(async (req, res) => {
     }
 
     if (req.method === "GET" && path === "/v1/dml") {
-      // public DML snapshot so a prover can find its leaf and build a Merkle path
+      // public DML snapshot so a prover can find its leaf and build a Merkle path. shaRoot is the
+      // SHA-256 tree root for the zkVM registration statement, null on a v1 snapshot, so a zkVM
+      // prover can build its SHA-256 path from the same leaves.
       return send(res, 200, {
         root: latestDml?.root ?? null,
+        shaRoot: latestDml?.shaRoot ?? null,
         height: latestDml?.height ?? null,
         depth: latestDml?.depth ?? config.treeDepth,
         leaves: latestDml?.leaves ?? [],

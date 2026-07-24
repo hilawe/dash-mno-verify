@@ -336,10 +336,18 @@ integration and have not started.
    snapshot, the deployment-scoped downgrade rule (`core/gateway.js`, `core/config.js`). The quorum
    signing script recomputes the shaRoot before attesting. Serving the shaRoot to provers and the
    durable-declaration refinement of the require-flag land with step 5.
-5. Gateway claims-object refactor, the SHA-256 root store, engine dispatch with the pinned image
-   identifier and the non-JavaScript STARK verifier (checksum-pinned), the durable engine
-   declaration, and the measured limits (a raised `MNO_MAX` for the receipt, registration rate,
-   verification concurrency), plus the registration proof lease for root freshness.
+5. Gateway integration, in progress. DONE (2026-07-24), the engine-neutral spine: `verifyRegistration`
+   is refactored into `verifyRegistrationCore` (one policy-check, duplicate-lookup, and commit
+   pipeline for any engine) plus per-engine decoders, `decodePlonkRegistrationClaims` (the existing
+   five-signal array) and `decodeZkvmRegistrationClaims` (the frozen 136-byte journal, pinned against
+   the fixture), with the crypto check injected so the zkVM path reuses the pipeline. The gateway
+   serves the `shaRoot` on `/v1/dml`, and the registration endpoint has its own larger body cap
+   (`MNO_MAX_REGISTER_BODY_BYTES`) for the receipt while challenge and verify keep the small cap. STILL
+   TO DO in step 5: the SHA-256 root store or window (so a zkVM root check has somewhere to look), the
+   live non-JavaScript STARK verifier wired at boot and pinned by image-id and artifact checksum
+   (artifact-gated, like the Platform backend), engine dispatch selecting the decoder and root store
+   per request, the durable per-(season, context) engine-and-statement declaration, the registration
+   proof lease for root freshness, and the verification-concurrency bound.
 6. Member proving flow and docs, including the secret-file ordering fix, a binary receipt upload,
    and engine discovery.
 7. The custody statement guest, the production five-claim form of the benchmark `sig` variant

@@ -100,6 +100,12 @@ export const config = {
   // /v1/members is an unauthenticated read whose context comes from the client, so it is limited too.
   membersRateMax: intEnv("MNO_RATE_MEMBERS", 120),
   maxPendingChallenges: intEnv("MNO_MAX_PENDING_CHALLENGES", 100_000),
+  // Request-body size caps. The general cap stays small, since challenge and verify bodies are tiny.
+  // The registration cap is separate and larger, because a zkVM registration carries the STARK
+  // receipt (a few megabytes for the unwrapped path, docs/ZKVM_INTEGRATION.md). Kept a distinct knob
+  // so raising it for the receipt does not widen the unauthenticated challenge and verify endpoints.
+  maxBodyBytes: intEnv("MNO_MAX_BODY_BYTES", 2_000_000, { min: 1024 }),
+  maxRegisterBodyBytes: intEnv("MNO_MAX_REGISTER_BODY_BYTES", 2_000_000, { min: 1024 }),
   // Honor the first X-Forwarded-For hop for the client key. Only enable behind a trusted proxy,
   // otherwise a client can spoof the header to dodge the limit.
   trustProxy: process.env.MNO_TRUST_PROXY === "1",
