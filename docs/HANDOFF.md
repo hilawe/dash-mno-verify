@@ -118,6 +118,13 @@ cost (the 2.3 GB PLONK proving key). Its state:
 
 ### Punch list, in order
 
+IN FLIGHT (2026-07-24): a multi-model adversarial round over the accumulated code is open on
+branch `review/hash-doc-fixes`. One full-access reviewer confirmed the two hash and doc fixes
+made this round and both new findings; two more model reviewers are pending. The fixes made,
+the confirmed items still to fold (nullifier durability on restart is P0, secret-file handling),
+three new findings (clock rollback, tree-capacity ordering, hash-encoding cutover), and the
+triage corrections are all captured in `REVIEW_ROUND_2026-07-24.md`. Resume there.
+
 Owner-only or decision-first (cannot be done from an agent session):
 
 1. Host the two 2.3 GB proving keys once. Rebuild each with `scripts/build_proving_key.sh <circuit>`
