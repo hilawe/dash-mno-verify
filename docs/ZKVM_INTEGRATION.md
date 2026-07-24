@@ -346,12 +346,19 @@ integration and have not started.
    (2026-07-24), the SHA-256 root window: `shaRoots` (a second `RootStore`) is kept in lockstep with
    the Poseidon `dmlRoots` by `updateRootWindows` on adoption and a paired `dropOlderThan` on aging,
    so a zkVM root check sees exactly the snapshots the Poseidon check does, pinned by
-   `test/root_windows.test.js`. STILL TO DO in step 5: the live non-JavaScript STARK verifier wired at
-   boot and pinned by image-id and artifact checksum (artifact-gated, like the Platform backend),
-   engine dispatch selecting the decoder and root store per request (and, at that step, folding both
-   windows behind one `RootWindows` facade so lockstep is structural, a deferred reviewer suggestion),
-   the durable per-(season, context) engine-and-statement declaration, the registration proof lease
-   for root freshness, and the verification-concurrency bound.
+   `test/root_windows.test.js`. DONE (2026-07-24), the durable
+   per-(season, context) engine-and-statement declaration: `RegistrationStore` records (engine,
+   statement) on each record, the first registration in a bucket declares it, and a later append with
+   a different declaration is rejected (`statement-mismatch`) inside the serialized append, so a
+   bucket is bound to one statement and derive and custody cannot mix (which would allow a double
+   registration). An impossible pair (PLONK custody) is rejected, and a legacy record defaults to
+   plonk/derive. STILL TO DO in step 5: the live non-JavaScript STARK verifier wired at boot and
+   pinned by image-id and artifact checksum (artifact-gated, like the Platform backend), engine
+   dispatch selecting the decoder and root store per request (and, at that step, folding both windows
+   behind one `RootWindows` facade so lockstep is structural, a deferred reviewer suggestion), the
+   registration proof lease for root freshness, and the verification-concurrency bound. The Platform
+   registration backend, when wired, will also need `declarationFor` and the same per-bucket
+   enforcement.
 6. Member proving flow and docs, including the secret-file ordering fix, a binary receipt upload,
    and engine discovery.
 7. The custody statement guest, the production five-claim form of the benchmark `sig` variant

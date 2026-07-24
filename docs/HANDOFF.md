@@ -9,6 +9,18 @@ prioritized punch list.
 
 ### Where things stand
 
+- 2026-07-24, step 5 continued: the durable per-(season, context) engine-and-statement declaration.
+  Each (season, context) is bound to a single statement, declared by its first registration and
+  enforced on every later one inside the serialized append, so derive and custody cannot mix in one
+  community (which would allow a double registration, since they emit different registration
+  nullifiers for the same node). An impossible pair (PLONK custody) is rejected, and legacy records
+  default to plonk/derive. Reviewed by a different model (APPROVE, after folding a validator
+  prototype-key hardening and two persistence tests: the concurrency winner and a real legacy-record
+  reopen). 169 tests green. Remaining step-5 pieces: the live STARK verifier (artifact-gated), engine
+  dispatch, the registration lease, and the concurrency bound. A FULL multi-model round over the
+  accumulated step-4-and-step-5 surface is the next checkpoint (only per-slice focused reviews so
+  far).
+
 - 2026-07-24, step 5 continued: the SHA-256 root window. A second `RootStore` (`shaRoots`) is kept in
   lockstep with the Poseidon `dmlRoots` by the `updateRootWindows` helper on adoption and a paired
   `dropOlderThan` on aging, so a zkVM registration root check sees exactly the snapshots the Poseidon
