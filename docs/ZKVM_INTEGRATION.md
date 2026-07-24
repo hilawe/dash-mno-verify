@@ -163,6 +163,26 @@ This is why the proving-time number is a first-class design input, not just a co
 the lease, and the lease sets the exposure. If the po2 19 or an accelerated-Poseidon result brings
 proving well under an hour, the lease and the exposure both shrink accordingly.
 
+## Receipt-path measurements (2026-07-23)
+
+The step-3 numbers are in, and they draw the two candidates sharply.
+
+| | Unwrapped STARK | Wrapped Groth16 |
+| --- | --- | --- |
+| Receipt size | about 4.8 MB | 769 bytes |
+| HTTP request body | about 6.4 MB, EXCEEDS the 2 MB limit | about 1.1 KB, well within |
+| Gateway verify time | about 410 ms (Rust), 820 ms (Node subprocess) | about 5 to 14 ms |
+| Trusted setup | none (transparent) | reintroduces a circuit-specific Groth16 ceremony |
+| Member proving cost | the prove alone (about 86 min, 4.8 GB) | prove plus wrap, about 119 min, docker required, indicative 7.7 GB container peak (see the limitation above) |
+
+Both paths verified end to end from Node with genuine rejections (wrong image id, corrupt receipt, and
+the host also rejects a tampered journal). The unwrapped path's 4.8 MB receipt overruns the gateway's
+2 MB request-body limit as it stands, so the unwrapped path forces either a raised limit and a chunked
+or streamed upload, or a smaller receipt. The wrapped path is tiny and fast to verify but costs the
+member about 33 extra minutes, a docker dependency, and the trusted-setup property the transparency
+argument counts against. This is the decision the owner makes; the measurements do not force it, they
+frame it.
+
 ## Receipt verification at the gateway, a gated decision
 
 Two candidates, decided by measurement in work-plan step 3, not before:

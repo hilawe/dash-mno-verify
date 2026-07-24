@@ -9,6 +9,18 @@ prioritized punch list.
 
 ### Where things stand
 
+- 2026-07-24, the heavy bench reported and settles the cost questions. The production statement FITS
+  8 GB: at `segment_limit_po2 = 19` it peaked at 4.8 GB under an enforced 8 GB cgroup (passed), for
+  about 2 extra minutes (86 vs 84). The wallet-custody rejection is REOPENED, because the memory
+  ceiling is set by segment size not statement, so the signature variant also dropped to 4.8 GB at
+  po2 19: custody is now available at 4.8 GB for more proving time, an owner decision, not a
+  rejection. Receipt path measured: unwrapped STARK is transparent but a 4.8 MB receipt (6.4 MB
+  request) overruns the 2 MB limit and verifies in about 400-820 ms; wrapped Groth16 is 769 bytes,
+  verifies in about 5-14 ms, fits the limit, but adds about 33 min and a docker dependency to the
+  member's prove and reintroduces a trusted setup. Both fold into `docs/REDUCING_PROVING_COST.md` and
+  `docs/ZKVM_INTEGRATION.md`. Two owner decisions now open: wallet custody vs derive, and the
+  receipt path.
+
 - 133 tests green (`npm test`, about two minutes).
 - 2026-07-23, the oracle snapshot assembly is factored into `oracle/snapshot.js` behind an
   injectable `call()`, with the tip-consistency guard pinned by fixture tests in

@@ -155,8 +155,9 @@ number.
 | Derive the key, benchmark (no Poseidon) | raw key enters the prover | 4.8 GB | 2^19 | 4.6 min |
 | Verify a wallet signature, benchmark | key stays in the wallet | 9.6 GB | 2^20 | 9.2 min |
 | Efficient-ECDSA, recovery-hinted, benchmark | key stays in the wallet | 9.6 GB | 2^20 | 9.1 min |
-| Production statement (`reg`), default segments | raw key enters the prover | 9.6 GB | 2^20 | 77 min |
-| Production statement (`reg`), segment po2 19 | raw key enters the prover | pending | 2^19 | pending |
+| Production statement (`reg`), default segments | raw key enters the prover | 9.6 GB | 2^20 | 84 min |
+| Production statement (`reg`), segment po2 19, 8 GB cap | raw key enters the prover | 4.8 GB (fits) | 2^19 | 86 min |
+| Signature (wallet custody), benchmark, po2 19 | key stays in the wallet | 4.8 GB | 2^19 | (benchmark) |
 
 An important correction (2026-07-23). The first three rows are benchmark variants that emit the
 public values as raw bytes and do NOT compute the circomlib-parameterized Poseidon commitment and
@@ -169,15 +170,18 @@ segment, so at default segments the production statement peaks at 9.6 GB and tak
 8 GB-capped CI step terminated it. So the 8 GB fit is NOT currently demonstrated for the shipping
 statement.
 
-Two levers are in flight before the statement's cost is settled, and the 8 GB decision is provisional
-until they report. First, segment size sets the memory ceiling, and Phase 0 only ran the default, so
-the bench now re-runs `reg` at `segment_limit_po2 = 19` under the 8 GB cap (a pass would fit 8 GB at
-the cost of proportionally more segments, that is more time). Second, if the small-segment lever works,
-it also reopens the wallet-custody rejection, because the 9.6 GB signature variants may likewise drop
-toward the 4.8 GB tier at po2 19, so the bench re-measures the signature variant the same way and the
-custody decision is revisited on that evidence. Separately, the Poseidon cost itself is the real
-structural lever, and a faster pure-Rust Poseidon or a future zkVM BN254 field accelerator would cut
-the 26x, which is the durable path if segment-forcing alone is too slow.
+Both levers reported (2026-07-23), and the segment lever is decisive. Forcing `segment_limit_po2 = 19`
+brought the production `reg` statement from 9.6 GB to a measured 4.8 GB peak, and it PASSED under an
+enforced 8 GB cgroup with swap off (systemd scope Result=success), for about 2 extra minutes of
+proving (86 versus 84). So the production statement fits an 8 GB machine, now demonstrated for the
+shipping statement, not just the Poseidon-free benchmark. The memory ceiling is set by the segment
+size, essentially independent of the statement, which is the second finding: the wallet-custody
+signature variant at po2 19 also dropped to 4.8 GB (from 9.6 GB at default). The earlier 9.6 GB
+wallet-custody rejection was therefore a segment-size artifact, and it is reopened, because wallet
+custody at 4.8 GB is now reachable. The cost of forcing small segments is time, not memory, and it is
+modest for the derive path. Separately, the Poseidon cost is still the real structural lever on time,
+and a faster pure-Rust Poseidon or a future zkVM BN254 field accelerator would cut the 26x, which is
+the durable path for proving time.
 
 On the benchmark variants themselves, the efficient-ECDSA form was expected to halve the elliptic-curve
 work relative to a full signature verification and so approach the derive cost. It reduced the
@@ -195,17 +199,22 @@ zkVM's fixed overhead and segment quantization absorb the win. Cheap wallet cust
 reachable, but through a hand-built efficient-ECDSA circuit in a system like Spartan or halo2, a larger
 effort on a different stack, not a variant swap inside the zkVM.
 
-The design position that follows is provisional, pending the segment-size reruns above. The statement
-choice is settled: deriving the key is the chosen statement, because it removes the 2.3 GB
-proving-key download entirely (a zkVM has no structured per-circuit key) and its custody posture
-matches what the current PLONK prover already requires, the voting key used locally by a prover on
-the member's own machine or masternode, so nothing gets worse for the member. What is NOT yet settled
-is the 8 GB fit for that statement, because the production `reg` measurement came in at 9.6 GB and 77
-minutes at default segments and failed the cap, so the fit now rests on the po2 19 rerun, not on the
-Poseidon-free benchmark's 4.8 GB. The wallet-custody rejection is likewise provisional for the same
-reason, if po2 19 brings the 9.6 GB variants down toward the 4.8 GB tier, that decision reopens on the
-new evidence. Wallet custody without the key in the prover otherwise remains a research bet on a
-purpose-built efficient-ECDSA circuit (the spartan-ecdsa-class effort above), not a near-term option.
+The design position, updated with the measured reruns. Deriving the key is the chosen statement, and
+its 8 GB fit is now demonstrated (4.8 GB under the enforced cap at po2 19), so the derive path ships:
+it removes the 2.3 GB proving-key download entirely (a zkVM has no structured per-circuit key), it
+fits an 8 GB masternode, and its custody posture matches what the current PLONK prover already
+requires, the voting key used locally on the member's own machine or masternode.
+
+The wallet-custody question is genuinely reopened by the same measurement, and it is now a real choice
+rather than a rejection. Because the segment size, not the statement, sets the memory ceiling, a
+wallet-custody statement (the member signs, the key never enters the prover) also fits about 4.8 GB at
+po2 19. The trade is time: wallet custody does more elliptic-curve work, so it proves slower than the
+derive path at the same memory. So the axis is no longer "derive fits, custody does not," it is
+"custody is available at 4.8 GB for more proving time, if the stronger key-hygiene property is worth
+that time." This is an owner decision, recorded here as open, not silently defaulted. The
+purpose-built efficient-ECDSA circuit (the spartan-ecdsa-class effort above) remains the durable way
+to make custody cheap in time as well as memory, but it is no longer the ONLY way to reach custody at
+all.
 
 ## Roots and hashes, no forced migration and no in-circuit bridge
 
