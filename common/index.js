@@ -19,9 +19,18 @@ export function hashToField(s) {
 // Domain separator that scopes a membership to one community, platform, and role.
 // The same voting key used in a different context yields an unrelated nullifier,
 // so nothing correlates across communities or applications.
-export function contextHash({ platform, communityId, roleId, version = "v1" }) {
+export function contextHash({ platform, communityId, roleId, version = "v2" }) {
+  // Unambiguous tuple encoding: JSON-array the components so a colon inside any field
+  // cannot shift a boundary. The old v1 delimiter join let community "a:b" + role "c"
+  // share a preimage with community "a" + role "b:c" (this makes the preimage
+  // unambiguous; the hash itself still collides by pigeonhole, just not infeasibly).
+  // The version is bumped to v2 because every derived context value changes, so a
+  // deployment must cut over at a season boundary, not run v1 and v2 side by side. The
+  // circuits take contextHash as an opaque field-element public input (they never
+  // reconstruct it from parts), so this is a JS-only change with no R1CS or key change.
   return hashToField(
-    `dash-mno-verify:${version}:${platform}:${communityId}:${roleId}`
+    `dash-mno-verify:context:${version}:` +
+      JSON.stringify([String(platform), String(communityId), String(roleId)])
   );
 }
 
@@ -30,7 +39,12 @@ export function contextHash({ platform, communityId, roleId, version = "v1" }) {
 // for the account, so a valid proof issued for one account cannot be relayed to grant another (review
 // finding B1). The account is mixed in here, outside the circuit, so this needs no circuit change.
 export function signalHash(nonce, account) {
-  return hashToField(`dash-mno-verify:signal:${nonce}:${account}`);
+  // Unambiguous tuple encoding, same as contextHash: a colon in the account can no
+  // longer make one (nonce, account) share a preimage with another. Also an opaque
+  // field-element public input, so this is a JS-only change with no circuit change.
+  return hashToField(
+    `dash-mno-verify:signal:v2:` + JSON.stringify([String(nonce), String(account)])
+  );
 }
 
 // Epoch index. Time-based by default so an adapter does not need its own Dash node.

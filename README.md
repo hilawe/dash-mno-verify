@@ -2,7 +2,7 @@
 
 Anonymous proof that someone controls a Dash masternode, for gating private communities.
 
-A member proves the statement "I control one of the masternodes in the current Dash network" without revealing which one. No address, no key, and no node identity reaches the people running the community. The proof is a zero-knowledge (ZK) set-membership proof anchored to the public deterministic masternode list (DML), with an epoch-rotating nullifier so one masternode voting key maps to one membership and access lapses when the node is sold. The nullifier binds the voting key the proof controls, not the collateral, so masternodes sharing a delegated voting key collapse to one membership (see the threat model).
+A member proves the statement "I control one of the masternodes in the current Dash network" without revealing which one. No address, no key, and no node identity reaches the people running the community. The proof is a zero-knowledge (ZK) set-membership proof anchored to the public deterministic masternode list (DML), with an epoch-rotating nullifier so one masternode voting key maps to one membership, and access is re-proved each epoch (single-tier) or re-registered each season (two-tier), so a node that leaves the list loses access at the next such boundary rather than the instant it is sold. The nullifier binds the voting key the proof controls, not the collateral, so masternodes sharing a delegated voting key collapse to one membership (see the threat model).
 
 For a plain-language overview start with [docs/EXPLAINER.md](docs/EXPLAINER.md), and for a short guide to trying it out and judging it see [EVALUATION.md](EVALUATION.md).
 
@@ -30,7 +30,7 @@ Dash chain ──▶ oracle ──▶ (Merkle root) ──▶ prover (user devic
 | Party | Discord or platform id | Address or voting key | "A valid node proved" | Which node |
 |-------|------------------------|-----------------------|-----------------------|------------|
 | Community admins, the adapter | yes | no | yes | no |
-| The gateway | a per-request nonce | no | yes, as a nullifier | no |
+| The gateway | the account, plus a per-request nonce | no | yes, as a nullifier | no |
 | The oracle | no | no (public data only) | no | no |
 
 No party links a platform identity to an on-chain address. That is the property the whole design exists to provide.
