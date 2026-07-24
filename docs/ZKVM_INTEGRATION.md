@@ -354,11 +354,20 @@ integration and have not started.
    registration). An impossible pair (PLONK custody) is rejected, and a legacy record defaults to
    plonk/derive. STILL TO DO in step 5: the live non-JavaScript STARK verifier wired at boot and
    pinned by image-id and artifact checksum (artifact-gated, like the Platform backend), engine
-   dispatch selecting the decoder and root store per request (and, at that step, folding both windows
-   behind one `RootWindows` facade so lockstep is structural, a deferred reviewer suggestion), the
-   registration proof lease for root freshness, and the verification-concurrency bound. The Platform
-   registration backend, when wired, will also need `declarationFor` and the same per-bucket
-   enforcement.
+   dispatch selecting the decoder and root store per request, the registration proof lease for root
+   freshness, and the verification-concurrency bound. The Platform registration backend, when wired,
+   will also need `declarationFor`, `seasonHasEngine`, and the same per-bucket enforcement.
+
+   A full multi-model round over the accumulated step-4-and-step-5 surface (2026-07-24) found three
+   cross-slice blockers the per-slice reviews could not see, now folded: (1) the downgrade rule
+   consulted only the config flag, so a gateway reopened with durable zkVM registrations and the flag
+   unset would accept a v1 snapshot, now the rule also consults `RegistrationStore.seasonHasEngine`;
+   (2) the two independent root windows could drift when a v2 snapshot was followed by v1 (the
+   Poseidon entry advanced while a stale SHA-256 entry lingered), now one `RootWindows` holds both
+   roots per snapshot so eviction and aging are atomic, making lockstep structural (the deferred
+   facade, brought forward); (3) `verifyRegistrationCore` did not require gateway-chosen engine and
+   statement, so a future dispatcher could omit them and silently default custody to derive, now they
+   are required and validated before the proof.
 6. Member proving flow and docs, including the secret-file ordering fix, a binary receipt upload,
    and engine discovery.
 7. The custody statement guest, the production five-claim form of the benchmark `sig` variant

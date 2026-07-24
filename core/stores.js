@@ -40,22 +40,48 @@ export class RootStore {
   }
 }
 
-// Update the Poseidon and SHA-256 root windows from one adopted snapshot, in lockstep: both get the
-// same height and ts, so they age together and a SHA-256 root check (shaRoots.isRecent) never sees a
-// different set of accepted snapshots than the Poseidon check (dmlRoots.isRecent). A snapshot with no
-// shaRoot (a v1 snapshot on a non-zkVM deployment) updates only the Poseidon window, leaving the
-// SHA-256 window empty, which is correct because nothing checks it there. A zkVM deployment requires
-// a v2 snapshot, so the two windows stay fully in step. Aging is the other coupled operation: the
-// caller drops both by the same cutoff (see enforceDmlFreshness in core/gateway.js).
+// One window over adopted DML snapshots, holding BOTH roots per snapshot in a single record, so the
+// Poseidon and SHA-256 root views are structurally in lockstep: they share one ring buffer, so
+// eviction (the window bound) and aging (dropOlderThan) drop a snapshot's two roots together, and a
+// zkVM root check can never see a snapshot the Poseidon check does not, or outlive it. This replaces
+// two independent RootStore instances, which could drift when a v2 snapshot was followed by v1 (the
+// Poseidon entry advanced while a stale SHA-256 entry lingered past its partner's eviction).
 //
-// Planned refactor: fold both windows behind one RootWindows facade that owns adoption, pruning, and
-// both isRecent queries, so lockstep is structural rather than each caller remembering to touch both.
-// Deferred to the engine-dispatch step, which adds the callers that make it worthwhile (a reviewer
-// suggestion, and it would churn the current dmlRoots.isRecent/current call sites, so it waits for
-// that change rather than landing mid-slice).
-export function updateRootWindows(dmlRoots, shaRoots, { height, root, shaRoot, ts }) {
-  dmlRoots.update([{ height, root, ts }]);
-  if (shaRoot != null) shaRoots.update([{ height, root: shaRoot, ts }]);
+// A v1 snapshot carries no shaRoot, so its record has shaRoot: null and the SHA-256 view never
+// matches it. isRecent(root) is the Poseidon view (a drop-in for the old RootStore, so the existing
+// membership and registration callers are unchanged), and shaIsRecent(shaRoot) is the SHA-256 view.
+export class RootWindows {
+  constructor(window = 8) {
+    this.window = window;
+    this.snaps = []; // sorted by height ascending, newest last; each { height, root, shaRoot, ts }
+  }
+  // Adopt one snapshot, keyed by height (a re-adoption at the same height replaces it).
+  adopt({ height, root, shaRoot = null, ts }) {
+    const byHeight = new Map(this.snaps.map((s) => [s.height, s]));
+    byHeight.set(height, { height, root, shaRoot: shaRoot ?? null, ts });
+    this.snaps = [...byHeight.values()].sort((a, b) => a.height - b.height).slice(-this.window);
+  }
+  current() {
+    return this.snaps.at(-1) ?? null;
+  }
+  // Poseidon view. Named isRecent so a RootWindows is a drop-in for the old dmlRoots RootStore.
+  isRecent(root) {
+    return this.snaps.some((s) => s.root === root);
+  }
+  // SHA-256 view. A null shaRoot (a v1 snapshot) never matches.
+  shaIsRecent(shaRoot) {
+    return this.snaps.some((s) => s.shaRoot != null && s.shaRoot === shaRoot);
+  }
+  // The SHA-256 view as a rootStore for the zkVM registration verify: { isRecent }.
+  shaView() {
+    return { isRecent: (r) => this.shaIsRecent(r) };
+  }
+  clear() {
+    this.snaps = [];
+  }
+  dropOlderThan(cutoffTs) {
+    this.snaps = this.snaps.filter((s) => Number(s.ts) >= cutoffTs);
+  }
 }
 
 // Load a published oracle snapshot from a URL or a local file.

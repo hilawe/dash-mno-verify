@@ -93,6 +93,13 @@ export class RegistrationStore {
   declarationFor(season, contextHash) {
     return this.backend.declarationFor(Number(season), String(contextHash));
   }
+  // Whether any context in this season is declared under `engine`. The gateway uses this to make the
+  // dual-root downgrade rule consider durable declarations, not just configured intent: a deployment
+  // with a current-season zkVM registration must keep requiring v2 snapshots even if the config flag
+  // is later unset (docs/ZKVM_INTEGRATION.md, the downgrade rule).
+  seasonHasEngine(season, engine) {
+    return this.backend.seasonHasEngine(Number(season), String(engine));
+  }
 }
 
 // The declaration a bucket is bound to: the first record's (engine, statement), defaulting a legacy
@@ -158,6 +165,20 @@ export class MemoryRegistrationBackend {
     const recs = this.byBucket.get(`${season}:${contextHash}`);
     return recs && recs.length > 0 ? declarationOfRecord(recs[0]) : null;
   }
+  async seasonHasEngine(season, engine) {
+    return bucketsHaveEngine(this.byBucket, season, engine);
+  }
+}
+
+// True if any (season, *) bucket's declaration uses `engine`. Scans the season's buckets, reading
+// each bucket's declaration from its first record.
+function bucketsHaveEngine(byBucket, season, engine) {
+  const prefix = `${season}:`;
+  for (const [bucket, recs] of byBucket) {
+    if (!bucket.startsWith(prefix)) continue;
+    if (recs.length > 0 && declarationOfRecord(recs[0]).engine === engine) return true;
+  }
+  return false;
 }
 
 // Durable append-only backend. One JSON record per line. The in-memory index is rebuilt from
@@ -260,5 +281,10 @@ export class FileBackend {
     await this.ready();
     const recs = this.byBucket.get(`${season}:${contextHash}`);
     return recs && recs.length > 0 ? declarationOfRecord(recs[0]) : null;
+  }
+
+  async seasonHasEngine(season, engine) {
+    await this.ready();
+    return bucketsHaveEngine(this.byBucket, season, engine);
   }
 }

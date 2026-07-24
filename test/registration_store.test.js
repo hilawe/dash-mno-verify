@@ -112,6 +112,20 @@ for (const [name, makeStore] of [
     assert.equal(bad.invalid, true);
     assert.equal(await store.declarationFor(1, "ctx"), null, "no bucket was declared");
   });
+
+  test(`${name}: seasonHasEngine reports a durable zkVM declaration (the downgrade-rule signal)`, async () => {
+    const { store } = await makeStore();
+    await store.ready();
+    assert.equal(await store.seasonHasEngine(1, "zkvm"), false);
+    // A plonk registration in the season does not make it zkvm.
+    await store.append({ season: 1, contextHash: "ctxA", regNullifier: "a", commitment: "ca", engine: "plonk", statement: "derive" });
+    assert.equal(await store.seasonHasEngine(1, "zkvm"), false);
+    // A zkvm registration in another context of the same season does.
+    await store.append({ season: 1, contextHash: "ctxB", regNullifier: "b", commitment: "cb", engine: "zkvm", statement: "custody" });
+    assert.equal(await store.seasonHasEngine(1, "zkvm"), true);
+    // Scoped to the season: a different season is unaffected.
+    assert.equal(await store.seasonHasEngine(2, "zkvm"), false);
+  });
 }
 
 test("file: registrations survive a restart (durability)", async () => {

@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import * as snarkjs from "snarkjs";
 import { isCanonicalField } from "../common/field.js";
+import { isValidEngineStatement } from "./registration_store.js";
 
 // Every public signal must be a canonical field element in [0, FIELD_PRIME). snarkjs reduces a
 // non-canonical input mod p during verification, so a proof would still verify, but the gateway keys
@@ -203,6 +204,13 @@ export function decodeZkvmRegistrationClaims(journal) {
 // `verifyProof()`, and `expected.rootStore` (the Poseidon root store for PLONK, the SHA-256 root
 // store for the zkVM engine), so the engines differ only outside this function.
 export async function verifyRegistrationCore({ claims, verifyProof, expected, registrationStore, commit }) {
+  // 0) the caller (the gateway) must name a valid engine and statement, which bind this bucket's
+  //    durable declaration. They are gateway-chosen, never taken from the proof, and must be present
+  //    and valid, so an engine dispatcher cannot omit them and silently default a custody
+  //    registration to derive (which would let the same node re-register under the other statement).
+  if (!isValidEngineStatement(expected.engine, expected.statement))
+    return { ok: false, reason: "invalid-engine-statement" };
+
   // 1) the DML root must be one the oracle published recently (engine-specific store)
   if (!expected.rootStore.isRecent(claims.root)) return { ok: false, reason: "stale-or-unknown-root" };
   // 2) the season must be the one being registered

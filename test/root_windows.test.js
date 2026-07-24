@@ -1,63 +1,68 @@
-// The Poseidon and SHA-256 DML root windows must stay in lockstep (docs/ZKVM_INTEGRATION.md step 5),
-// so a zkVM registration root check sees exactly the snapshots the Poseidon check does. These pin the
-// updateRootWindows helper the gateway uses: a v2 snapshot populates both windows, a v1 snapshot only
-// the Poseidon one, and the two age by the same cutoff.
+// The Poseidon and SHA-256 DML root views must be structurally in lockstep (docs/ZKVM_INTEGRATION.md
+// step 5): a zkVM root check must never see a snapshot the Poseidon check does not, or outlive it.
+// RootWindows holds both roots per snapshot in one ring buffer, so eviction and aging drop a
+// snapshot's two roots together. These pin that, including the v2-then-v1 case that split two
+// independent windows (the full-review blocker).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { RootStore, updateRootWindows } from "../core/stores.js";
+import { RootWindows } from "../core/stores.js";
 
-test("a v2 snapshot populates both windows in lockstep", () => {
-  const dml = new RootStore(8);
-  const sha = new RootStore(8);
-  updateRootWindows(dml, sha, { height: 10, root: "P10", shaRoot: "S10", ts: 100 });
-  updateRootWindows(dml, sha, { height: 11, root: "P11", shaRoot: "S11", ts: 110 });
+test("a v2 snapshot is recent in both views; a v1 snapshot only in the Poseidon view", () => {
+  const w = new RootWindows(8);
+  w.adopt({ height: 10, root: "P10", shaRoot: "S10", ts: 100 });
+  w.adopt({ height: 11, root: "P11", shaRoot: null, ts: 110 }); // a v1 snapshot
 
-  assert.equal(dml.isRecent("P10"), true);
-  assert.equal(dml.isRecent("P11"), true);
-  assert.equal(sha.isRecent("S10"), true);
-  assert.equal(sha.isRecent("S11"), true);
-  // current() tracks the latest on both
-  assert.equal(dml.current().root, "P11");
-  assert.equal(sha.current().root, "S11");
-  // an unknown root is not recent in either
-  assert.equal(sha.isRecent("S99"), false);
+  assert.equal(w.isRecent("P10"), true);
+  assert.equal(w.isRecent("P11"), true);
+  assert.equal(w.shaIsRecent("S10"), true);
+  assert.equal(w.shaIsRecent("P11"), false, "the v1 Poseidon root is not a SHA-256 root");
+  assert.equal(w.shaView().isRecent("S10"), true);
+  assert.equal(w.current().root, "P11");
 });
 
-test("a v1 snapshot (no shaRoot) updates only the Poseidon window", () => {
-  const dml = new RootStore(8);
-  const sha = new RootStore(8);
-  updateRootWindows(dml, sha, { height: 5, root: "P5", shaRoot: null, ts: 50 });
-  assert.equal(dml.isRecent("P5"), true);
-  assert.equal(sha.current(), null, "the SHA-256 window stays empty for a v1 snapshot");
+test("v2 then repeated v1 cannot leave a stale SHA-256 root past its Poseidon partner's eviction", () => {
+  // Window size 2. A v2 at height 10, then two v1 snapshots. The single ring buffer evicts height 10
+  // entirely (both its roots) once the window fills, so S10 is NOT recent even though independent
+  // windows would have kept it. This is the blocker the paired record fixes.
+  const w = new RootWindows(2);
+  w.adopt({ height: 10, root: "P10", shaRoot: "S10", ts: 100 });
+  w.adopt({ height: 11, root: "P11", shaRoot: null, ts: 110 });
+  w.adopt({ height: 12, root: "P12", shaRoot: null, ts: 120 });
+
+  assert.equal(w.isRecent("P10"), false, "height 10 evicted from the Poseidon view");
+  assert.equal(w.shaIsRecent("S10"), false, "and its SHA-256 root evicted in lockstep, not lingering");
+  assert.equal(w.isRecent("P11"), true);
+  assert.equal(w.isRecent("P12"), true);
 });
 
-test("both windows age by the same cutoff, so the SHA-256 window never outlives the Poseidon one", () => {
-  const dml = new RootStore(8);
-  const sha = new RootStore(8);
-  updateRootWindows(dml, sha, { height: 1, root: "Pold", shaRoot: "Sold", ts: 100 });
-  updateRootWindows(dml, sha, { height: 2, root: "Pnew", shaRoot: "Snew", ts: 200 });
+test("aging drops a snapshot's two roots together", () => {
+  const w = new RootWindows(8);
+  w.adopt({ height: 1, root: "Pold", shaRoot: "Sold", ts: 100 });
+  w.adopt({ height: 2, root: "Pnew", shaRoot: "Snew", ts: 200 });
+  w.dropOlderThan(150); // drops ts=100
 
-  const cutoff = 150; // drops ts=100, keeps ts=200
-  dml.dropOlderThan(cutoff);
-  sha.dropOlderThan(cutoff);
-
-  assert.equal(dml.isRecent("Pold"), false);
-  assert.equal(sha.isRecent("Sold"), false, "the aged SHA-256 root is dropped in lockstep");
-  assert.equal(dml.isRecent("Pnew"), true);
-  assert.equal(sha.isRecent("Snew"), true);
+  assert.equal(w.isRecent("Pold"), false);
+  assert.equal(w.shaIsRecent("Sold"), false, "the aged SHA-256 root is dropped with its partner");
+  assert.equal(w.isRecent("Pnew"), true);
+  assert.equal(w.shaIsRecent("Snew"), true);
 });
 
-test("the windows respect the ring-buffer bound in step", () => {
-  const dml = new RootStore(2);
-  const sha = new RootStore(2);
-  for (let h = 1; h <= 4; h++) {
-    updateRootWindows(dml, sha, { height: h, root: `P${h}`, shaRoot: `S${h}`, ts: h });
-  }
-  // only the last 2 heights survive in both
-  assert.equal(dml.isRecent("P2"), false);
-  assert.equal(sha.isRecent("S2"), false);
-  assert.equal(dml.isRecent("P3"), true);
-  assert.equal(sha.isRecent("S3"), true);
-  assert.equal(dml.isRecent("P4"), true);
-  assert.equal(sha.isRecent("S4"), true);
+test("re-adopting a height replaces its record, both roots", () => {
+  const w = new RootWindows(8);
+  w.adopt({ height: 5, root: "Pa", shaRoot: "Sa", ts: 50 });
+  w.adopt({ height: 5, root: "Pb", shaRoot: "Sb", ts: 55 }); // same height, new roots
+  assert.equal(w.isRecent("Pa"), false);
+  assert.equal(w.shaIsRecent("Sa"), false);
+  assert.equal(w.isRecent("Pb"), true);
+  assert.equal(w.shaIsRecent("Sb"), true);
+  assert.equal(w.current().ts, 55);
+});
+
+test("clear empties both views", () => {
+  const w = new RootWindows(8);
+  w.adopt({ height: 1, root: "P", shaRoot: "S", ts: 1 });
+  w.clear();
+  assert.equal(w.current(), null);
+  assert.equal(w.isRecent("P"), false);
+  assert.equal(w.shaIsRecent("S"), false);
 });

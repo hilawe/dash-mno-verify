@@ -26,7 +26,7 @@
 import { createServer } from "node:http";
 import { randomUUID, createHash, timingSafeEqual } from "node:crypto";
 import { config } from "./config.js";
-import { RootStore, NullifierStore, ChallengeStore, RateLimiter, loadOracle, updateRootWindows } from "./stores.js";
+import { RootWindows, NullifierStore, ChallengeStore, RateLimiter, loadOracle } from "./stores.js";
 import { loadVerificationKey, verifyMembership, verifyRegistration } from "./verifier.js";
 import { SeasonMembers } from "./season.js";
 import { makeDmlRootHasher } from "./dml_root.js";
@@ -125,14 +125,12 @@ if (config.store === "platform") {
   nullifiers = new NullifierStore();
 }
 
-// The DML root, fed by the oracle. Used by single-tier verify and by two-tier registration.
-const dmlRoots = new RootStore(config.rootWindow);
-// The SHA-256 DML root window, for the zkVM registration statement, kept in LOCKSTEP with dmlRoots:
-// both are updated from the same adopted v2 snapshot and aged by the same freshness cutoff, so a zkVM
-// root check (shaRoots.isRecent) sees exactly the snapshots the Poseidon check (dmlRoots.isRecent)
-// does. Empty on a non-zkVM (v1-only) deployment, which never checks it. The zkVM registration verify
-// (deferred with the live receipt verifier) uses shaRoots as its rootStore.
-const shaRoots = new RootStore(config.rootWindow);
+// The DML root window, fed by the oracle. One window holds both roots per snapshot (RootWindows), so
+// the Poseidon view (dmlRoots.isRecent, for single-tier verify and two-tier registration) and the
+// SHA-256 view (dmlRoots.shaView(), for the zkVM registration statement) are structurally in lockstep
+// and cannot drift. The zkVM registration verify (deferred with the live receipt verifier) uses
+// dmlRoots.shaView() as its rootStore.
+const dmlRoots = new RootWindows(config.rootWindow);
 let latestDml = null; // the last verified oracle snapshot, so provers can fetch leaves and build paths
 const dmlRootFromLeaves = await makeDmlRootHasher(config.treeDepth);
 
@@ -141,7 +139,7 @@ const dmlRootFromLeaves = await makeDmlRootHasher(config.treeDepth);
 // oracle's self-reported timestamp: too old to adopt, or too far in the future (which would
 // otherwise let a clock-skewed or replayed future-dated snapshot pose as fresh). The root recompute
 // in refreshRoots is the separate check that the leaves actually produce the claimed root.
-function validateSnapshot(o) {
+function validateSnapshot(o, requiresSha) {
   if (!o || typeof o !== "object") throw new Error("snapshot is not an object");
   if (!Number.isInteger(o.height) || o.height < 0) throw new Error("snapshot height invalid");
   const depth = o.depth ?? config.treeDepth;
@@ -164,8 +162,11 @@ function validateSnapshot(o) {
   }
   // Deployment-scoped dual-root requirement (docs/ZKVM_INTEGRATION.md). A zkVM deployment refuses a
   // v1 snapshot outright, since it lacks the SHA-256 root the zkVM statement is checked against, so a
-  // downgrade cannot slip a rootless snapshot in through the same refresh path.
-  if (config.requireShaRoot && (version !== 2 || o.shaRoot == null)) {
+  // downgrade cannot slip a rootless snapshot in. `requiresSha` is judged by configured intent AND a
+  // durable current-season zkVM declaration (computed in refreshRoots), so a gateway reopened with
+  // existing zkVM registrations keeps requiring v2 even if the config flag was unset (the rollback
+  // rule the review flagged).
+  if (requiresSha && (version !== 2 || o.shaRoot == null)) {
     throw new Error("zkVM deployment requires a v2 snapshot with a shaRoot (downgrade refused)");
   }
   if (config.oracleMaxAgeSeconds > 0) {
@@ -208,8 +209,7 @@ function oracleSignaturesOk(o) {
 function enforceDmlFreshness() {
   if (config.oracleMaxAgeSeconds <= 0) return;
   const cutoff = nowSec() - config.oracleMaxAgeSeconds;
-  dmlRoots.dropOlderThan(cutoff);
-  shaRoots.dropOlderThan(cutoff); // lockstep aging, so the SHA-256 window never outlives the Poseidon one
+  dmlRoots.dropOlderThan(cutoff); // one window ages both roots of each snapshot together
   if (latestDml && Number(latestDml.ts) < cutoff) {
     console.error(`[gateway] oracle snapshot stale (ts ${latestDml.ts}), dropping root until a fresh one arrives`);
     latestDml = null;
@@ -219,7 +219,13 @@ function enforceDmlFreshness() {
 async function refreshRoots() {
   try {
     const o = await loadOracle(config.oracleSource);
-    validateSnapshot(o);
+    // Require v2 if configured OR if a durable zkVM registration exists in the current season, so a
+    // deployment that has served zkVM registrations cannot be downgraded to v1 by clearing the flag.
+    let requiresSha = config.requireShaRoot;
+    if (!requiresSha && twoTier && registrationStore) {
+      requiresSha = await registrationStore.seasonHasEngine(seasonNow(config.seasonSeconds, nowSec()), "zkvm");
+    }
+    validateSnapshot(o, requiresSha);
     // Always recompute the root from the published leaves and trust only a self-consistent snapshot,
     // whether the root is new or a republish of the current one. The fast hasher is O(real leaves),
     // so this runs every refresh cheaply, and a snapshot whose leaves do not hash to its root is
@@ -262,9 +268,9 @@ async function refreshRoots() {
       // latestDml never diverges from RootStore.current(). Only a self-consistent snapshot reaches
       // here, so the ts that drives expiry is verified-fresh.
       latestDml = o;
-      // Update both root windows in lockstep (same height and ts). A v2 snapshot carries a shaRoot
-      // and populates both; a v1 snapshot populates only the Poseidon window (updateRootWindows).
-      updateRootWindows(dmlRoots, shaRoots, { height: o.height, root: o.root, shaRoot: o.shaRoot, ts: o.ts ?? nowSec() });
+      // One paired record holds both roots, so the two views stay in lockstep by construction. A v1
+      // snapshot has shaRoot null and never matches the SHA-256 view.
+      dmlRoots.adopt({ height: o.height, root: o.root, shaRoot: o.shaRoot ?? null, ts: o.ts ?? nowSec() });
     }
   } catch (err) {
     console.error("[gateway] root refresh failed:", err.message);
