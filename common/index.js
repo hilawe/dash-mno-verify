@@ -59,3 +59,12 @@ export function epochNow(epochSeconds, nowSeconds) {
 export function seasonNow(seasonSeconds, nowSeconds) {
   return Math.floor(nowSeconds / seasonSeconds);
 }
+
+// Identifies the epoch and season schedule a durable store was written under. Season and epoch
+// numbers are derived from these lengths, so changing either RENUMBERS every period: a modest change
+// can make today's season number equal a season number from the old schedule, and a store keyed only
+// by that integer would rebuild those old registrations and revive members who never re-proved. A
+// store records this and refuses to open under a different one.
+export function scheduleId(epochSeconds, seasonSeconds) {
+  return `e${Number(epochSeconds)}s${Number(seasonSeconds)}`;
+}

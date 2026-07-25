@@ -38,12 +38,14 @@ const SCHEMA = `
     PRIMARY KEY (epoch, context, nf)
   );
   CREATE INDEX IF NOT EXISTS claims_epoch_n ON claims (epoch_n);
+  CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
 `;
 
 export class SqliteNullifierStore {
   // `path` is a file path, or ":memory:" for tests. Opening is synchronous and cheap.
-  constructor(path) {
+  constructor(path, schedule = null) {
     this.path = path;
+    this.schedule = schedule;
     this.db = new DatabaseSync(path);
     // WAL keeps readers off the writer's back. synchronous=FULL is the deliberate choice here: the
     // caller is told a spend succeeded only after the write reached disk, so a power loss cannot
@@ -72,6 +74,22 @@ export class SqliteNullifierStore {
     );
     this._prune = this.db.prepare("DELETE FROM claims WHERE epoch_n < ?");
     this._count = this.db.prepare("SELECT COUNT(*) AS n FROM claims");
+
+    // Epoch numbers only mean something under the schedule that produced them. Record it on first
+    // use and refuse to reopen under a different one, rather than compare this schedule's epoch
+    // numbers against claims written under another.
+    if (this.schedule != null) {
+      const row = this.db.prepare("SELECT v FROM meta WHERE k='schedule'").get();
+      if (row === undefined) {
+        this.db.prepare("INSERT INTO meta (k, v) VALUES ('schedule', ?)").run(String(this.schedule));
+      } else if (String(row.v) !== String(this.schedule)) {
+        throw new Error(
+          `${path} was written under epoch/season schedule ${row.v}, but this gateway runs ${this.schedule}. ` +
+            `Changing the epoch or season length renumbers every period, so the stored claims are not ` +
+            `comparable. Point MNO_NULLIFIER_PATH at a new file to start the new schedule cleanly.`,
+        );
+      }
+    }
   }
 
   #keys(epoch, contextHash, nf) {

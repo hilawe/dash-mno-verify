@@ -22,7 +22,7 @@
 // A FileBackend is a single writer, so insertion order is total and stable across restarts. A
 // multi-gateway Platform backend must impose its own deterministic total order (for example sorted
 // by regNullifier) so every gateway rebuilds the identical tree.
-import { open, readFile, mkdir } from "node:fs/promises";
+import { open, readFile, mkdir, appendFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
 // The statement a (season, contextHash) is registered under. The registration nullifier is derived
@@ -186,8 +186,9 @@ function bucketsHaveEngine(byBucket, season, engine) {
 // Durable append-only backend. One JSON record per line. The in-memory index is rebuilt from
 // the file on load, so the tree survives a restart and every member keeps their leaf position.
 export class FileBackend {
-  constructor(path) {
+  constructor(path, schedule = null) {
     this.path = path;
+    this.schedule = schedule;
     this.seen = new Set();
     this.byBucket = new Map(); // "season:contextHash" -> records[] in insertion order
     this._loading = null; // memoized load, so concurrent first-callers share one read
@@ -209,10 +210,33 @@ export class FileBackend {
     } catch (err) {
       if (err.code !== "ENOENT") throw err;
     }
+    // The first line may be a schedule header. Season numbers are derived from the configured season
+    // length, so records written under a different length are not comparable: a duration change can
+    // make today's season number equal an old one and rebuild those registrations, reviving members
+    // who never re-proved. Refuse rather than reinterpret.
+    let seenHeader = false;
     for (const line of raw.split("\n")) {
       const t = line.trim();
       if (!t) continue;
-      this.#remember(JSON.parse(t));
+      const rec = JSON.parse(t);
+      if (rec && rec.type === "schedule") {
+        seenHeader = true;
+        if (this.schedule != null && String(rec.schedule) !== String(this.schedule)) {
+          throw new Error(
+            `${this.path} was written under epoch/season schedule ${rec.schedule}, but this gateway ` +
+              `runs ${this.schedule}. Changing the epoch or season length renumbers every period, so the ` +
+              `stored registrations are not comparable. Point MNO_REG_PATH at a new file to start the ` +
+              `new schedule cleanly, which forces members to re-register.`,
+          );
+        }
+        continue;
+      }
+      this.#remember(rec);
+    }
+    // Stamp the schedule on a store that predates this header, or on a fresh one, so the NEXT change
+    // is caught. A pre-existing store cannot be checked retroactively, which is stated in TODO.
+    if (!seenHeader && this.schedule != null) {
+      await appendFile(this.path, JSON.stringify({ type: "schedule", schedule: this.schedule }) + "\n");
     }
   }
 

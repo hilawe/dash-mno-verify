@@ -32,12 +32,15 @@ import { SeasonMembers } from "./season.js";
 import { makeDmlRootHasher } from "./dml_root.js";
 import { shaRootFromLeaves } from "../common/dml_sha_root.js";
 import { isCanonicalField } from "../common/field.js";
-import { contextHash, signalHash, epochNow, seasonNow } from "../common/index.js";
+import { contextHash, signalHash, epochNow, seasonNow, scheduleId } from "../common/index.js";
 import { TimeGuard } from "./time_guard.js";
 import { snapshotMessage, verifySnapshotSig, snapshotVersion } from "../common/oracle_sig.js";
 
 const twoTier = config.mode === "two-tier";
 const nowSec = () => Math.floor(Date.now() / 1000);
+// Every durable store is stamped with this and refuses to open under a different one, because
+// changing either length renumbers every epoch and season.
+const SCHEDULE = scheduleId(config.epochSeconds, config.seasonSeconds);
 
 // Fail closed: refuse to start unauthenticated unless the operator explicitly opted in. This keeps
 // a forgotten MNO_ADAPTER_SECRET from silently exposing the account-bearing endpoints to any caller.
@@ -183,7 +186,7 @@ if (config.store === "platform") {
       throw new Error(`refusing to start: cannot restrict ${dir} to mode 0700 (${e.message})`);
     }
   }
-  nullifiers = new SqliteNullifierStore(config.nullifierStorePath);
+  nullifiers = new SqliteNullifierStore(config.nullifierStorePath, SCHEDULE);
   console.log(
     ephemeralDb
       ? "[gateway] EPHEMERAL in-memory SQLite nullifier state: a restart forgets every spend this epoch"
@@ -376,7 +379,7 @@ if (twoTier) {
   regVkey = await loadVerificationKey(config.registrationVkeyPath);
   membersVkey = await loadVerificationKey(config.membersVkeyPath);
   const { RegistrationStore, FileBackend } = await import("./registration_store.js");
-  registrationStore = new RegistrationStore(new FileBackend(config.registrationStorePath));
+  registrationStore = new RegistrationStore(new FileBackend(config.registrationStorePath, SCHEDULE));
   await registrationStore.ready();
   console.log(`[gateway] durable registration records at ${config.registrationStorePath}`);
   // The empty members root, computed once via the fast hasher (instant), so an empty context never
