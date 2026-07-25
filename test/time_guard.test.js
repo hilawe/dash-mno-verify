@@ -116,11 +116,21 @@ test("marks written under a different period length are ignored, not treated as 
   });
 });
 
-test("an unreadable marks file seeds fresh rather than failing to start", () => {
+test("a corrupt marks file fails closed instead of silently disarming the guard", () => {
+  // This test previously pinned the opposite, seeding fresh marks on a parse failure. That was
+  // wrong: the marks ARE the guard's security state, so treating "cannot read them" as "first run"
+  // lets a gateway that reached season 20 restart into season 19 and rebuild that season's
+  // registrations. Only a missing file means a first run.
   withDir((dir) => {
     const path = join(dir, "marks.json");
     writeFileSync(path, "{ this is not json");
-    const g = guardAt(path, { t: 20_000 });
+    assert.throws(() => guardAt(path, { t: 20_000 }), /not valid JSON/);
+  });
+});
+
+test("a missing marks file is still a normal first run", () => {
+  withDir((dir) => {
+    const g = guardAt(join(dir, "absent.json"), { t: 20_000 });
     assert.equal(g.epoch(), 200);
     assert.equal(g.regressed, false);
   });

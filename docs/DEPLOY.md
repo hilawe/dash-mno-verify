@@ -28,7 +28,7 @@ needs the proving key for the circuit they prove against.
 
 ## Prerequisites
 
-- Node.js 20 or newer, and git.
+- Node.js 22.13 or newer, and git. The gateway's default durable nullifier store uses the standard library's `node:sqlite`, which landed in 22.5 and left the flag in 22.13.
 - For the operator, a synced Dash mainnet node reachable by `dash-cli` or JSON-RPC.
 - For a member building the large keys, the circom compiler and some disk (see `circuits/README.md`). The cheap per-epoch path needs no compiler, only `scripts/fetch_keys.sh`.
 

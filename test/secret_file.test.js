@@ -108,9 +108,9 @@ test("findSecretForContext matches on context and prefers an accepted record", a
     await markSecretAccepted(accepted, {});
     await writePendingSecret(other, { secret: "o", contextHash: "ctx2" });
 
-    assert.equal(await findSecretForContext("ctx1", dir), accepted);
-    assert.equal(await findSecretForContext("ctx2", dir), other);
-    assert.equal(await findSecretForContext("ctx3", dir), null);
+    assert.equal(await findSecretForContext("ctx1", null, dir), accepted);
+    assert.equal(await findSecretForContext("ctx2", null, dir), other);
+    assert.equal(await findSecretForContext("ctx3", null, dir), null);
   });
 });
 
@@ -147,4 +147,45 @@ test("a file takes precedence over the deprecated argument", async () => {
 
 test("no key at all is a clear error, not a crash", async () => {
   await assert.rejects(loadVotingKey({}, { warn: () => {} }), /no voting key given/);
+});
+
+test("the lookup picks the current season's secret, not last season's", async () => {
+  // The context hash excludes the season, so after a rollover the directory holds an accepted secret
+  // per season for the same community. Choosing by readdir order could hand the prover a commitment
+  // that is not in the current members tree, and the proof would simply fail.
+  await withDir(async (dir) => {
+    const oldS = join(dir, "member.c.s9.secret.json");
+    const newS = join(dir, "member.c.s10.secret.json");
+    await writePendingSecret(oldS, { secret: "old", contextHash: "ctx", season: "9" });
+    await markSecretAccepted(oldS, {});
+    await writePendingSecret(newS, { secret: "new", contextHash: "ctx", season: "10" });
+    await markSecretAccepted(newS, {});
+
+    assert.equal(await findSecretForContext("ctx", "10", dir), newS);
+    assert.equal(await findSecretForContext("ctx", "9", dir), oldS);
+  });
+});
+
+test("a retry refuses a secret recorded for a different context", async () => {
+  // Sanitized filenames can collide across communities, and reusing the secret would publish the same
+  // commitment in two contexts and link the member across them.
+  await withDir(async (dir) => {
+    const p = join(dir, "m.secret.json");
+    await writePendingSecret(p, { secret: "s", contextHash: "ctxA", season: "9" });
+    assert.equal((await resolveSecret(p, { contextHash: "ctxB", season: "9" })).kind, "mismatch");
+    assert.equal((await resolveSecret(p, { contextHash: "ctxA", season: "10" })).kind, "mismatch");
+    assert.equal((await resolveSecret(p, { contextHash: "ctxA", season: "9" })).kind, "retry");
+  });
+});
+
+test("promotion is atomic: the secret survives a failed write", async () => {
+  await withDir(async (dir) => {
+    const p = join(dir, "m.secret.json");
+    await writePendingSecret(p, { secret: "keepme", contextHash: "ctx", season: "9" });
+    await markSecretAccepted(p, { index: 3 });
+    const rec = await readSecretFile(p);
+    assert.equal(rec.secret, "keepme", "promotion must never disturb the secret itself");
+    assert.equal(rec.status, "accepted");
+    assert.equal(statSync(p).mode & 0o777, 0o600);
+  });
 });

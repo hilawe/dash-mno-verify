@@ -49,21 +49,21 @@ export class SqliteNullifierStore {
     // caller is told a spend succeeded only after the write reached disk, so a power loss cannot
     // resurrect a spent tag. The cost is one fsync per claim, which is a rounding error next to the
     // proof verify that precedes it.
-    this.db.exec("PRAGMA journal_mode=WAL");
-    this.db.exec("PRAGMA synchronous=FULL");
-    this.db.exec(SCHEMA);
-    // This database pairs platform accounts with the nullifiers they claimed, so it says which
-    // accounts hold a masternode (never which node, and never an address). Default file mode would
-    // publish that to every local user, so narrow it. Best effort: it is skipped for ":memory:", and
-    // SQLite creates the sibling -wal and -shm files itself under the process umask, so the
-    // containing directory is the real boundary and the gateway creates it 0700.
+    // Narrow the file BEFORE enabling write-ahead logging. This database pairs platform accounts with
+    // the nullifiers they claimed, so it says which accounts hold a masternode (never which node, and
+    // never an address). SQLite creates the sibling -wal and -shm files from the database file's own
+    // mode, so doing this after the WAL pragma left those two world readable while holding the same
+    // rows. Refuse to start if the mode cannot be set, rather than run with the claims exposed.
     if (path !== ":memory:") {
       try {
         chmodSync(path, 0o600);
-      } catch {
-        // A filesystem that does not support chmod is not a reason to refuse to start.
+      } catch (e) {
+        throw new Error(`refusing to start: cannot restrict ${path} to mode 0600 (${e.message})`);
       }
     }
+    this.db.exec("PRAGMA journal_mode=WAL");
+    this.db.exec("PRAGMA synchronous=FULL");
+    this.db.exec(SCHEMA);
     this._has = this.db.prepare("SELECT 1 FROM claims WHERE epoch=? AND context=? AND nf=?");
     this._get = this.db.prepare("SELECT account FROM claims WHERE epoch=? AND context=? AND nf=?");
     this._add = this.db.prepare(

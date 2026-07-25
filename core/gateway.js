@@ -157,14 +157,38 @@ if (config.store === "platform") {
   nullifiers = new DocumentNullifierStore(backend);
   console.log(`[gateway] shared nullifier state on Dash Platform (${config.platform.contractId})`);
 } else if (config.store === "sqlite") {
+  // ":memory:" is a SQLite database that dies with the process, so it is the ephemeral store wearing
+  // the durable store's name. Without this it slipped past the opt-in above and even logged itself as
+  // durable, which is worse than the plain memory store because the log said the opposite.
+  if (config.nullifierStorePath === ":memory:" && !config.allowEphemeralNullifiers) {
+    throw new Error(
+      "MNO_NULLIFIER_PATH=:memory: keeps the spent-nullifier set in memory, so a restart mid-epoch " +
+        "forgets every spend. Point it at a file, or set MNO_ALLOW_EPHEMERAL_NULLIFIERS=1 to accept " +
+        "that for local use.",
+    );
+  }
   const { SqliteNullifierStore } = await import("./nullifier_sqlite.js");
-  const { mkdirSync } = await import("node:fs");
+  const { mkdirSync, chmodSync } = await import("node:fs");
   const { dirname } = await import("node:path");
-  // 0700 on the directory is the real boundary: SQLite creates its own -wal and -shm siblings under
-  // the process umask, so restricting only the database file would leave recent writes readable.
-  mkdirSync(dirname(config.nullifierStorePath), { recursive: true, mode: 0o700 });
+  const ephemeralDb = config.nullifierStorePath === ":memory:";
+  if (!ephemeralDb) {
+    // The directory is the second half of the boundary, and mkdir's mode applies only when it
+    // CREATES the directory. A data directory left over from an earlier run keeps whatever mode it
+    // had, so set it explicitly every boot rather than assuming creation.
+    const dir = dirname(config.nullifierStorePath);
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    try {
+      chmodSync(dir, 0o700);
+    } catch (e) {
+      throw new Error(`refusing to start: cannot restrict ${dir} to mode 0700 (${e.message})`);
+    }
+  }
   nullifiers = new SqliteNullifierStore(config.nullifierStorePath);
-  console.log(`[gateway] durable nullifier state at ${config.nullifierStorePath}`);
+  console.log(
+    ephemeralDb
+      ? "[gateway] EPHEMERAL in-memory SQLite nullifier state: a restart forgets every spend this epoch"
+      : `[gateway] durable nullifier state at ${config.nullifierStorePath}`,
+  );
 } else {
   nullifiers = new NullifierStore();
   console.warn("[gateway] EPHEMERAL nullifier state: a restart forgets every spend this epoch");

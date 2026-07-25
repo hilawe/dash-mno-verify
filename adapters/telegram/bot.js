@@ -21,6 +21,7 @@ import { Bot, InputFile } from "grammy";
 import process from "node:process";
 import { proveInstructions } from "../../common/prover_instructions.js";
 import { GrantLedger } from "../common/grant_ledger.js";
+import { contextHash } from "../../common/index.js";
 
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const GROUP_ID = process.env.TELEGRAM_GROUP_ID;
@@ -33,6 +34,9 @@ const authHeaders = ADAPTER_SECRET ? { authorization: `Bearer ${ADAPTER_SECRET}`
 const LEDGER_FILE = process.env.TELEGRAM_GRANT_LEDGER ?? "data/telegram-grants.json";
 const SWEEP_SECONDS = Number(process.env.TELEGRAM_SWEEP_SECONDS ?? 60);
 const LINK_TTL_SECONDS = Number(process.env.TELEGRAM_LINK_TTL_SECONDS ?? 3600);
+// The proof context this bot admits for. A grant records it, so a ledger reused after the chat or
+// the community changed cannot admit anyone to a target they never proved for.
+const CONTEXT_HASH = contextHash({ platform: "telegram", communityId: COMMUNITY_ID, roleId: ROLE_ID }).toString();
 
 const bot = new Bot(TOKEN);
 
@@ -46,8 +50,20 @@ const ledger = new GrantLedger({
   revoke: async (userId) => {
     // Ban then unban removes the member without leaving a standing ban, so they can rejoin after
     // re-verifying. only_if_banned keeps the unban from touching anyone else's state.
-    await bot.api.banChatMember(GROUP_ID, Number(userId));
-    await bot.api.unbanChatMember(GROUP_ID, Number(userId), { only_if_banned: true });
+    // until_date makes the ban self-expiring, so if the unban below fails the member is not stranded
+    // banned until a later sweep happens to succeed. Telegram treats a ban shorter than 30 seconds or
+    // longer than 366 days as permanent, so a minute is the smallest safe self-healing window (this
+    // applies to supergroups and channels, which is what a gated chat is).
+    await bot.api.banChatMember(GROUP_ID, Number(userId), {
+      until_date: Math.floor(Date.now() / 1000) + 60,
+    });
+    try {
+      await bot.api.unbanChatMember(GROUP_ID, Number(userId), { only_if_banned: true });
+    } catch (e) {
+      // The ban still lifts on its own, so report rather than leave the operator guessing.
+      console.error(`[telegram] unban after removing ${userId} failed (${e.message}); the ban self-expires in 60s`);
+      throw e;
+    }
   },
 });
 
@@ -113,7 +129,11 @@ bot.on("message:document", async (ctx) => {
   // Record the grant BEFORE handing out the link, so a link can never be usable without a record
   // behind it. The reverse order would admit a member the sweep does not know to remove.
   try {
-    await ledger.grant(String(ctx.from.id), { expiresAt: out.expiresAt });
+    await ledger.grant(String(ctx.from.id), {
+      expiresAt: out.expiresAt,
+      chatId: String(GROUP_ID),
+      contextHash: CONTEXT_HASH,
+    });
   } catch (e) {
     console.error("[telegram] grant failed:", e.message);
     return ctx.reply("Verification succeeded but access could not be recorded. Run /verify to try again.");
@@ -138,10 +158,16 @@ bot.on("chat_join_request", async (ctx) => {
   const req = ctx.chatJoinRequest;
   if (String(req.chat.id) !== String(GROUP_ID)) return; // not our gated chat
   const userId = String(req.from.id);
-  if (ledger.live(userId)) {
-    await ctx.api.approveChatJoinRequest(req.chat.id, req.from.id);
-    return;
-  }
+  // The check and the approval share the ledger's queue, so an expiry sweep cannot delete the record
+  // while the approval is in flight and leave the member admitted but untracked. The record must also
+  // name this chat and this proof context: a ledger carried across a TELEGRAM_GROUP_ID or community
+  // change would otherwise authorize admission to a chat the member never proved for.
+  const admitted = await ledger.admitIfLive(
+    userId,
+    () => ctx.api.approveChatJoinRequest(req.chat.id, req.from.id),
+    (rec) => String(rec.chatId) === String(GROUP_ID) && String(rec.contextHash) === String(CONTEXT_HASH),
+  );
+  if (admitted) return;
   // No grant, or one that has lapsed. Decline rather than leave the request pending, so a forwarded
   // link fails closed and visibly instead of waiting for an admin to notice it.
   await ctx.api.declineChatJoinRequest(req.chat.id, req.from.id);

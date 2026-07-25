@@ -101,12 +101,20 @@ async function register(a) {
   // Resolve the secret BEFORE proving, so a crash during the long proof cannot lose it, and so a
   // re-run reuses the secret an earlier attempt already committed to rather than minting a new one.
   const out = a["secret-out"] ?? defaultSecretPath({ platform: a.platform, community: a.community, role: a.role, season });
-  const existing = await resolveSecret(out);
+  const existing = await resolveSecret(out, { contextHash: ctx, season });
   if (existing.kind === "accepted") {
     console.error(
       `${out} holds an accepted registration for this season already (members-tree index ` +
         `${existing.record.index ?? "unknown"}). Registration is once per season, so there is nothing ` +
         `to do. Run the per-epoch prove with --secret ${out}.`,
+    );
+    process.exit(1);
+  }
+  if (existing.kind === "mismatch") {
+    console.error(
+      `${out} holds a secret for a different context or season (context ${existing.record.contextHash ?? "unknown"}, ` +
+        `season ${existing.record.season ?? "unknown"}). Reusing it would publish the same commitment in two ` +
+        `communities and link them. Pass --secret-out with a different path.`,
     );
     process.exit(1);
   }
@@ -166,7 +174,9 @@ async function prove(a) {
 
   // Secrets are named per (platform, community, role, season), so without an explicit --secret the
   // right one is the one recorded against this challenge's context.
-  const secretPath = a.secret ?? (await findSecretForContext(ch.contextHash));
+  // Season as well as context: after a rollover the directory holds an accepted secret per season for
+  // this community, and the older one is not in the current members tree.
+  const secretPath = a.secret ?? (await findSecretForContext(ch.contextHash, ch.season ?? null));
   if (!secretPath) {
     console.error(
       "no member secret found for this challenge's context. Run register first, or pass --secret <path>.",

@@ -6,7 +6,7 @@
   "license": "MIT",
   "author": "Hilawe Semunegus",
   "engines": {
-    "node": ">=20"
+    "node": ">=22.13"
   },
   "scripts": {
     "oracle": "node oracle/oracle.js",

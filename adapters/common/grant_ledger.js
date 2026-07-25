@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { writeFile, rename, mkdir } from "node:fs/promises";
+import { writeFile, rename, mkdir, open } from "node:fs/promises";
 import { dirname } from "node:path";
 
 // A persisted ledger of the access an adapter has granted, shared by every adapter that hands out
@@ -80,7 +80,28 @@ export class GrantLedger {
     await mkdir(dirname(this.file), { recursive: true });
     const tmp = `${this.file}.tmp`;
     await this.writeFileFn(tmp, JSON.stringify(Object.fromEntries(this.map), null, 2));
-    await rename(tmp, this.file); // atomic replace, so a crash mid-write cannot corrupt the ledger
+    // Rename alone is atomic but not durable: the whole point of persist-before-apply is that a grant
+    // recorded here survives the machine losing power right after access was applied. Without these
+    // flushes the record could still be in the page cache, the machine could come back with the old
+    // ledger, and the member's access would be live and untracked forever. Flush the file, then the
+    // rename, then the directory entry that makes the rename visible.
+    await this.#fsync(tmp);
+    await rename(tmp, this.file);
+    await this.#fsync(dirname(this.file));
+  }
+
+  // Best effort by design: a filesystem that cannot flush a directory handle is not a reason to
+  // refuse a grant, but everything that can be flushed is.
+  async #fsync(target) {
+    let fh;
+    try {
+      fh = await open(target, "r");
+      await fh.sync();
+    } catch {
+      // nothing to do, see above
+    } finally {
+      await fh?.close().catch(() => {});
+    }
   }
 
   // Serialize every grant and sweep operation, so no two mutate-and-persist sequences interleave. This
@@ -166,6 +187,25 @@ export class GrantLedger {
       });
     }
     return revoked;
+  }
+
+  // Decide admission and perform it INSIDE the serial queue, so a sweep cannot revoke and delete
+  // between the liveness check and the platform call. Without this the two ran unsynchronized: a
+  // handler could read a live grant, await the approval, and have the sweep delete the record while
+  // that call was in flight, leaving a member admitted with no record and therefore never swept
+  // again. If the grant expires while `admit` is running, the record still exists, so the next sweep
+  // removes them, which is the property that makes this safe rather than merely narrower.
+  //
+  // `matches` optionally checks the record against the caller's current target, so a record written
+  // for one chat or context cannot authorize admission to another.
+  async admitIfLive(userId, admit, matches = () => true) {
+    return this.#run(async () => {
+      const record = this.map.get(userId);
+      if (!record || this.now() >= record.expiresAt) return false;
+      if (!matches(record)) return false;
+      await admit(record);
+      return true;
+    });
   }
 
   has(userId) {

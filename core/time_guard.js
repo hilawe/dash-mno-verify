@@ -39,17 +39,35 @@ export class TimeGuard {
 
   #load() {
     if (!this.path) return;
+    let text;
+    try {
+      text = readFileSync(this.path, "utf8");
+    } catch (e) {
+      // Only "the file is not there" means a first run. A permission error or an unreadable file is
+      // the guard's own security state being unavailable, and seeding fresh marks there would silently
+      // disarm it: a gateway that had reached season 20 could restart into season 19 and rebuild that
+      // season's registrations. Fail closed instead and let the operator decide.
+      if (e.code === "ENOENT") return;
+      throw new Error(`cannot read the clock marks at ${this.path} (${e.message}). Fix or remove it.`);
+    }
     let raw;
     try {
-      raw = JSON.parse(readFileSync(this.path, "utf8"));
-    } catch {
-      return; // no marks yet, or unreadable; the first observation seeds them
+      raw = JSON.parse(text);
+    } catch (e) {
+      throw new Error(`clock marks at ${this.path} are not valid JSON (${e.message}). Fix or remove it.`);
+    }
+    if (raw === null || typeof raw !== "object") {
+      throw new Error(`clock marks at ${this.path} are malformed. Fix or remove it.`);
     }
     // Marks from a different epoch or season length describe a different numbering, so they are not
     // comparable. Start fresh rather than report a regression that never happened.
     if (raw?.epochSeconds !== this.epochSeconds || raw?.seasonSeconds !== this.seasonSeconds) return;
     if (Number.isInteger(raw.epoch)) this.marks.epoch = raw.epoch;
     if (Number.isInteger(raw.season)) this.marks.season = raw.season;
+    // A regression outlives the process. It was sticky in memory only, so a clock that caught up and
+    // a restart erased the evidence and the gateway silently resumed, which is precisely the case an
+    // operator needs to be told about.
+    if (raw.regression && typeof raw.regression === "object") this.regression = raw.regression;
   }
 
   #persist() {
@@ -59,6 +77,7 @@ export class TimeGuard {
       seasonSeconds: this.seasonSeconds,
       epoch: this.marks.epoch,
       season: this.marks.season,
+      regression: this.regression,
     });
     // Write and rename, so a crash mid-write cannot leave a truncated file that reads as "no marks"
     // and silently drops the guard.
@@ -78,7 +97,10 @@ export class TimeGuard {
       return value;
     }
     if (value < mark) {
-      this.regression ??= { kind, observed: value, mark, at: this.nowSec() };
+      if (this.regression == null) {
+        this.regression = { kind, observed: value, mark, at: this.nowSec() };
+        this.#persist(); // record it before serving anything, so a restart cannot clear it
+      }
     }
     return value;
   }

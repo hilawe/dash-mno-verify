@@ -9,6 +9,7 @@ import { randomUUID } from "node:crypto";
 import { proveInstructions } from "../../common/prover_instructions.js";
 import { RoomStateTracker, isPrivateDirectRoomState } from "./room_privacy.js";
 import { GrantLedger } from "../common/grant_ledger.js";
+import { contextHash } from "../../common/index.js";
 
 const HS = process.env.MATRIX_HOMESERVER; // e.g. https://matrix.org
 const TOKEN = process.env.MATRIX_ACCESS_TOKEN;
@@ -23,6 +24,9 @@ const COMMUNITY = process.env.MATRIX_COMMUNITY ?? GATED_ROOM;
 const ROLE = process.env.MATRIX_ROLE ?? "member";
 const LEDGER_FILE = process.env.MATRIX_GRANT_LEDGER ?? "data/matrix-grants.json";
 const SWEEP_SECONDS = Number(process.env.MATRIX_SWEEP_SECONDS ?? 60);
+// The room and proof context this bot admits for. Recorded on every grant, so a ledger reused after
+// MATRIX_GATED_ROOM or the community changed cannot authorize access to a room nobody proved for.
+const CONTEXT_HASH = contextHash({ platform: "matrix", communityId: COMMUNITY, roleId: ROLE }).toString();
 
 const api = (path, opts = {}) =>
   fetch(`${HS}/_matrix/client/v3${path}`, {
@@ -102,7 +106,11 @@ async function handle(roomId, sender, body, state) {
     return sendText(roomId, "Verification succeeded but the gateway did not say when access ends. Nothing was granted; try again.");
   }
   try {
-    await ledger.grant(sender, { expiresAt: out.expiresAt });
+    await ledger.grant(sender, {
+      expiresAt: out.expiresAt,
+      roomId: GATED_ROOM,
+      contextHash: CONTEXT_HASH,
+    });
   } catch (e) {
     console.error("[matrix] grant failed:", e.message);
     return sendText(roomId, "Verification succeeded but the invite could not be issued. Send !verify to try again.");
