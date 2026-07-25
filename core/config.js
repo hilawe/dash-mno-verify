@@ -154,9 +154,29 @@ export const config = {
   // With MNO_STORE=platform the records live on Dash Platform instead (the next step).
   registrationStorePath: process.env.MNO_REG_PATH ?? "data/registrations.jsonl",
 
-  // Where the spent-nullifier set lives. "memory" is a single gateway. "platform" shares it
-  // across gateways via the Dash Platform contract's unique index. See docs/PLATFORM.md.
-  store: process.env.MNO_STORE ?? "memory",
+  // Where the spent-nullifier set lives.
+  //   "sqlite"   (default) durable on one gateway, survives a restart mid-epoch.
+  //   "platform" shared across gateways via the Dash Platform contract's unique index.
+  //   "memory"   ephemeral, for local work only, and it must be asked for explicitly (see
+  //              allowEphemeralNullifiers) because a restart forgets every spend and lets one
+  //              voting key claim a second account inside the same epoch.
+  // See docs/PLATFORM.md.
+  store: process.env.MNO_STORE ?? "sqlite",
+
+  // The durable claim database for MNO_STORE=sqlite.
+  nullifierStorePath: process.env.MNO_NULLIFIER_PATH ?? "data/nullifiers.sqlite",
+
+  // How many past epochs of spent nullifiers to keep beyond the current one. The verifier only ever
+  // consults the epoch a challenge was minted for, so older rows are dead weight, but one past epoch
+  // is retained because a challenge minted just before a rollover is still verified against its own
+  // epoch. Keeping too much is harmless; keeping too little would forget a live spend, so this floors
+  // at 1 rather than trusting the environment.
+  nullifierRetainEpochs: Math.max(1, intEnv("MNO_NULLIFIER_RETAIN_EPOCHS", 1)),
+
+  // Opt in to the ephemeral in-memory spent set. The gateway refuses to start on "memory" without
+  // this, so a deployment cannot lose the one-membership-per-epoch guarantee by leaving a default
+  // in place. Local runs and tests set it deliberately.
+  allowEphemeralNullifiers: process.env.MNO_ALLOW_EPHEMERAL_NULLIFIERS === "1",
   platform: {
     network: process.env.MNO_PLATFORM_NETWORK ?? "testnet",
     mnemonic: process.env.MNO_PLATFORM_MNEMONIC,

@@ -112,9 +112,27 @@ if (twoTier && config.store === "platform") {
   );
 }
 
-// The per-epoch spent-nullifier set for the membership verify. Shared across gateways via the
-// Dash Platform contract when MNO_STORE=platform, otherwise in memory for a single gateway.
+// The per-epoch spent-nullifier set for the membership verify. Durable on one gateway by default
+// (sqlite), shared across gateways on Platform, or ephemeral in memory for local work only.
 // The per-season registration spend lives in the registration store, not here.
+//
+// The memory store is gated behind an explicit opt-in because losing it is not a cosmetic failure:
+// a restart mid-epoch forgets every spend, and the same voting key can then claim a second account
+// in the same epoch, which is precisely the "one voting key, one membership per epoch" guarantee the
+// system exists to provide. Failing closed here matches how the gateway already treats a missing
+// adapter secret and an unsigned oracle.
+if (!["sqlite", "memory", "platform"].includes(config.store)) {
+  throw new Error(`MNO_STORE must be one of sqlite, memory, or platform (got "${config.store}").`);
+}
+if (config.store === "memory" && !config.allowEphemeralNullifiers) {
+  throw new Error(
+    "MNO_STORE=memory keeps the spent-nullifier set in memory, so a restart mid-epoch forgets " +
+      "every spend and one voting key can claim a second account in the same epoch. Use the " +
+      "durable default (unset MNO_STORE, or MNO_STORE=sqlite), or set " +
+      "MNO_ALLOW_EPHEMERAL_NULLIFIERS=1 to accept that for local use.",
+  );
+}
+
 let nullifiers;
 if (config.store === "platform") {
   const { connectPlatform, DocumentNullifierStore } = await import("./platform_store.js");
@@ -126,8 +144,18 @@ if (config.store === "platform") {
   });
   nullifiers = new DocumentNullifierStore(backend);
   console.log(`[gateway] shared nullifier state on Dash Platform (${config.platform.contractId})`);
+} else if (config.store === "sqlite") {
+  const { SqliteNullifierStore } = await import("./nullifier_sqlite.js");
+  const { mkdirSync } = await import("node:fs");
+  const { dirname } = await import("node:path");
+  // 0700 on the directory is the real boundary: SQLite creates its own -wal and -shm siblings under
+  // the process umask, so restricting only the database file would leave recent writes readable.
+  mkdirSync(dirname(config.nullifierStorePath), { recursive: true, mode: 0o700 });
+  nullifiers = new SqliteNullifierStore(config.nullifierStorePath);
+  console.log(`[gateway] durable nullifier state at ${config.nullifierStorePath}`);
 } else {
   nullifiers = new NullifierStore();
+  console.warn("[gateway] EPHEMERAL nullifier state: a restart forgets every spend this epoch");
 }
 
 // The DML root window, fed by the oracle. One window holds both roots per snapshot (RootWindows), so
@@ -330,6 +358,25 @@ setInterval(() => challenges.sweep(), 60_000);
 setInterval(() => { challengeLimiter.sweep(); verifyLimiter.sweep(); registerLimiter.sweep(); membersLimiter.sweep(); }, 60_000);
 // Roll the members tree over at a season boundary even when no request arrives to trigger it.
 if (twoTier) setInterval(() => seasonMembers.ensure(seasonNow(config.seasonSeconds, nowSec())).catch(() => {}), 60_000);
+
+// Drop spent nullifiers from epochs that can no longer be verified against, so a long-lived gateway
+// does not grow without bound. Only a durable store implements prune; the in-memory one dies with
+// the process and the Platform one is not ours to sweep. The window is a correctness boundary, so it
+// keeps the current epoch and at least one past epoch (see config.nullifierRetainEpochs): pruning
+// the current epoch would forget live spends and reopen the double-claim hole this store closes.
+if (typeof nullifiers.prune === "function") {
+  const pruneClaims = () => {
+    try {
+      const cutoff = epochNow(config.epochSeconds, nowSec()) - config.nullifierRetainEpochs;
+      const { removed } = nullifiers.prune(cutoff);
+      if (removed) console.log(`[gateway] pruned ${removed} spent nullifiers older than epoch ${cutoff}`);
+    } catch (e) {
+      console.warn(`[gateway] nullifier prune failed: ${e.message}`);
+    }
+  };
+  pruneClaims();
+  setInterval(pruneClaims, 3600_000).unref();
+}
 
 function send(res, code, body) {
   res.writeHead(code, { "content-type": "application/json" });

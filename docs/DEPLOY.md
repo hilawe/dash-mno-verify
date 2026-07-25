@@ -150,7 +150,7 @@ key to use, and it never leaves your machine.
 ## The two decisions
 
 - `MNO_MODE`. Use `two-tier`. A member registers once a season with the heavy proof, then every epoch runs the cheap proof that works on small hardware, about sixty times faster per epoch than single-tier. `single` is simpler but every proof is the heavy one.
-- `MNO_STORE`. Use `memory` for one gateway. Use `platform` for several gateways that share one spent set through the Dash Platform contract, which needs a funded Platform identity. See `docs/PLATFORM.md`.
+- `MNO_STORE`. Leave it unset for one gateway, which gives the durable `sqlite` store (a local database at `MNO_NULLIFIER_PATH`, default `data/nullifiers.sqlite`) so a restart does not forget the epoch's spends. Use `platform` for several gateways that share one spent set through the Dash Platform contract, which needs a funded Platform identity. `memory` is local-only and refuses to start without `MNO_ALLOW_EPHEMERAL_NULLIFIERS=1`, because a restart on it lets one voting key claim a second account in the same epoch. See `docs/PLATFORM.md`.
 
 ## Keys, in one place
 

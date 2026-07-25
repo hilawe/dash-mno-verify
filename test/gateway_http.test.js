@@ -46,7 +46,9 @@ async function startGateway(extraEnv = {}) {
   // explicit unauthenticated and unsigned-oracle modes unless a case opts in via extraEnv. Drop any
   // MNO_ADAPTER_SECRET inherited from the shell, so a developer who exported one (per the docs) does
   // not flip the default test gateway into authenticated mode.
-  const env = { ...process.env, MNO_MODE: "single", MNO_STORE: "memory", MNO_ALLOW_UNAUTH_GATEWAY: "1", MNO_ALLOW_UNSIGNED_ORACLE: "1", MNO_GATEWAY_PORT: String(port), ...extraEnv };
+  // MNO_ALLOW_EPHEMERAL_NULLIFIERS is deliberate here: these tests want the in-memory spent set, and
+  // the gateway refuses "memory" without the opt-in so a deployment cannot land on it by default.
+  const env = { ...process.env, MNO_MODE: "single", MNO_STORE: "memory", MNO_ALLOW_EPHEMERAL_NULLIFIERS: "1", MNO_ALLOW_UNAUTH_GATEWAY: "1", MNO_ALLOW_UNSIGNED_ORACLE: "1", MNO_GATEWAY_PORT: String(port), ...extraEnv };
   if (!("MNO_ADAPTER_SECRET" in extraEnv)) delete env.MNO_ADAPTER_SECRET;
   const proc = spawn("node", ["core/gateway.js"], {
     cwd: REPO,
@@ -193,6 +195,19 @@ test("a non-canonical public signal is rejected before the proof verify", async 
 test("two-tier with the Platform store fails loud at boot, before any Platform connection", async () => {
   // The guard must reject this combination up front rather than fall back to a non-shared store.
   await assert.rejects(startGateway({ MNO_MODE: "two-tier", MNO_STORE: "platform" }), /not wired yet/);
+});
+
+test("the ephemeral nullifier store refuses to boot without an explicit opt-in", async () => {
+  // Losing the spent set on restart lets one voting key claim a second account in the same epoch,
+  // so "memory" has to be asked for, never defaulted into.
+  await assert.rejects(
+    startGateway({ MNO_STORE: "memory", MNO_ALLOW_EPHEMERAL_NULLIFIERS: "" }),
+    /MNO_ALLOW_EPHEMERAL_NULLIFIERS/,
+  );
+});
+
+test("an unknown nullifier store name fails at boot rather than falling back", async () => {
+  await assert.rejects(startGateway({ MNO_STORE: "postgres" }), /must be one of/);
 });
 
 test("a zkVM registration engine refuses to boot until the receipt verifier is wired", async () => {

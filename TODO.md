@@ -42,7 +42,24 @@ follow-up below.
 
 ## P0, durable per-epoch claims (2026-07-24 review round)
 
-- [ ] Durable nullifier and claim storage. The only bootable two-tier configuration (and default
+- [x] Durable nullifier and claim storage. DONE for the single-gateway case. `SqliteNullifierStore`
+  (`core/nullifier_sqlite.js`, on the Node standard library's `node:sqlite`, so no npm dependency and
+  no native build) is now the default `MNO_STORE=sqlite`, keyed `(epoch, context, nf)` with an atomic
+  `INSERT ... ON CONFLICT DO NOTHING` as the authority and `synchronous=FULL` so a spend is on disk
+  before the caller is told it succeeded. It satisfies the shared store contract, so the verifier is
+  unchanged (its `add` already resolved races by re-reading the prior claim). `MNO_STORE=memory` now
+  refuses to boot without `MNO_ALLOW_EPHEMERAL_NULLIFIERS=1`, and an unknown store name fails at boot
+  instead of falling back. Pruning is wired hourly and keeps the current epoch plus
+  `MNO_NULLIFIER_RETAIN_EPOCHS` past ones (floored at 1, because a challenge minted just before a
+  rollover is still verified against its own epoch), which closes the unbounded-growth finding. The
+  database is 0600 inside a 0700 directory, since it pairs platform accounts with claimed nullifiers.
+  The false "memory is fine for one gateway" claims in `docs/PLATFORM.md` and `docs/DEPLOY.md` are
+  corrected. 202 tests green, including reopen durability, race-single-winner, prune-window safety,
+  and the two boot guards. REMAINING, tracked separately: the account is stored as given rather than
+  as a keyed HMAC commitment (the reviewers' suggestion), which is the same work as the P1
+  privacy-preserving claim item below and should be done once for both stores; and the multi-gateway
+  case still needs the shared Platform backend.
+- [ ] (superseded, kept for the design record) Durable nullifier and claim storage. The only bootable two-tier configuration (and default
   single-tier) keeps the per-epoch spent-nullifier set in a process-local `Map`
   (`NullifierStore`, `core/stores.js`), so a gateway restart mid-epoch drops every spend and the
   same member secret can claim a second account in the same epoch, breaking one-membership-per-

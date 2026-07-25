@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { NullifierStore } from "../core/stores.js";
+import { SqliteNullifierStore } from "../core/nullifier_sqlite.js";
 import { DocumentNullifierStore, MemoryBackend } from "../core/platform_store.js";
 
 // Every nullifier (claim) store the verifier accepts must satisfy one contract, so a future store
@@ -12,6 +13,7 @@ import { DocumentNullifierStore, MemoryBackend } from "../core/platform_store.js
 
 const stores = [
   ["NullifierStore", () => new NullifierStore(), { persistsAccount: true }],
+  ["SqliteNullifierStore(:memory:)", () => new SqliteNullifierStore(":memory:"), { persistsAccount: true }],
   ["DocumentNullifierStore(MemoryBackend)", () => new DocumentNullifierStore(new MemoryBackend()), { persistsAccount: false }],
 ];
 

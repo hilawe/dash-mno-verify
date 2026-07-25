@@ -1,8 +1,12 @@
 # Sharing state across gateways with Dash Platform
 
-A single gateway keeps its spent-nullifier set in memory, which is fine on its own. If you
-run several gateways for the same community, they each need to see the same spent set, or
-the same proof could be used to gain access twice. Dash Platform is the natural shared
+A single gateway keeps its spent-nullifier set in a local SQLite database (`MNO_STORE=sqlite`,
+the default), so a restart does not forget the epoch's spends. The older in-memory store is
+still available as `MNO_STORE=memory`, but it now requires `MNO_ALLOW_EPHEMERAL_NULLIFIERS=1`
+and is for local work only: losing the spent set on a restart lets one voting key claim a
+second account inside the same epoch. If you run several gateways for the same community,
+a local database is not enough either, because they each need to see the same spent set, or
+the same voting key could gain access twice. Dash Platform is the natural shared
 ledger for this, because the contract's `nullifier` document type carries a unique index on
 (epoch, contextHash, nf). Platform consensus rejects a second insert of the same tag, so two
 gateways cannot double-grant even under a race.
