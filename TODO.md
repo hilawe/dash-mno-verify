@@ -98,13 +98,25 @@ follow-up below.
   monotonic process clock for challenge TTL and rate-limit intervals, and on restart compare wall
   time against a persisted last-observed time with a small tolerance. (`common/index.js`,
   `core/season.js`, `core/gateway.js`, `core/stores.js`)
-- [ ] Members-tree capacity check before the durable append (2026-07-24 round). `SeasonMembers.commit`
-  writes the durable record before `tree.append`, and `MembersTree.append` has no `2**16` guard, so
-  registration 65,537 persists durably then fails root construction on every reopen of the context,
-  violating the every-durable-record-materializes invariant. Unlikely at the current DML size, still
-  wrong. Fix at two layers: check `tree.size() < 2 ** TREE_DEPTH` inside the serialized commit before
-  `appendDurable`, and enforce the same per-bucket cap inside the registration store. Test
-  exactly-at-capacity accept and capacity-plus-one reject at a small parameterized depth.
+- [ ] Members-tree capacity check before the durable append (2026-07-24 round, found independently by
+  two reviewers; the mechanism below is from tracing the code, and is worse than either described).
+  `SeasonMembers.commit` writes the durable record before `tree.append`, and `MembersTree.append` has
+  no `2**16` guard. Past capacity the zero-padding loop in `levels()` is skipped, and the failure then
+  splits by how far past capacity the bucket is:
+  - Odd overflow (the common case, 65,537): the pairwise reduction reaches `poseidon([x, undefined])`
+    and throws `TypeError: Cannot convert undefined to a BigInt`. It fails closed, but the durable
+    record is already written, so that (season, context) can never be materialized again.
+  - Exact power-of-two overflow (131,072): every level length stays even, so `levels()` builds a
+    17-level tree with NO error. `root()` returns the depth-17 root while `pathFor` walks only
+    `TREE_DEPTH` levels and returns a path to an intermediate node, so the published root is
+    unreachable by any path a prover can build and every proof silently fails verification. This
+    silent-failure path is the more dangerous of the two.
+  Far beyond the current DML size (a few thousand), so exploitability is low, but it violates the
+  every-durable-record-materializes invariant and the fix is small. Fix at two layers: check
+  `tree.size() < 2 ** TREE_DEPTH` inside the serialized commit BEFORE `appendDurable`, and enforce the
+  same per-bucket cap inside the registration store so another caller cannot bypass it. Test
+  exactly-at-capacity accept and capacity-plus-one reject at a small parameterized depth, and assert
+  the power-of-two case cannot publish a deeper-than-TREE_DEPTH root.
   (`core/season.js`, `core/members_tree.js`, `core/registration_store.js`)
 - [ ] Telegram and Matrix grant lifecycle (2026-07-24 round). Only Discord enforces epoch expiry
   (durable ledger plus sweep). Telegram converts the account-bound verification into a transferable
