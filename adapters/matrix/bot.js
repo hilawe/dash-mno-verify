@@ -188,7 +188,14 @@ async function reconcileRoom() {
     const who = ev.state_key;
     if (!who || who === USER_ID) continue; // never remove the bot itself
     if (!["join", "invite"].includes(ev.content?.membership)) continue;
-    if (ledger.live(who)) continue;
+    // Liveness alone is not authorization for THIS room. After the operator points the bot at a new
+    // room or changes the community, records from the old target are still live, and treating them as
+    // a reason to keep someone would leave them in a room they never proved for. Telegram applies the
+    // same match on its admission path.
+    const rec = ledger.get(who);
+    const authorized =
+      rec && ledger.live(who) && String(rec.roomId) === String(GATED_ROOM) && String(rec.contextHash) === String(CONTEXT_HASH);
+    if (authorized) continue;
     const kick = await api(`/rooms/${encodeURIComponent(GATED_ROOM)}/kick`, {
       method: "POST",
       body: JSON.stringify({ user_id: who, reason: "re-verify to regain access" }),

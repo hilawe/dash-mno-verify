@@ -18,6 +18,8 @@ import { dirname } from "node:path";
 export class GrantLedger {
   #serial = Promise.resolve();
   #saveSeq = 0;
+  #persistedMark = null;
+  #persistedRegression = null;
 
   // `validate` decides whether a record is well formed, and `orphaned(prev, next)` returns the part
   // of a prior grant a renewal does not carry forward (so it can be revoked before the new grant is
@@ -54,6 +56,7 @@ export class GrantLedger {
     // async path happened to observe one, and admit on the strength of it in the meantime. The flag
     // is persisted by the next write; detecting it at startup is what has to be immediate.
     this.#observeClock();
+    this.#persistIfMoved();
   }
 
   // Only a missing file means an empty ledger (first run). A corrupt, unreadable, or malformed file is
@@ -81,9 +84,11 @@ export class GrantLedger {
       grants = obj.grants;
       const mark = Number(obj.meta?.clockMark);
       if (Number.isFinite(mark)) this.clockMark = mark;
+      this.#persistedMark = this.clockMark;
       // Sticky across restarts, exactly as the gateway's guard is. Held only in memory, a temporary
       // glitch plus any failed revoke plus a restart would quietly re-admit expired members.
       if (obj.meta?.clockRegressed) this.clockRegressed = obj.meta.clockRegressed;
+      this.#persistedRegression = this.clockRegressed;
     }
     const map = new Map();
     for (const [userId, r] of Object.entries(grants)) {
@@ -121,6 +126,8 @@ export class GrantLedger {
     await this.#fsyncFile(tmp);
     await rename(tmp, this.file);
     await this.#fsyncDirBestEffort(dirname(this.file));
+    this.#persistedMark = this.clockMark;
+    this.#persistedRegression = this.clockRegressed;
   }
 
   // Flushing the FILE is part of the persist-before-apply guarantee, so a failure there fails the
@@ -179,7 +186,14 @@ export class GrantLedger {
       // Refuse a deadline that has already passed. Near an epoch boundary a slow queue or a slow
       // platform call could otherwise apply access that is expired the moment it is granted, and it
       // would then sit live until the next sweep, up to a full sweep interval later.
-      if (this.#effectiveNow() >= record.expiresAt) {
+      // Deliberately the unfloored clock. The gateway owns this deadline and issued it against ITS
+      // clock; the floor exists to stop a rolled-back adapter clock reviving an EXISTING grant. Using
+      // the floor here would mean a forward clock glitch, once recorded, rejected every new grant
+      // until wall time caught up to the inflated mark, which is an outage lasting as long as the
+      // jump. A grant accepted under a rolled-back clock is not a hole either: sweep and admitIfLive
+      // judge it against the floor and remove it.
+      if (this.now() >= record.expiresAt) {
+        this.#persistIfMoved(); // this path never reaches the map write, so persist the observation
         throw new Error(`refusing to grant ${userId} access that has already expired`);
       }
       const prev = this.map.get(userId);
@@ -222,25 +236,30 @@ export class GrantLedger {
   // notify them. The live record is re-checked inside the serialized operation, so a member who re-verified
   // during the sweep keeps their fresh access.
   async sweep() {
-    // Sweeping against the effective clock, so a rolled-back wall clock neither hides work that is
-    // due nor manufactures work that is not. Revoking everything on any regression was the earlier
-    // behaviour and it turned a one-second correction into a mass revocation. The observation runs
-    // inside the queue like every other write, so its save cannot race another one.
-    // Everything up to enqueuing the revocations stays SYNCHRONOUS. Awaiting here would yield the
-    // event loop and let a concurrent re-verification queue ahead of the revocations, so a stale
-    // revoke could land on top of freshly granted access. The metadata save is enqueued rather than
-    // awaited, which keeps it ordered without giving up that guarantee.
-    if (this.#observeClock()) {
-      this.#run(() => this.#save()).catch((e) => this.log(`could not persist the clock mark: ${e.message}`));
-    }
-    const t = this.#effectiveNow();
+    // Three properties have to hold together here, and each one cost a round to learn.
+    //   Judge against the floored clock, so a rolled-back wall clock neither hides work that is due
+    //   nor manufactures work that is not. Revoking everything on any regression was an earlier cut,
+    //   and it turned a one-second correction into a mass revocation.
+    //   Observe INSIDE the queue. Mutating the mark synchronously here stole the advance from an
+    //   admission already queued ahead of us, which then saw nothing to persist and admitted against
+    //   a mark that existed only in memory.
+    //   Stay synchronous up to enqueuing the revocations. Awaiting would yield the event loop and let
+    //   a concurrent re-verification queue ahead of them, so a stale revoke could land on freshly
+    //   granted access.
+    this.#run(async () => {
+      this.#observeClock();
+      if (this.#clockStateDiffers()) await this.#save();
+    }).catch((e) => this.log(`could not persist the clock mark: ${e.message}`));
+    // A pure read for deciding what is due, so this stays synchronous and the revocations below are
+    // enqueued before any concurrent re-verification can slip ahead of them.
+    const t = this.#peekEffective();
     const due = [...this.map].filter(([, r]) => t >= r.expiresAt).map(([u]) => u);
     const revoked = [];
     for (const userId of due) {
       await this.#run(async () => {
         const live = this.map.get(userId);
         if (!live) return;
-        if (this.#effectiveNow() < live.expiresAt) return; // re-verified meanwhile, leave it alone
+        if (this.#peekEffective() < live.expiresAt) return; // re-verified meanwhile, leave it alone
         try {
           await this.revoke(userId, live);
         } catch (e) {
@@ -287,14 +306,37 @@ export class GrantLedger {
   // time never moves backwards for expiry purposes, so nothing revives and nothing is mass-revoked.
   // A forward jump that is later corrected leaves the mark high, which expires grants early, the
   // conservative direction.
-  // Observing here as well as in the async paths is deliberate. An earlier cut made this read-only
-  // so that no observation could go unpersisted, and that was wrong in a worse way: the mark then
-  // never advanced on a plain liveness check, so the floor stayed stale and a rollback past it DID
-  // revive an expired grant. The mark advances on every read, and grant, admitIfLive and sweep write
-  // it down. A mark advance seen only by a read and then lost to a crash falls back to an older,
-  // lower floor, which is the same position as never having observed it.
+  // The mark advances on every read, because a floor that only moved on writes went stale and a
+  // rollback past it revived expired grants. Every observing path then calls #persistIfMoved, because
+  // an advance is EVIDENCE: once a grant has been treated as expired under a high mark, losing that
+  // mark to a crash is NOT the same as never having observed it, since the record is still there to
+  // be revived under a lower floor. An earlier comment here claimed otherwise and was wrong.
   #effectiveNow() {
     this.#observeClock();
+    return this.#peekEffective();
+  }
+
+  // The same floor WITHOUT observing. Used where the caller must not mutate shared state, so a
+  // synchronous read cannot quietly advance the mark out from under a queued operation that was
+  // about to persist it.
+  // Write the mark down if it has moved away from what is on disk. Every path that OBSERVES the
+  // clock must reach this, not just the ones that happen to mutate a grant: an advance that stayed in
+  // memory and was then lost to a crash let a later correction fall back to a lower floor and revive
+  // a grant that had already been treated as expired. Enqueued rather than awaited, because the
+  // observing paths here are synchronous reports; the one path that ADMITS on the strength of the
+  // floor awaits its save explicitly before deciding.
+  #persistIfMoved() {
+    if (!this.#clockStateDiffers()) return;
+    this.#run(() => this.#save()).catch((e) => this.log(`could not persist the clock mark: ${e.message}`));
+  }
+
+  // A regression sets the flag WITHOUT moving the mark, so comparing marks alone would never write it
+  // down and a restart would forget that it happened.
+  #clockStateDiffers() {
+    return this.clockMark !== this.#persistedMark || Boolean(this.clockRegressed) !== Boolean(this.#persistedRegression);
+  }
+
+  #peekEffective() {
     const t = this.now();
     return this.clockMark == null ? t : Math.max(t, this.clockMark);
   }
@@ -311,8 +353,13 @@ export class GrantLedger {
   async admitIfLive(userId, admit, matches = () => true) {
     return this.#run(async () => {
       const record = this.map.get(userId);
-      if (this.#observeClock()) await this.#save(); // durable before any admission decision rests on it
-      const t = this.#effectiveNow();
+      // Persist if the in-memory mark differs from what is on disk, rather than only when THIS call
+      // advanced it. Another synchronous read may have advanced it already, and admitting on the
+      // strength of an advance that was never written would leave a restart comparing against an
+      // older floor, which is the rollback hole this guard exists to close.
+      this.#observeClock();
+      if (this.#clockStateDiffers()) await this.#save();
+      const t = this.#peekEffective();
       if (!record || t >= record.expiresAt) return false;
       if (!matches(record)) return false;
       await admit(record);
@@ -333,7 +380,9 @@ export class GrantLedger {
   // observes and persists the clock first; this one only reports.
   live(userId) {
     const r = this.map.get(userId);
-    return Boolean(r) && this.#effectiveNow() < r.expiresAt;
+    const t = this.#effectiveNow();
+    this.#persistIfMoved();
+    return Boolean(r) && t < r.expiresAt;
   }
 
   // Reported for the operator, not used to gate access: the effective clock already prevents a
