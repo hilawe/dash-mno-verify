@@ -5,7 +5,48 @@ counts and supersedes everything below it. Historical sections are append-only a
 only marked superseded. Read this first when picking the project back up, then `TODO.md` for the full
 prioritized punch list.
 
-## CURRENT STATE, 2026-07-25
+## CURRENT STATE, 2026-07-25 (late session, round 4)
+
+### Read this first
+
+A FOURTH review round ran after the section below was written, and its fold is the newest state.
+`main` is now past `04144c1`, 263 tests green.
+
+Round 4 was a full-repo-access review deliberately aimed at what no earlier round had read, namely
+the code that changed after the round-3 packets were built plus the modules never packaged at all.
+It returned ten findings and, unlike every earlier round, no false positives. Seven were in the
+never-reviewed set, which is the finding about the process as much as about the code.
+
+All nine actionable findings are folded and each was verified against the code first. The tenth
+(`membersRoot` not context-scoped) was already recorded in the P1.5 Platform schema item and needed
+nothing. `TODO.md` now has the "P1, from the 2026-07-25 review rounds" section that the previous
+handoff pointed at but that had never been written, carrying both the five round-3 leftovers and the
+round-4 residuals.
+
+The one that matters most: the two-tier prove command shown to members named
+`--secret member.secret.json`, a file registration has never created, and passing an explicit
+`--secret` switches the prover out of the context lookup that would have found the real one. That
+path had presumably never worked for anyone following the instructions, and the same wrong command
+was in three docs. Three deep rounds missed it because they were all looking at concurrency. The
+replacement test cross-checks any named path against `defaultSecretPath`, so the flag cannot come
+back in a form registration does not produce.
+
+Also folded: the grant rejection now persists the clock it refused against before returning (its test
+fails against the old code, verified by reverting); Matrix and Telegram act on the target recorded in
+each grant rather than whatever is currently configured, with orphan revocation on a target change;
+the Telegram reconciliation gate prints a recovery command that actually satisfies the gate, verified
+by round-tripping it; the Discord interaction handler no longer ends the process on a transient
+gateway failure; the oracle has read timeouts and publishes atomically; and the web adapter drops
+lapsed sessions and bounds its request body properly.
+
+Two things to carry forward. The `dash-cli` buffer raise is reasoning from the 1 MB default, not an
+observed failure, so it wants one run against a real node. And Matrix and Telegram now refuse to load
+a ledger record with no room or chat id, which is a breaking upgrade for any existing deployment.
+
+The recommended next step is unchanged and now has four rounds behind it: move adapter grant state to
+SQLite instead of patching the file-and-queue machinery again.
+
+## CURRENT STATE, 2026-07-25 (earlier session, superseded above for anything that conflicts)
 
 ### What this is
 

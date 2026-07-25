@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -273,4 +273,84 @@ test("admission requires the record to match the current target", async () => {
     const ok = await ledger.admitIfLive("u1", async () => {}, (rec) => rec.chatId === "-100new");
     assert.equal(ok, false, "a grant issued for another chat must not admit here");
   });
+});
+
+// The rejection path in grant() is a decision made on the strength of the clock, so the advanced
+// high-water mark has to be on disk before the caller hears about it. It used to only ENQUEUE that
+// write, behind the very operation that was throwing, so the rejection always won the race. A crash
+// in that window lost the observation, and a later backward correction let an existing grant that was
+// already past its deadline read as live again.
+test("a refused grant persists the clock it refused against before it returns", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mno-grant-"));
+  const file = join(dir, "grants.json");
+  try {
+    const clock = { t: 1000 };
+    const first = new GrantLedger({ file, apply: async () => {}, revoke: async () => {}, now: () => clock.t });
+    await first.grant("u1", { expiresAt: 2500 });
+
+    // Time moves well past that grant, and a late renewal arrives carrying a deadline already gone.
+    clock.t = 3000;
+    await assert.rejects(first.grant("u1", { expiresAt: 2900 }), /already expired/);
+
+    // Read the file as it stands the instant the rejection returned. Before the fix this was 1000.
+    const onDisk = JSON.parse(readFileSync(file, "utf8"));
+    assert.equal(onDisk.meta.clockMark, 3000, "the observation must be durable before the caller is told");
+
+    // And the point of it: a restart with a corrected, lower clock must not revive the old grant.
+    const second = new GrantLedger({ file, apply: async () => {}, revoke: async () => {}, now: () => 2000 });
+    assert.equal(second.live("u1"), false, "an expired grant must not come back under a rolled-back clock");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Matrix and Telegram act on the target named in the record. Reading the module-level room or chat id
+// meant that after an operator repointed the bot, a sweep removed the member from the NEW target and
+// deleted the record, so their access to the OLD one became permanent with nothing left to revoke it.
+test("a sweep revokes against the target the grant recorded, not the one now configured", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mno-grant-"));
+  try {
+    const calls = [];
+    const clock = { t: 1000 };
+    const ledger = new GrantLedger({
+      file: join(dir, "grants.json"),
+      apply: async () => {},
+      revoke: async (id, r) => calls.push([id, r.roomId]),
+      validate: (r) => Boolean(r) && Number.isFinite(r.expiresAt) && Boolean(r.roomId),
+      orphaned: (prev, next) => (String(prev.roomId) === String(next.roomId) ? null : prev),
+      now: () => clock.t,
+    });
+    await ledger.grant("u1", { expiresAt: 2000, roomId: "!old:hs" });
+    clock.t = 2000;
+    assert.deepEqual(await ledger.sweep(), ["u1"]);
+    assert.deepEqual(calls, [["u1", "!old:hs"]], "the old room is what gets revoked");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a renewal onto a different target revokes the old one before granting the new", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mno-grant-"));
+  try {
+    const revoked = [];
+    const applied = [];
+    const ledger = new GrantLedger({
+      file: join(dir, "grants.json"),
+      apply: async (id, r) => applied.push(r.roomId),
+      revoke: async (id, r) => revoked.push(r.roomId),
+      validate: (r) => Boolean(r) && Number.isFinite(r.expiresAt) && Boolean(r.roomId),
+      orphaned: (prev, next) => (String(prev.roomId) === String(next.roomId) ? null : prev),
+      now: () => 1000,
+    });
+    await ledger.grant("u1", { expiresAt: 2000, roomId: "!old:hs" });
+    await ledger.grant("u1", { expiresAt: 2000, roomId: "!new:hs" });
+    assert.deepEqual(revoked, ["!old:hs"], "the orphaned room must not be left live and untracked");
+    assert.deepEqual(applied, ["!old:hs", "!new:hs"]);
+
+    // A renewal that stays put carries forward and revokes nothing.
+    await ledger.grant("u1", { expiresAt: 2400, roomId: "!new:hs" });
+    assert.deepEqual(revoked, ["!old:hs"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

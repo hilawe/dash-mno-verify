@@ -40,6 +40,32 @@ test("a pending secret is created 0600 and flushed", async () => {
   });
 });
 
+// The directory flush is what makes a brand-new secret FINDABLE after a power loss. Losing it costs
+// the member the season, because the gateway has already spent the seasonal registration nullifier
+// and holds only the commitment. So on creation a real failure has to stop the run before the proof
+// is spent, while a filesystem that simply cannot flush a directory handle stays usable. The earlier
+// test asserted the mode and contents only, and would have passed with the flush failing silently.
+test("creating a pending secret fails the run when the directory flush genuinely fails", async () => {
+  await withDir(async (dir) => {
+    const p = join(dir, "m.secret.json");
+    const openFn = async () => {
+      throw Object.assign(new Error("simulated device failure"), { code: "EIO" });
+    };
+    await assert.rejects(writePendingSecret(p, { secret: "123" }, { openFn }), /simulated device failure/);
+  });
+});
+
+test("creating a pending secret survives a filesystem that cannot flush a directory", async () => {
+  await withDir(async (dir) => {
+    const p = join(dir, "m.secret.json");
+    const openFn = async () => {
+      throw Object.assign(new Error("not supported here"), { code: "EINVAL" });
+    };
+    await writePendingSecret(p, { secret: "123" }, { openFn });
+    assert.equal((await readSecretFile(p)).secret, "123", "the secret must still be written");
+  });
+});
+
 test("an existing secret is never overwritten", async () => {
   await withDir(async (dir) => {
     const p = join(dir, "m.secret.json");

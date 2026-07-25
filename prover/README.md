@@ -38,15 +38,20 @@ on a Pi:
 ```bash
 npm run prove-epoch -- \
   --gateway http://your-gateway:8787 \
-  --platform discord --community <guildId> --role <roleId> \
-  --secret member.secret.json
+  --platform discord --community <guildId> --role <roleId>
 ```
 
 It fetches a challenge and the members tree from the gateway, builds the membership proof,
 and submits it. On success the gateway grants access for the epoch.
 
-Keep `member.secret.json` private. It is the only thing that proves your membership for the
-season, and it is gitignored for that reason.
+Note there is no `--secret`. Registration names your secret per platform, community, role, and
+season, so the prover finds the right one from the challenge's own context rather than making you
+remember which file goes with which community. Pass `--secret <path>` only if you keep the file
+somewhere else, and be aware that doing so turns the lookup off, so after a season rollover you
+would be pointing at last season's secret.
+
+Keep the secret file private. It is the only thing that proves your membership for the
+season, and `*.secret.json` is gitignored for that reason.
 
 ## Two encodings that must match the circuit
 

@@ -151,7 +151,26 @@ async function registerCommands() {
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
-client.on("interactionCreate", async (i) => {
+// Every failure inside the handler has to be caught here. discord.js does not look at the promise an
+// async listener returns, so anything that rejects below (an unreachable gateway, a 502 that is not
+// JSON, a Discord API error) became an unhandled rejection, and Node ends the process on those by
+// default. One transient blip on a dependency therefore locked every member out until a supervisor
+// restarted the bot. Report it to the member instead and stay up.
+client.on("interactionCreate", (i) => {
+  handleInteraction(i).catch(async (e) => {
+    console.error("[discord] interaction failed:", e.message);
+    // Best effort: the interaction may already have been answered, or its token may have expired.
+    const note = "Something went wrong talking to the verification service. Try `/verify` again shortly.";
+    try {
+      if (i.deferred || i.replied) await i.editReply(note);
+      else await i.reply({ content: note, flags: MessageFlags.Ephemeral });
+    } catch (replyErr) {
+      console.error("[discord] could not tell the member about it:", replyErr.message);
+    }
+  });
+});
+
+async function handleInteraction(i) {
   if (!i.isChatInputCommand()) return;
 
   if (i.commandName === "verify") {
@@ -219,7 +238,7 @@ client.on("interactionCreate", async (i) => {
     const where = GRANT_MODE === "channel" ? "access to the masternode channel" : "the masternode role";
     return i.editReply(`Verified. You have ${where} for this epoch (until ${until} UTC). Run \`/verify\` again after it rolls over to keep access.`);
   }
-});
+}
 
 client.once("ready", async () => {
   console.log(`[discord] logged in as ${client.user.tag}, grant mode ${GRANT_MODE}`);

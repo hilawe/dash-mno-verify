@@ -135,7 +135,7 @@ bash scripts/fetch_keys.sh         # downloads and checksum-verifies the members
 npm run register -- --gateway https://the-gateway --platform discord --community <id> --role <id> --voting-key-file key.wif
 
 # every epoch, the cheap proof, fine on a Raspberry Pi. The adapter gave you challenge.json.
-npm run prove-epoch -- --gateway https://the-gateway --challenge challenge.json --secret member.secret.json
+npm run prove-epoch -- --gateway https://the-gateway --challenge challenge.json
 # then submit the resulting proof.json back through the adapter (it calls /v1/verify with the token).
 ```
 

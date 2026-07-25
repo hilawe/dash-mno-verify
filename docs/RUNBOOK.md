@@ -80,7 +80,7 @@ bash scripts/fetch_keys.sh --large    # the 2.3 GB keys, if you host them (see b
 ```
 
 - Once a season, on the node: `npm run register -- --gateway https://your-gateway --platform discord --community <guild id> --role mn-members --voting-key-file key.wif`. This needs the 2.3 GB registration key.
-- Every epoch, in Discord: `/verify` gives a challenge, the member runs `npm run prove-epoch -- --gateway https://your-gateway --challenge challenge.json --secret member.secret.json` on the node, and `/submit` hands the resulting `proof.json` back. The bot adds them to the channel.
+- Every epoch, in Discord: `/verify` gives a challenge, the member runs `npm run prove-epoch -- --gateway https://your-gateway --challenge challenge.json` on the node, and `/submit` hands the resulting `proof.json` back. The bot adds them to the channel.
 
 To make the 2.3 GB a download instead of a rebuild, host each large key once on object storage or IPFS and fill in its `url` and `sha256` under `largeFiles` in `keys.manifest.json`, then members get it with `fetch_keys.sh --large`. PLONK setup is deterministic, so the rebuilt key is byte-identical and its checksum is stable. See `docs/PROVING_KEY.md`.
 

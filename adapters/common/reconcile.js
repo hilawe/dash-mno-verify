@@ -47,19 +47,36 @@ export async function markReconciled(markerPath, detail = {}) {
   await rename(tmp, markerPath);
 }
 
-// Call at startup. `ledgerSize` is how many grants the ledger already holds: a ledger with records is
-// one this lifecycle has been running against, so it needs no gate. A fresh ledger on a platform that
-// may already have members is the case that must stop.
-export async function requireReconciled({ platform, markerPath, ledgerSize, instructions, target = null }) {
-  if (ledgerSize > 0) return;
+// A single-quoted JavaScript string literal, for building the recovery command below. The command is
+// printed inside a double-quoted shell argument, so it must introduce no double quotes of its own,
+// which rules out JSON.stringify. Values here come from the operator's own configuration, but a
+// group id carrying a quote would otherwise produce a command that silently will not parse.
+const jsLiteral = (v) => `'${String(v).replace(/\\/g, "\\\\").replace(/'/g, "\\'")}'`;
+
+// Call at startup. `ledgerCovers` says whether the ledger already holds a grant FOR THIS TARGET: such
+// a ledger belongs to a lifecycle that has been running against this room or group, so it needs no
+// gate. It deliberately is not a plain record count. A ledger full of records for a previous target
+// says nothing about the members of the one now configured, and letting a non-empty ledger satisfy
+// the gate meant pointing the bot at an existing second group skipped reconciliation entirely, so
+// that group's current members kept access permanently and invisibly.
+export async function requireReconciled({ platform, markerPath, ledgerCovers, instructions, target = null }) {
+  // The marker is checked FIRST and is target-scoped, so a correctly recorded reconciliation always
+  // passes regardless of what the ledger holds.
   if (await reconciliationDone(markerPath, target)) return;
+  if (ledgerCovers) return;
+  // The printed command has to record the target, because reconciliationDone compares it. Without it
+  // the operator ran exactly what this error told them to run, wrote a marker with no target, and hit
+  // the same refusal on the next start with no way through. Telegram cannot self-reconcile, so this
+  // command is its only path.
+  const detail = `{ by: 'operator'${target == null ? "" : `, target: ${jsLiteral(target)}`} }`;
   throw new Error(
-    `refusing to start: ${platform} has no grant records yet, so this adapter cannot tell which ` +
-      `current members it granted access to. Members admitted before the expiry lifecycle existed ` +
-      `would keep access permanently and invisibly, because the sweep only looks at the ledger.\n\n` +
+    `refusing to start: ${platform} has no grant records for ${target ?? "this target"} yet, so this ` +
+      `adapter cannot tell which current members it granted access to. Members admitted before the ` +
+      `expiry lifecycle existed would keep access permanently and invisibly, because the sweep only ` +
+      `looks at the ledger.\n\n` +
       `${instructions}\n\n` +
       `Then record that it is done:\n` +
-      `  node -e "import('./adapters/common/reconcile.js').then(m => m.markReconciled('${markerPath}', { by: 'operator' }))"\n\n` +
+      `  node -e "import('./adapters/common/reconcile.js').then(m => m.markReconciled(${jsLiteral(markerPath)}, ${detail}))"\n\n` +
       `A brand new group or room with no members yet is already in a closed state, so recording the ` +
       `marker straight away is the correct action there.`,
   );

@@ -138,8 +138,13 @@ const ledger = new GrantLedger({
   file: LEDGER_FILE,
   resetClock: process.env.MATRIX_RESET_CLOCK === "1",
   log: (m) => console.error("[matrix]", m),
-  apply: async (userId) => {
-    const res = await api(`/rooms/${encodeURIComponent(GATED_ROOM)}/invite`, {
+  // Both act on the room named in the RECORD, never on whatever MATRIX_GATED_ROOM currently says.
+  // Reading the module-level value meant a sweep after the operator repointed the bot kicked the
+  // member from the NEW room and then deleted the record, so their membership of the old room became
+  // permanent and invisible, with nothing left to revoke it from.
+  apply: async (userId, record) => {
+    const room = record.roomId;
+    const res = await api(`/rooms/${encodeURIComponent(room)}/invite`, {
       method: "POST",
       body: JSON.stringify({ user_id: userId }),
     });
@@ -147,11 +152,12 @@ const ledger = new GrantLedger({
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
       if (body?.errcode === "M_FORBIDDEN" && /already in the room/i.test(body?.error ?? "")) return;
-      throw new Error(`invite failed (${res.status} ${body?.errcode ?? ""})`);
+      throw new Error(`invite to ${room} failed (${res.status} ${body?.errcode ?? ""})`);
     }
   },
-  revoke: async (userId) => {
-    const res = await api(`/rooms/${encodeURIComponent(GATED_ROOM)}/kick`, {
+  revoke: async (userId, record) => {
+    const room = record.roomId;
+    const res = await api(`/rooms/${encodeURIComponent(room)}/kick`, {
       method: "POST",
       body: JSON.stringify({ user_id: userId, reason: "membership epoch lapsed, re-verify to rejoin" }),
     });
@@ -160,9 +166,14 @@ const ledger = new GrantLedger({
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
       if (body?.errcode === "M_FORBIDDEN" && /not in the room/i.test(body?.error ?? "")) return;
-      throw new Error(`kick failed (${res.status} ${body?.errcode ?? ""})`);
+      throw new Error(`kick from ${room} failed (${res.status} ${body?.errcode ?? ""})`);
     }
   },
+  // A renewal that moves the member to a different room carries nothing forward, so the whole prior
+  // grant is orphaned and gets revoked before the new one is applied. Without this the replacement
+  // record simply overwrote the old one and the old room membership was never tracked again.
+  orphaned: (prev, next) => (String(prev.roomId) === String(next.roomId) ? null : prev),
+  validate: (r) => Boolean(r) && Number.isFinite(r.expiresAt) && Boolean(r.roomId),
 });
 
 // The privacy check reads room state as of each message, so the bot keeps a room-state cache fed from

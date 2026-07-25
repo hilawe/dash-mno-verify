@@ -13,6 +13,13 @@
 // four, so it passes them in ctx and only <WIF>, the member's own voting key, stays a placeholder.
 // Values left out of ctx fall back to angle-bracket placeholders. Single-tier needs none of this,
 // because that prover reads the oracle snapshot locally.
+//
+// The prove command deliberately passes NO --secret. Registration names the secret per (platform,
+// community, role, season), so there is no one filename to print here, and the previous hardcoded
+// `--secret member.secret.json` named a file registration has never created: an explicit --secret
+// switches the prover out of its context lookup (prover/two_tier.js), so every member who followed
+// these instructions hit a missing file. Left off, the prover finds the right secret from the
+// challenge's own context and season, which is also the only form that survives a season rollover.
 export function proveInstructions(mode, ctx = {}) {
   if (mode === "two-tier") {
     const gateway = ctx.gateway ?? "<gateway-url>";
@@ -20,7 +27,7 @@ export function proveInstructions(mode, ctx = {}) {
     const community = ctx.community ?? "<community-id>";
     const role = ctx.role ?? "<role-id>";
     return [
-      `npm run prove-epoch -- --gateway ${gateway} --challenge challenge.json --secret member.secret.json`,
+      `npm run prove-epoch -- --gateway ${gateway} --challenge challenge.json`,
       `(once per season, before your first proof, run: npm run register -- --gateway ${gateway} --platform ${platform} --community ${community} --role ${role} --voting-key <WIF>)`,
     ];
   }

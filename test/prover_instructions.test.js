@@ -23,7 +23,11 @@ test("two-tier fills in the concrete gateway, platform, community, and role", ()
   assert.match(prove, /npm run prove-epoch\b/);
   assert.match(prove, /--gateway https:\/\/gw\.example/);
   assert.match(prove, /--challenge challenge\.json/);
-  assert.match(prove, /--secret/);
+  // No --secret on purpose. Registration names the secret per (platform, community, role, season),
+  // so no single filename is printable here, and passing one switches the prover out of the context
+  // lookup that finds the real file. The old assertion only checked that the flag was present, which
+  // is why it passed while naming a file registration never creates.
+  assert.doesNotMatch(prove, /--secret/, "an explicit --secret disables the prover's context lookup");
   assert.match(register, /npm run register\b/);
   assert.match(register, /--gateway https:\/\/gw\.example/);
   assert.match(register, /--platform discord/);
@@ -35,6 +39,22 @@ test("two-tier fills in the concrete gateway, platform, community, and role", ()
     const unfilled = (line.match(/<[^>]+>/g) ?? []).filter((p) => p !== "<WIF>");
     assert.deepEqual(unfilled, [], `unfilled placeholders in: ${line}`);
   }
+});
+
+// The guard the old test should have been. Checking that --secret merely EXISTS is what let a
+// hardcoded `member.secret.json` sit in the displayed command while registration wrote
+// `member.<platform>.<community>.<role>.s<season>.secret.json`. Either the command names no secret at
+// all (the supported form, the prover looks it up from the challenge) or it names a path registration
+// actually produces. Anything else strands every two-tier member who follows the instructions.
+test("the prove command never names a secret file registration would not have created", async () => {
+  const { defaultSecretPath } = await import("../prover/secret_file.js");
+  const [prove] = proveInstructions("two-tier", CTX);
+  const named = prove.match(/--secret\s+(\S+)/)?.[1];
+  if (named == null) return;
+  const producible = [0, 1, 7, 42].map((season) =>
+    defaultSecretPath({ platform: CTX.platform, community: CTX.community, role: CTX.role, season }),
+  );
+  assert.ok(producible.includes(named), `--secret ${named} is not a path registration ever writes`);
 });
 
 test("two-tier without context falls back to angle-bracket placeholders", () => {

@@ -25,18 +25,28 @@ import { dirname } from "node:path";
 
 const MODE = 0o600;
 
+// Codes that mean "this filesystem does not do that", as opposed to "that failed". Flushing a
+// directory handle is not portable, so these have to stay survivable or the tool would refuse to
+// register on perfectly good systems.
+const DIR_SYNC_UNSUPPORTED = new Set(["EINVAL", "ENOSYS", "ENOTSUP", "EOPNOTSUPP", "EPERM", "EISDIR", "EACCES", "EBADF"]);
+
 // Flushing the file is not enough: the DIRECTORY ENTRY that makes it findable is a separate write.
 // A power loss between the two leaves the gateway holding a committed registration and the member
 // holding nothing, with the seasonal nullifier already spent, which is unrecoverable for that season.
-// Best effort, because not every filesystem can flush a directory handle, and refusing to register on
-// that basis would be worse than the residual risk.
-async function fsyncDir(path) {
+//
+// `required` splits the two callers, because the stakes are not the same. On CREATION the directory
+// entry is the only thing that makes a brand-new secret findable at all, and the caller is about to
+// spend the season's registration on the strength of it, so a genuine I/O failure has to stop the
+// run while stopping is still free. On PROMOTION the pending file is already durable and already
+// holds the secret, so the weaker policy is right there. Either way an unsupported operation is
+// survivable, and only a real failure propagates.
+async function fsyncDir(path, { required = false, openFn = open } = {}) {
   let fh;
   try {
-    fh = await open(dirname(path), "r");
+    fh = await openFn(dirname(path), "r");
     await fh.sync();
-  } catch {
-    // see above
+  } catch (e) {
+    if (required && !DIR_SYNC_UNSUPPORTED.has(e?.code)) throw e;
   } finally {
     await fh?.close().catch(() => {});
   }
@@ -63,7 +73,9 @@ export async function readSecretFile(path) {
 // exists, which is the whole point: an accepted secret is never silently replaced. fsync matters
 // because the caller is about to spend up to an hour proving and then hand the commitment to the
 // gateway; a secret still sitting in the page cache would not survive a crash in between.
-export async function writePendingSecret(path, record) {
+// `openFn` is injectable only so the directory-flush failure path can be tested, the same reason the
+// grant ledger injects its write.
+export async function writePendingSecret(path, record, { openFn = open } = {}) {
   const fh = await open(path, "wx", MODE);
   try {
     await fh.writeFile(JSON.stringify({ status: "pending", ...record }, null, 2));
@@ -71,7 +83,8 @@ export async function writePendingSecret(path, record) {
   } finally {
     await fh.close();
   }
-  await fsyncDir(path);
+  // Required here: this is the write whose loss costs the member the season.
+  await fsyncDir(path, { required: true, openFn });
 }
 
 // Promote a pending secret once the gateway has accepted the registration. The secret itself is

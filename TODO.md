@@ -228,13 +228,64 @@ follow-up below.
   `common/index.js`, `test/`, `research/risc0-registration/host/`)
 - [x] Fix the "one masternode, one membership" claim. The copy now reads "one voting key, one membership" in the guarantee statements (README, `docs/DESIGN.md` Sybil resistance, `docs/THREAT_MODEL.md` Sybil/double-join), the threat model gained a "voting key, not collateral" known-limit bullet that states the delegation collapse plainly, and the mechanism comments (`core/stores.js`, `core/verifier.js`, `core/registration_store.js`, and both circuits' nullifier-malleability notes) were swept for consistency. Re-anchoring to the collateral was not done (it would need the proof to bind the collateral outpoint, a larger circuit change) and is recorded as the alternative in the threat model.
 
+## P1, from the 2026-07-25 review rounds
+
+Four multi-model rounds ran over the 2026-07-24/25 work. Rounds 2 and 3 found most of their defects
+inside the previous round's fixes, all in the adapter file-and-queue machinery. Round 4 was aimed
+instead at the surface no earlier round had read, meaning the code that changed after the round-3
+packets were built plus the modules never packaged at all, and seven of its ten findings were in that
+never-reviewed set. Its confirmed findings are folded. What follows is what remains.
+
+The standing recommendation, reached independently by two reviewers and unchallenged by round 4:
+move adapter state to a transactional store rather than keep patching the file-and-queue machinery.
+Every round that has looked at it has found a fresh generation of the same class of defect.
+
+- [ ] Move adapter grant state to SQLite. `GrantLedger` rewrites the whole map JSON on every change
+  and serializes every operation on one in-process queue to make that safe, which head-of-line-blocks
+  unrelated grants behind a slow platform call and does not scale. A per-row store with native file
+  locking removes the whole-map rewrite, and with it the reason the queue has to be global. This also
+  subsumes the P1.5 grant-ledger persistence item below, which names the pre-extraction path
+  `adapters/discord/grant_ledger.js`; the shared implementation now lives in
+  `adapters/common/grant_ledger.js`. (`adapters/common/grant_ledger.js`)
+- [ ] Cross-process ledger safety. The file locking assumes one process per adapter. Two instances of
+  the same bot, whether from a botched restart or a supervisor racing itself, would interleave
+  whole-map writes and lose grants. Not a concern in the single-process reference deployment, and one
+  the per-row store above would close by construction. (`adapters/common/grant_ledger.js`)
+- [ ] Prevention, not just recovery, for an implausible forward clock jump. The floor is conservative
+  by design and an operator-driven reset gets out of it, but nothing refuses an obviously wrong jump
+  at the moment it is observed. A bound on plausible movement between observations would stop the
+  floor being poisoned in the first place. (`adapters/common/grant_ledger.js`, `core/time_guard.js`)
+- [ ] A model-based crash harness. The durability arguments across the ledger, the registration store,
+  the member secret, and now the oracle snapshot are each pinned by hand-written tests at the specific
+  points a review happened to name. A harness that interrupts at every write boundary and asserts the
+  recovered state is always one of the legal ones would cover the boundaries nobody thought to name.
+- [ ] Mixed `hashVersion` clusters. Gateways in one cluster that disagree on the hash version have no
+  defined behavior. Decide whether to refuse the mismatch or to negotiate, then pin it.
+  (`core/gateway.js`, `common/index.js`)
+
+Residuals left by the round-4 fold, none of them blocking:
+
+- [ ] Confirm the `dash-cli` read buffer against a real node. `execFileSync` defaults to 1 MB and a
+  mainnet masternode list in JSON is several times that, so `MNO_CLI_MAX_BUFFER` (64 MB) was added
+  alongside the read timeout. This is reasoning from the default, not an observed failure, so it needs
+  one run against a full node to confirm the old limit was actually being hit. (`oracle/oracle.js`)
+- [ ] Matrix and Telegram now validate that every ledger record names its room or chat, because their
+  revoke acts on the recorded target rather than the configured one. A ledger file written before that
+  change fails startup with "fix or remove it". Correct, since such a record cannot be revoked
+  accurately, but it is a breaking upgrade for an existing deployment and belongs in release notes.
+  (`adapters/matrix/bot.js`, `adapters/telegram/bot.js`)
+- [ ] Web adapter sessions are in-memory and unsigned, which the file has always said is
+  reference-grade rather than production-grade. A lapsed session is now deleted on first sight so a
+  backward clock cannot revive it, but that is a mitigation, not the persisted high-water floor the
+  chat adapters keep. A real gate wants signed, persisted sessions. (`adapters/web/server.js`)
+
 ## P1.5, release hygiene (2026-07-24 round;
 
 - [ ] Bind the prover's fetched members root to the challenge root, so the challenge root is enforced rather than advisory. (`prover/two_tier.js`)
 - [ ] Add size guards before the adapters fetch and parse attached proof files. (`adapters/discord/bot.js`, `adapters/telegram/bot.js`)
 - [ ] Discord channel-mode preflight on `ready`. Fetch the configured grant channels (or role) once and fail clearly if any is missing or the bot cannot edit its overwrites, so a bad channel id, a deleted role, or a missing permission fails at startup instead of after a member burns a challenge and gets a partial grant. (`adapters/discord/bot.js`)
 - [ ] Discord startup grant reconciliation. On `ready`, re-apply non-expired ledger records so the deliberate persist-before-apply path heals after a crash between the save and the apply (the ledger would otherwise claim access that Discord never received until the member re-verifies). Re-applying a role or overwrite is idempotent, so this is safe; confirm with one test. (`adapters/discord/bot.js`, `adapters/discord/grant_ledger.js`)
-- [ ] Grant ledger persistence at scale. The `GrantLedger` serializes every operation on one queue and rewrites the whole map JSON per change, which head-of-line-blocks unrelated grants behind a slow Discord call and does not scale. The right fix is a per-row store (SQLite, native file locking, no whole-map rewrite), which also removes the serialization the JSON rewrite forces. An intermediate is per-user ordering around the Discord calls plus a global lock only on the mutate-and-persist section. Also inject the `rename` step (like `writeFileFn`) so the atomic-replace failure path is tested. (`adapters/discord/grant_ledger.js`)
+- [ ] (superseded by "Move adapter grant state to SQLite" in the 2026-07-25 P1 section above, kept for the intermediate option and the test note) Grant ledger persistence at scale. The `GrantLedger` serializes every operation on one queue and rewrites the whole map JSON per change, which head-of-line-blocks unrelated grants behind a slow platform call and does not scale. The right fix is a per-row store (SQLite, native file locking, no whole-map rewrite), which also removes the serialization the JSON rewrite forces. An intermediate is per-user ordering around the platform calls plus a global lock only on the mutate-and-persist section. Also inject the `rename` step (like `writeFileFn`) so the atomic-replace failure path is tested. The ledger moved out of the Discord adapter and is now shared. (`adapters/common/grant_ledger.js`)
 - [ ] Use `node:util` parseArgs in the two-tier prover instead of the positional flag parser. (`prover/two_tier.js`)
 - [ ] Use an incremental Merkle tree for the members trees, so a registration is O(log n) instead of rebuilding a full 2**16 tree, and bound the number of cached per-context trees per season (an LRU or a per-season cap). Per-context trees (B2) made each registration build its own tree, so the full-rebuild cost now scales with the number of active communities. The unauthenticated denial-of-service path is already closed (an empty context serves the shared empty root without building), so this is a throughput and footprint improvement, not a security fix. (`core/season.js`, `core/members_tree.js`)
 - [ ] Pull the oracle snapshot lifecycle (load, validate, canonicalize, recompute, freshness, monotonic-height) behind one `SnapshotStore` boundary, with a `parseSnapshot` that returns canonically-typed `{ height, depth, ts, root, leaves }`. This removes the validate-here, recompute-there, store-raw split in `core/gateway.js` and makes snapshot handling unit-testable without booting the gateway. (`core/gateway.js`)

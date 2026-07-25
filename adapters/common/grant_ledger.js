@@ -206,7 +206,12 @@ export class GrantLedger {
       // jump. A grant accepted under a rolled-back clock is not a hole either: sweep and admitIfLive
       // judge it against the floor and remove it.
       if (this.now() >= record.expiresAt) {
-        this.#persistIfMoved(); // this path never reaches the map write, so persist the observation
+        // AWAIT the write, do not enqueue it. #persistIfMoved queues behind the current operation,
+        // which is this one, so the throw always won the race and the caller saw the rejection while
+        // the advanced mark was still only in memory. A crash in that window lost the observation,
+        // and a later backward correction then let an existing grant that was already past its
+        // deadline read as live again. Same reasoning, and the same shape, as admitIfLive.
+        if (this.#clockStateDiffers()) await this.#save();
         throw new Error(`refusing to grant ${userId} access that has already expired`);
       }
       const prev = this.map.get(userId);
@@ -409,5 +414,12 @@ export class GrantLedger {
   }
   size() {
     return this.map.size;
+  }
+  // Whether any record matches. Used by the startup reconciliation gate, which must ask "does this
+  // ledger cover the target now configured" rather than "does it hold anything at all": records for a
+  // previous room or group say nothing about the members of the current one.
+  some(predicate) {
+    for (const [userId, r] of this.map) if (predicate(r, userId)) return true;
+    return false;
   }
 }

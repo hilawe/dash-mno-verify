@@ -50,24 +50,34 @@ const ledger = new GrantLedger({
   resetClock: process.env.TELEGRAM_RESET_CLOCK === "1",
   log: (m) => console.error("[telegram]", m),
   apply: async () => {},
-  revoke: async (userId) => {
+  // Acts on the chat named in the RECORD, never on whatever TELEGRAM_GROUP_ID currently says. Reading
+  // the module-level value meant a sweep after the operator repointed the bot removed the member from
+  // the NEW chat and then deleted the record, leaving their membership of the old chat permanent and
+  // untracked, with nothing left that could revoke it.
+  revoke: async (userId, record) => {
+    const chat = record.chatId;
     // Ban then unban removes the member without leaving a standing ban, so they can rejoin after
     // re-verifying. only_if_banned keeps the unban from touching anyone else's state.
     // until_date makes the ban self-expiring, so if the unban below fails the member is not stranded
     // banned until a later sweep happens to succeed. Telegram treats a ban shorter than 30 seconds or
     // longer than 366 days as permanent, so a minute is the smallest safe self-healing window (this
     // applies to supergroups and channels, which is what a gated chat is).
-    await bot.api.banChatMember(GROUP_ID, Number(userId), {
+    await bot.api.banChatMember(chat, Number(userId), {
       until_date: Math.floor(Date.now() / 1000) + 60,
     });
     try {
-      await bot.api.unbanChatMember(GROUP_ID, Number(userId), { only_if_banned: true });
+      await bot.api.unbanChatMember(chat, Number(userId), { only_if_banned: true });
     } catch (e) {
       // The ban still lifts on its own, so report rather than leave the operator guessing.
-      console.error(`[telegram] unban after removing ${userId} failed (${e.message}); the ban self-expires in 60s`);
+      console.error(`[telegram] unban after removing ${userId} from ${chat} failed (${e.message}); the ban self-expires in 60s`);
       throw e;
     }
   },
+  // A renewal that moves the member to a different chat carries nothing forward, so the whole prior
+  // grant is orphaned and gets removed before the new one is recorded. Without this the replacement
+  // record simply overwrote the old one and the old chat membership was never tracked again.
+  orphaned: (prev, next) => (String(prev.chatId) === String(next.chatId) ? null : prev),
+  validate: (r) => Boolean(r) && Number.isFinite(r.expiresAt) && Boolean(r.chatId),
 });
 
 bot.command("start", (ctx) =>
@@ -204,7 +214,10 @@ async function sweep() {
 await requireReconciled({
   platform: "Telegram",
   markerPath: RECONCILE_MARKER,
-  ledgerSize: ledger.size(),
+  // Records for THIS chat, not a bare count. A ledger carried over from a previous TELEGRAM_GROUP_ID
+  // holds plenty of records and tells us nothing about who is already sitting in the chat now
+  // configured, so counting them let a second existing group skip the gate completely.
+  ledgerCovers: ledger.some((r) => String(r.chatId) === String(GROUP_ID)),
   target: String(GROUP_ID),
   instructions:
     "Establish a closed starting state first. Either point TELEGRAM_GROUP_ID at a NEW gated group and\n" +

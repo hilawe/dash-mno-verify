@@ -42,21 +42,42 @@ function html(res, code, body) {
   res.end(body);
 }
 
+const MAX_BODY_BYTES = 2_000_000;
+
+// Rejecting the promise does not stop the request. The old version kept its data listener attached
+// and went on appending every later chunk to the same string, so a caller who ignored the rejection
+// and kept streaming grew it without any bound at all, and one unauthenticated request could exhaust
+// the process. Settle once, stop retaining, and destroy the request so the sender is actually cut off.
+// Counting is on BYTES: the old check measured a string, which undercounts multi-byte characters and
+// so admitted well over the stated cap.
 function readBody(req) {
   return new Promise((resolve, reject) => {
-    let raw = "";
+    const chunks = [];
+    let size = 0;
+    let settled = false;
+    const fail = (err) => {
+      if (settled) return;
+      settled = true;
+      chunks.length = 0;
+      req.destroy();
+      reject(err);
+    };
     req.on("data", (c) => {
-      raw += c;
-      if (raw.length > 2_000_000) reject(new Error("body too large"));
+      if (settled) return;
+      size += c.length;
+      if (size > MAX_BODY_BYTES) return fail(new Error("body too large"));
+      chunks.push(c);
     });
     req.on("end", () => {
+      if (settled) return;
+      settled = true;
       try {
-        resolve(raw ? JSON.parse(raw) : {});
+        resolve(size ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : {});
       } catch {
         reject(new Error("invalid json"));
       }
     });
-    req.on("error", reject);
+    req.on("error", fail);
   });
 }
 
@@ -135,6 +156,12 @@ const server = createServer(async (req, res) => {
     if (req.method === "GET" && req.url === "/members") {
       const s = sessions.get(sid);
       const now = Math.floor(Date.now() / 1000);
+      // Drop a lapsed session the first time it is seen, rather than leaving it in the map to be
+      // re-judged later. The map outlived the deadline, so a host clock that moved backwards made an
+      // expired session pass this comparison again and readmit a member whose epoch had ended, at the
+      // same moment the gateway itself would be refusing fresh proofs over the same regression.
+      // Deleting is the one-way version of the high-water floor the adapters' grant ledger keeps.
+      if (s && s.verifiedUntil <= now) sessions.delete(sid);
       if (s && s.verifiedUntil > now) {
         return html(res, 200, `<!doctype html><meta charset="utf-8"><body style="font:16px/1.6 system-ui;max-width:42rem;margin:3rem auto">
 <h1>Members area</h1><p>You are in. This page is gated behind anonymous masternode verification, and the gate never learned your address.</p>
