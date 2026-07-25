@@ -58,6 +58,13 @@ follow-up below.
   survives reopen, same-account re-grant after reopen, different-account still rejected,
   concurrent inserts one winner, no success before durable commit, corruption fails closed,
   old-epoch pruning, HMAC key rotation keeps the prior key through the active epoch.
+  Fold in the same store's UNBOUNDED GROWTH (found independently in the same round): `NullifierStore`
+  exposes only has/get/add with no delete or sweep, while its siblings in the same file
+  (`ChallengeStore.sweep`, `RateLimiter.sweep`) both bound their maps, so the spent set grows without
+  limit for the life of the process (a few thousand members on short epochs is tens of thousands of
+  entries per day). The durable design must prune, and the prune window is a correctness boundary,
+  not just housekeeping: only epochs older than the accepted-root and re-grant window may be removed,
+  because pruning the current epoch reopens exactly the double-claim hole this item exists to close.
   (`core/stores.js`, `core/gateway.js`, `core/config.js`, `docs/PLATFORM.md`, `docs/DEPLOY.md`)
 
 ## P1, before any non-local or public deployment
@@ -87,8 +94,12 @@ follow-up below.
   `open(path, "wx", 0o600)` then write and fsync, store {secret, commitment, contextHash, season,
   status: pending}, mark accepted on success, preserve on rejection or ambiguity, reuse the pending
   secret on retry. Replace `--voting-key <WIF>` with `--voting-key-file` (owner-only permission
-  check) or protected stdin; not an env var (visibility varies by OS). (`prover/two_tier.js`,
-  `prover/prover.js`)
+  check) or protected stdin; not an env var (visibility varies by OS). One reviewer in the round
+  proposed writing the secret only AFTER a successful response instead; rejected deliberately,
+  because a gateway that commits while the response is lost then leaves the member with no secret
+  at all, the registration nullifier spent for the season, and no recovery (the secret is
+  client-side randomness the gateway never sees). Write-before plus exclusive create avoids both
+  that and the overwrite bug. (`prover/two_tier.js`, `prover/prover.js`)
 - [ ] Clock-regression guard (2026-07-24 round). `epochNow`/`seasonNow` are pure wall-clock and
   `SeasonMembers._roll` accepts any different season including a LOWER one, with old records still
   durable, so a backward clock move across a season boundary reloads an earlier season's members
