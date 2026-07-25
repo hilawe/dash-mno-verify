@@ -5,12 +5,15 @@
 // nonce. Submit it through whatever adapter you are using.
 //
 // Usage:
-//   node prover/prover.js --challenge challenge.json --voting-key <WIF> [--oracle oracle/root.json]
+//   node prover/prover.js --challenge challenge.json --voting-key-file key.wif [--oracle oracle/root.json]
+// The key may also be piped in with --voting-key-stdin. --voting-key <WIF> still works but leaves
+// the key in shell history and the process list, so it warns.
 import { readFile, writeFile } from "node:fs/promises";
 import { parseArgs } from "node:util";
 import * as snarkjs from "snarkjs";
 import { buildPoseidon } from "circomlibjs";
 import { wifToPriv, leafFromPriv } from "../common/dml.js";
+import { loadVotingKey } from "./voting_key.js";
 
 const TREE_DEPTH = 16;
 const WASM = "circuits/build/mno_membership_js/mno_membership.wasm";
@@ -19,7 +22,11 @@ const ZKEY = "circuits/build/mno_membership.zkey"; // PLONK proving key
 const { values } = parseArgs({
   options: {
     challenge: { type: "string" },
+    // --voting-key-file (or --voting-key-stdin) keeps the key out of shell history and the process
+    // list; --voting-key still works and warns. See prover/voting_key.js.
     "voting-key": { type: "string" },
+    "voting-key-file": { type: "string" },
+    "voting-key-stdin": { type: "boolean" },
     oracle: { type: "string", default: "oracle/root.json" },
     out: { type: "string", default: "proof.json" },
   },
@@ -61,7 +68,7 @@ function merklePath(poseidon, levels, index) {
 
 const challenge = JSON.parse(await readFile(values.challenge, "utf8"));
 const oracle = JSON.parse(await readFile(values.oracle, "utf8"));
-const priv = wifToPriv(values["voting-key"]);
+const priv = wifToPriv(await loadVotingKey(values));
 
 const poseidon = await buildPoseidon();
 const F = poseidon.F;

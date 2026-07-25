@@ -81,7 +81,7 @@ MNO_ALLOW_UNSIGNED_ORACLE=1 MNO_ADAPTER_SECRET="$SECRET" npm run gateway   # lis
 MNO_ADAPTER_SECRET="$SECRET" npm run bot
 
 # a member, on their own machine, turns the adapter's challenge into a proof (no secret needed)
-npm run prove -- --challenge challenge.json --voting-key <WIF>
+npm run prove -- --challenge challenge.json --voting-key-file key.wif
 ```
 
 Compiling the circuit and producing the proving and verification keys is a separate step documented in `circuits/README.md`.

@@ -101,8 +101,22 @@ follow-up below.
   usability gap (fresh Matrix DMs often default `history_visibility: "shared"` and fail the strict
   check) is the configured-verification-room P2 item below. (`adapters/matrix/room_privacy.js`,
   `adapters/matrix/bot.js`, `test/matrix_room_privacy.test.js`)
-- [ ] Member secret and voting-key handling in the two-tier prover (2026-07-24 round, confirmed
-  twice). `prover/two_tier.js` writes `member.secret.json` mode 0644 with a plain overwriting
+- [x] Member secret and voting-key handling in the two-tier prover (2026-07-24 round, confirmed
+  twice). DONE. `prover/secret_file.js` creates the secret with an exclusive
+  `open(path, "wx", 0o600)` and fsyncs it BEFORE proving, so a crash during the long registration
+  proof cannot lose it. It is recorded `pending` and promoted to `accepted` only after the gateway
+  responds, so a re-run resumes that same secret rather than minting one the gateway would reject,
+  an accepted file is refused rather than overwritten, and a rejection leaves the file untouched.
+  Secrets are named per (platform, community, role, season), and the per-epoch prove locates the
+  right one by the challenge's context hash, with the old single filename still honoured so nobody
+  who registered earlier is stranded by the rename. `prover/voting_key.js` adds `--voting-key-file`
+  (warning when it is group or world readable) and `--voting-key-stdin`, keeps `--voting-key` working
+  with a deprecation warning so no member breaks mid-season, and prefers the file over the flag.
+  Docs moved to the safer form. 214 tests green, covering never-overwrite, resume-pending,
+  accepted-refusal, filename separation, context lookup, and flag precedence. The write-after-response
+  alternative stays rejected for the reason recorded below.
+  (`prover/secret_file.js`, `prover/voting_key.js`, `prover/two_tier.js`, `prover/prover.js`)
+- [ ] (superseded by the entry above, kept for the design record) `prover/two_tier.js` writes `member.secret.json` mode 0644 with a plain overwriting
   `writeFile` BEFORE the `/v1/register` call, so a rejected re-run (same per-season registration
   nullifier) overwrites the accepted secret and strands the member for the season; both provers
   also take the WIF voting key on argv (shell history, process listings). Keep the save before the

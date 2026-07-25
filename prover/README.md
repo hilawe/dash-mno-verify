@@ -4,7 +4,7 @@ Runs on the masternode owner's machine and turns a challenge into a proof. The v
 key is read locally and never transmitted. The output `proof.json` carries no secret.
 
 ```bash
-npm run prove -- --challenge challenge.json --voting-key <WIF> --oracle oracle/root.json
+npm run prove -- --challenge challenge.json --voting-key-file key.wif --oracle oracle/root.json
 ```
 
 ## What it needs
@@ -26,7 +26,7 @@ Raspberry Pi:
 npm run register -- \
   --gateway http://your-gateway:8787 \
   --platform discord --community <guildId> --role <roleId> \
-  --voting-key <WIF> --secret-out member.secret.json
+  --voting-key-file key.wif
 ```
 
 It finds your masternode in the gateway's published list, proves control, saves a secret

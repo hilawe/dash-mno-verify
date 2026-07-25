@@ -132,7 +132,7 @@ bash scripts/fetch_keys.sh         # downloads and checksum-verifies the members
 
 ```bash
 # once a season, the heavy proof, needs a few GB of RAM
-npm run register -- --gateway https://the-gateway --platform discord --community <id> --role <id> --voting-key <WIF>
+npm run register -- --gateway https://the-gateway --platform discord --community <id> --role <id> --voting-key-file key.wif
 
 # every epoch, the cheap proof, fine on a Raspberry Pi. The adapter gave you challenge.json.
 npm run prove-epoch -- --gateway https://the-gateway --challenge challenge.json --secret member.secret.json
