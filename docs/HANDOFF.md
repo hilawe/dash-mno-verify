@@ -5,7 +5,115 @@ counts and supersedes everything below it. Historical sections are append-only a
 only marked superseded. Read this first when picking the project back up, then `TODO.md` for the full
 prioritized punch list.
 
-## CURRENT STATE, 2026-07-24
+## CURRENT STATE, 2026-07-25
+
+### What this is
+
+An anonymous zero-knowledge proof that someone controls a Dash masternode, used to gate a private
+community without revealing which node or address. An oracle reads the deterministic masternode list
+(DML) from a Dash Core node and publishes a Merkle root the proofs are checked against. A
+platform-neutral gateway verifies proofs and issues short access grants, and four adapters (Discord,
+Telegram, Matrix, web) speak to it. Two proving modes: single-tier (`MNO_MODE=single`, one membership
+proof per epoch) and two-tier (a heavy seasonal registration proof plus a cheap per-epoch members
+proof). Read `docs/DESIGN.md`, `docs/THREAT_MODEL.md`, and `docs/DEPLOY.md` first. Status: working
+prototype, validated on real mainnet data, NOT audited. Do not gate anything of value until the
+`TODO.md` blockers are closed and it has had an audit.
+
+Repo: `~/Code/dash-mno-verify`, public at `github.com/hilawe/dash-mno-verify`.
+
+### Where things stand
+
+`main` is at `e3f8787`, pushed, clean tree, 251 tests green (`npm test`, about two minutes).
+Node 22.13 or newer is now required (the durable store uses `node:sqlite`).
+
+The 2026-07-24/25 work closed the adversarial-review findings across the gateway, both provers, the
+durable stores, and the adapters. THREE full multi-model rounds were run over it. Every one returned
+REJECT, and rounds 2 and 3 found their defects predominantly IN THE PREVIOUS ROUND'S FIXES. All
+confirmed findings are folded; what remains open is recorded in `TODO.md` under
+"P1, from the 2026-07-25 review rounds".
+
+What landed (each verified against the code before folding, several reviewer claims were false or
+already fixed and were rejected with reasons):
+
+- A durable per-epoch nullifier store (`core/nullifier_sqlite.js`, `node:sqlite`), now the default.
+  `MNO_STORE=memory` and `MNO_NULLIFIER_PATH=:memory:` both need `MNO_ALLOW_EPHEMERAL_NULLIFIERS=1`.
+  Mode set before enabling WAL (the -wal/-shm siblings inherit it), directory mode enforced each boot,
+  hourly pruning that keeps the current epoch plus `MNO_NULLIFIER_RETAIN_EPOCHS`.
+- A monotonic clock guard in the gateway (`core/time_guard.js`): persisted high-water epoch and
+  season, fail-closed on unreadable, malformed, or half-malformed marks, flushed to disk, persisted
+  regression, and a 503 plus `ok:false` on `/v1/health` while regressed.
+- Schedule namespacing: both durable stores record the epoch/season schedule (`scheduleId`) and refuse
+  to open under a different one, because changing a length renumbers every period and could otherwise
+  rebuild a historical season's registrations. A store predating the header needs `MNO_ASSUME_SCHEDULE=1`.
+- Members-tree capacity checked BEFORE the durable write. Past capacity an odd overflow throws and a
+  power-of-two overflow silently builds a deeper tree whose root no path can reach; both are refused.
+- Member secret handling (`prover/secret_file.js`): exclusive create at 0600, fsync of file AND
+  directory, pending-then-accepted status, atomic promotion via a unique temp plus rename, selection
+  by context AND season, refusal to reuse a secret from another context. `--voting-key-file` and
+  `--voting-key-stdin` added; `--voting-key` still works but warns.
+- Adapter access lifecycle (`adapters/common/grant_ledger.js`, extracted from Discord and shared).
+  Telegram admission is bound to the verified account via a join-request flow (the old invite link was
+  a bearer token anyone could use); admission runs inside the ledger queue so a sweep cannot delete
+  the record mid-approval; grants record their chat/room and context; Matrix self-reconciles and
+  Telegram gates startup until an operator establishes a closed state.
+
+### The clock design, because it was rewritten three times
+
+Expiry is judged against the wall clock FLOORED AT THE HIGHEST VALUE EVER OBSERVED. Two reviewers
+pulled in opposite directions and both were right: a rolled-back clock must not revive an expired
+grant, and treating any regression as "revoke everything" turned a one-second NTP correction into a
+mass revocation. The floor does neither. Consequences that MUST be preserved if this is touched:
+
+- `grant()` judges an INCOMING deadline against unfloored `now()`. The gateway owns that deadline; using
+  the floor there meant a forward glitch rejected every new grant until wall time caught up.
+- `sweep` and `admitIfLive` judge EXISTING grants against the floor.
+- Every path that observes the clock must persist (`#persistIfMoved`), because an advance is evidence:
+  once a grant is treated as expired under a high mark, losing that mark revives it.
+- A regression sets the flag WITHOUT moving the mark, so persistence compares both.
+- `TELEGRAM_RESET_CLOCK=1` / `MATRIX_RESET_CLOCK=1` is the operator way back from a floor poisoned by a
+  large forward jump. Prevention (monotonic-elapsed jump detection) is NOT built and is in `TODO.md`.
+
+### Standing policies and gotchas
+
+- Verify every review finding against the code before folding. This session saw a review of an
+  ENTIRELY DIFFERENT codebase, several confident false positives, and findings already fixed. It also
+  saw real defects in my own fixes three rounds running, so the fold itself always gets reviewed.
+- Tests caught three defects that reviews did not: a nondeterministic sort, an unobserved clock in
+  `grant`, and a `__meta` key colliding with the platform user-id keyspace. Keep writing the test that
+  tries to break the fix.
+- Two test files need loopback listeners; a sandboxed reviewer will see 53 EPERM failures that are
+  environment, not defects.
+- Public repository: no AI tool is named in any committed file, and a review is described generically.
+  Scan before pushing.
+- Anything in `~/Downloads/` is a view-only copy, never a source. THIS file is the session log.
+
+### Punch list, in order
+
+1. RECOMMENDED NEXT: move adapter grants and clock metadata to a transactional store (SQLite).
+   All three rounds found defects in the whole-file rewrite, hand-rolled queue, and manual fsync
+   ordering, and the last two found them in the fixes for the round before. Both reviewers
+   independently recommended this over further patching. See `TODO.md` P1.
+2. Cross-process ledger safety (two adapter processes on one file, last writer wins). Closed by 1, or
+   by a startup lock.
+3. Implausible-forward-jump PREVENTION (recovery exists). Needs an injectable monotonic source so the
+   fake-clock tests do not read as jumps.
+4. A model-based crash harness for the ledger, time guard, and registration store. Proposed
+   independently by two reviewers; covers the failure class that produced all three rounds.
+5. Owner-only, unchanged: host the two 2.3 GB proving keys; decide the custody research track;
+   pasta's ChainLock reply; commit the `Cargo.lock` files.
+6. The zkVM live STARK verifier (artifact-gated on `r0vm`) and the registration proof lease.
+
+### Round-3 packets not yet returned
+
+`~/Downloads/{gemini,grok,codexapp}_dash-mno-verify_adversarial_review_round3_2026-07-25.md` were
+built against `59a575a`. Gemini and Grok replied and are folded. The codexapp one was not returned,
+and the repo-access round for `e3f8787` has NOT been run. Rebuild packets from `e3f8787` rather than
+reusing those, since the fold moved.
+
+## History
+
+### CURRENT STATE as of 2026-07-24 (superseded by the section above)
+
 
 ### What this is
 
@@ -155,7 +263,6 @@ Buildable next (in rough priority):
    and Matrix private-room verification.
 9. P2 quality items in `TODO.md`.
 
-## History
 
 ### 2026-07-23 to 2026-07-24 detailed session log (superseded by CURRENT STATE above)
 
