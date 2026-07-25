@@ -21,6 +21,7 @@ import { Bot, InputFile } from "grammy";
 import process from "node:process";
 import { proveInstructions } from "../../common/prover_instructions.js";
 import { GrantLedger } from "../common/grant_ledger.js";
+import { requireReconciled } from "../common/reconcile.js";
 import { contextHash } from "../../common/index.js";
 
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
@@ -33,6 +34,7 @@ const ADAPTER_SECRET = process.env.MNO_ADAPTER_SECRET;
 const authHeaders = ADAPTER_SECRET ? { authorization: `Bearer ${ADAPTER_SECRET}` } : {};
 const LEDGER_FILE = process.env.TELEGRAM_GRANT_LEDGER ?? "data/telegram-grants.json";
 const SWEEP_SECONDS = Number(process.env.TELEGRAM_SWEEP_SECONDS ?? 60);
+const RECONCILE_MARKER = process.env.TELEGRAM_RECONCILED_MARKER ?? "data/telegram-reconciled.json";
 const LINK_TTL_SECONDS = Number(process.env.TELEGRAM_LINK_TTL_SECONDS ?? 3600);
 // The proof context this bot admits for. A grant records it, so a ledger reused after the chat or
 // the community changed cannot admit anyone to a target they never proved for.
@@ -72,7 +74,9 @@ bot.command("start", (ctx) =>
 );
 
 bot.command("verify", async (ctx) => {
-  const res = await fetch(`${GATEWAY}/v1/challenge`, {
+  let res;
+  try {
+    res = await fetch(`${GATEWAY}/v1/challenge`, {
     method: "POST",
     headers: { "content-type": "application/json", ...authHeaders },
     body: JSON.stringify({
@@ -80,8 +84,14 @@ bot.command("verify", async (ctx) => {
       communityId: COMMUNITY_ID,
       roleId: ROLE_ID,
       account: String(ctx.from.id),
-    }),
-  });
+      }),
+    });
+  } catch (e) {
+    // A refused connection or a DNS failure THROWS rather than returning a non-ok response, so
+    // without this the member simply got silence and no idea whether to retry.
+    console.error("[telegram] challenge request failed:", e.message);
+    return ctx.reply("Cannot reach the verification service right now. Try again shortly.");
+  }
   if (!res.ok) return ctx.reply("Verification service is unavailable right now. Try again shortly.");
   const challenge = await res.json();
 
@@ -113,12 +123,18 @@ bot.on("message:document", async (ctx) => {
   }
 
   // Submit the account this user is identified by. The gateway binds the verify to it (review B1).
-  const res = await fetch(`${GATEWAY}/v1/verify`, {
-    method: "POST",
-    headers: { "content-type": "application/json", ...authHeaders },
-    body: JSON.stringify({ ...payload, account: String(ctx.from.id) }),
-  });
-  const out = await res.json();
+  let out;
+  try {
+    const res = await fetch(`${GATEWAY}/v1/verify`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...authHeaders },
+      body: JSON.stringify({ ...payload, account: String(ctx.from.id) }),
+    });
+    out = await res.json();
+  } catch (e) {
+    console.error("[telegram] verify request failed:", e.message);
+    return ctx.reply("Cannot reach the verification service right now. Your proof is still valid; try again shortly.");
+  }
   if (!out.ok) return ctx.reply(`Verification failed (${out.reason ?? "unknown"}). Run /verify to start over.`);
 
   if (!Number.isFinite(out.expiresAt)) {
@@ -182,6 +198,18 @@ async function sweep() {
   const revoked = await ledger.sweep();
   for (const userId of revoked) console.log(`[telegram] access revoked for ${userId} (epoch lapsed)`);
 }
+// Members admitted before this lifecycle existed are not in the ledger, so the sweep cannot see
+// them. The Bot API exposes no general member roster, so this one cannot self-reconcile.
+await requireReconciled({
+  platform: "Telegram",
+  markerPath: RECONCILE_MARKER,
+  ledgerSize: ledger.size(),
+  instructions:
+    "Establish a closed starting state first. Either point TELEGRAM_GROUP_ID at a NEW gated group and\n" +
+    "move members over as they re-verify, or have an admin remove every current member of the existing\n" +
+    "group so that access is only re-granted through this adapter.",
+});
+
 await sweep().catch((e) => console.error("[telegram] startup sweep failed:", e.message));
 setInterval(() => sweep().catch((e) => console.error("[telegram] sweep failed:", e.message)), SWEEP_SECONDS * 1000).unref();
 

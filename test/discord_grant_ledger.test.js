@@ -80,7 +80,7 @@ test("a failed first grant keeps a record and best-effort revokes", async () => 
   await assert.rejects(l.grant("u1", rec(200)), /discord down/);
   assert.equal(l.has("u1"), true);
   assert.deepEqual(revoked, ["u1"]);
-  assert.equal("u1" in JSON.parse(readFileSync(file, "utf8")), true);
+  assert.equal("u1" in JSON.parse(readFileSync(file, "utf8")).grants, true);
 });
 
 // A failed renewal must not touch the member's existing valid access, and must keep tracking it under
@@ -100,7 +100,7 @@ test("a failed same-target renewal keeps the new grant and strands nothing", asy
   await l.grant("u1", rec(200));
   fail = true;
   await assert.rejects(l.grant("u1", { expiresAt: 999, mode: "channel", channels: ["c1"] }), /down/);
-  assert.equal(JSON.parse(readFileSync(file, "utf8")).u1.expiresAt, 999);
+  assert.equal(JSON.parse(readFileSync(file, "utf8")).grants.u1.expiresAt, 999);
   assert.equal(revoked.length, 0);
 });
 
@@ -158,7 +158,7 @@ test("a renewal that drops a target revokes the orphaned one before applying", a
   await l.grant("u1", { expiresAt: 200, mode: "channel", channels: ["c1", "c2"] });
   await l.grant("u1", { expiresAt: 999, mode: "channel", channels: ["c1"] }); // drops c2
   assert.deepEqual(revokedRecords, [{ mode: "channel", channels: ["c2"] }]);
-  assert.deepEqual(JSON.parse(readFileSync(file, "utf8")).u1, { expiresAt: 999, mode: "channel", channels: ["c1"] });
+  assert.deepEqual(JSON.parse(readFileSync(file, "utf8")).grants.u1, { expiresAt: 999, mode: "channel", channels: ["c1"] });
 });
 
 // If revoking the orphaned target fails, the renewal must abort with the prior grant intact, so the
@@ -175,7 +175,7 @@ test("if migrating the prior grant fails, the renewal aborts and keeps the prior
   await l.grant("u1", { expiresAt: 200, mode: "channel", channels: ["c1", "c2"] });
   migrateFail = true;
   await assert.rejects(l.grant("u1", { expiresAt: 999, mode: "channel", channels: ["c1"] }), /could not migrate/);
-  assert.deepEqual(JSON.parse(readFileSync(file, "utf8")).u1, { expiresAt: 200, mode: "channel", channels: ["c1", "c2"] });
+  assert.deepEqual(JSON.parse(readFileSync(file, "utf8")).grants.u1, { expiresAt: 200, mode: "channel", channels: ["c1", "c2"] });
 });
 
 // The write path must reject a malformed record (here a non-finite expiry), or it would persist and
@@ -196,7 +196,7 @@ test("concurrent grants for different users all persist", async () => {
   const file = tmpFile();
   const l = new GrantLedger({ file, apply: noop, revoke: noop, now: () => 100 });
   await Promise.all([l.grant("u1", rec(200)), l.grant("u2", rec(200)), l.grant("u3", rec(200))]);
-  assert.deepEqual(Object.keys(JSON.parse(readFileSync(file, "utf8"))).sort(), ["u1", "u2", "u3"]);
+  assert.deepEqual(Object.keys(JSON.parse(readFileSync(file, "utf8")).grants).sort(), ["u1", "u2", "u3"]);
 });
 
 // The commit-boundary invariant, the point of serializing every operation: when a grant's own persist
@@ -220,7 +220,7 @@ test("a persist failure rolls back the grant and writes nothing", async () => {
   failNextWrite = true;
   await assert.rejects(l.grant("b", rec(300)), /could not persist/);
   assert.equal(l.has("b"), false); // rolled back in memory
-  assert.deepEqual(Object.keys(JSON.parse(readFileSync(file, "utf8"))), ["a"]); // and never written
+  assert.deepEqual(Object.keys(JSON.parse(readFileSync(file, "utf8")).grants), ["a"]); // and never written
 });
 
 test("extraTargets returns only targets the prior grant did not cover", () => {

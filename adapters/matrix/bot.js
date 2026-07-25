@@ -9,6 +9,7 @@ import { randomUUID } from "node:crypto";
 import { proveInstructions } from "../../common/prover_instructions.js";
 import { RoomStateTracker, isPrivateDirectRoomState } from "./room_privacy.js";
 import { GrantLedger } from "../common/grant_ledger.js";
+import { markReconciled, reconciliationDone } from "../common/reconcile.js";
 import { contextHash } from "../../common/index.js";
 
 const HS = process.env.MATRIX_HOMESERVER; // e.g. https://matrix.org
@@ -24,6 +25,7 @@ const COMMUNITY = process.env.MATRIX_COMMUNITY ?? GATED_ROOM;
 const ROLE = process.env.MATRIX_ROLE ?? "member";
 const LEDGER_FILE = process.env.MATRIX_GRANT_LEDGER ?? "data/matrix-grants.json";
 const SWEEP_SECONDS = Number(process.env.MATRIX_SWEEP_SECONDS ?? 60);
+const RECONCILE_MARKER = process.env.MATRIX_RECONCILED_MARKER ?? "data/matrix-reconciled.json";
 // The room and proof context this bot admits for. Recorded on every grant, so a ledger reused after
 // MATRIX_GATED_ROOM or the community changed cannot authorize access to a room nobody proved for.
 const CONTEXT_HASH = contextHash({ platform: "matrix", communityId: COMMUNITY, roleId: ROLE }).toString();
@@ -92,12 +94,20 @@ async function handle(roomId, sender, body, state) {
   if (!isPrivate()) return sendText(roomId, DM_ONLY);
 
   // Submit the account this sender is identified by. The gateway binds the verify to it (review B1).
-  const res = await fetch(`${GATEWAY}/v1/verify`, {
-    method: "POST",
-    headers: { "content-type": "application/json", ...authHeaders },
-    body: JSON.stringify({ ...payload, account: sender }),
-  });
-  const out = await res.json();
+  let out;
+  try {
+    const res = await fetch(`${GATEWAY}/v1/verify`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...authHeaders },
+      body: JSON.stringify({ ...payload, account: sender }),
+    });
+    out = await res.json();
+  } catch (e) {
+    // A thrown fetch (connection refused, DNS) skips the !ok path entirely, and the sync loop only
+    // logs, so the member would otherwise be left with no reply at all.
+    console.error("[matrix] verify request failed:", e.message);
+    return sendText(roomId, "Cannot reach the verification service right now. Your proof is still valid; try again shortly.");
+  }
   if (!out.ok) return sendText(roomId, `Verification failed (${out.reason ?? "unknown"}). Send !verify to start over.`);
 
   // Access is membership in the gated room, recorded so it can be taken back when the epoch lapses.
@@ -163,10 +173,37 @@ console.log(`[matrix] starting as ${USER_ID}`);
 
 // Sweep at startup as well as on the interval, so grants that lapsed while the bot was down are
 // taken back promptly rather than waiting for the first tick.
+// Members admitted before this lifecycle existed hold access the ledger knows nothing about, and the
+// sweep only looks at the ledger. Matrix, unlike Telegram, can read its own room membership, so the
+// closed starting state is reachable automatically: remove everyone joined or invited that this bot
+// has no live grant for. Runs once, then records that it happened.
+async function reconcileRoom() {
+  if (await reconciliationDone(RECONCILE_MARKER)) return;
+  const res = await api(`/rooms/${encodeURIComponent(GATED_ROOM)}/members`);
+  if (!res.ok) throw new Error(`cannot read room membership to reconcile (${res.status})`);
+  const body = await res.json();
+  const removed = [];
+  for (const ev of body.chunk ?? []) {
+    const who = ev.state_key;
+    if (!who || who === USER_ID) continue; // never remove the bot itself
+    if (!["join", "invite"].includes(ev.content?.membership)) continue;
+    if (ledger.live(who)) continue;
+    const kick = await api(`/rooms/${encodeURIComponent(GATED_ROOM)}/kick`, {
+      method: "POST",
+      body: JSON.stringify({ user_id: who, reason: "re-verify to regain access" }),
+    });
+    if (kick.ok) removed.push(who);
+    else console.error(`[matrix] could not remove ${who} during reconciliation (${kick.status})`);
+  }
+  await markReconciled(RECONCILE_MARKER, { removed: removed.length, room: GATED_ROOM });
+  console.log(`[matrix] reconciled the gated room, removed ${removed.length} member(s) with no live grant`);
+}
+
 async function sweep() {
   const revoked = await ledger.sweep();
   for (const userId of revoked) console.log(`[matrix] access revoked for ${userId} (epoch lapsed)`);
 }
+await reconcileRoom();
 await sweep().catch((e) => console.error("[matrix] startup sweep failed:", e.message));
 setInterval(() => sweep().catch((e) => console.error("[matrix] sweep failed:", e.message)), SWEEP_SECONDS * 1000).unref();
 

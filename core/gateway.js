@@ -41,6 +41,10 @@ const nowSec = () => Math.floor(Date.now() / 1000);
 // Every durable store is stamped with this and refuses to open under a different one, because
 // changing either length renumbers every epoch and season.
 const SCHEDULE = scheduleId(config.epochSeconds, config.seasonSeconds);
+// The context/signal encoding this gateway derives. Returned to clients so a rolling upgrade that
+// mixes v1 and v2 gateways is visible rather than silently minting two membership domains for one
+// community. Cut over at a season boundary; do not run both behind one address.
+const CONTEXT_VERSION = "v2";
 
 // Fail closed: refuse to start unauthenticated unless the operator explicitly opted in. This keeps
 // a forgotten MNO_ADAPTER_SECRET from silently exposing the account-bearing endpoints to any caller.
@@ -660,6 +664,9 @@ const server = createServer(async (req, res) => {
       // ok reports readiness, not liveness: a clock regression leaves the process healthy but
       // unwilling to issue or verify, and an operator needs to see that here rather than infer it
       // from 503s on the other endpoints.
+      // Observe BOTH periods: a rollback across an epoch but not a season would otherwise report
+      // healthy until some state-bearing request happened to notice it.
+      timeGuard.epoch();
       const season = timeGuard.season();
       return send(res, 200, {
         ok: !timeGuard.regressed,

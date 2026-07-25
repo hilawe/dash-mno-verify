@@ -36,6 +36,12 @@ export class GrantLedger {
     this.file = file;
     this.validate = validate;
     this.orphaned = orphaned;
+    // Adapters decide admission independently of the gateway, against gateway-issued absolute
+    // deadlines. Their own clock was unguarded, so moving it back before a sweep made an expired
+    // grant live again and admitted a member whose epoch had ended, even while the gateway itself
+    // was refusing new proofs. The mark below is the adapter's own high-water clock.
+    this.clockMark = null;
+    this.clockRegressed = false;
     this.apply = apply;
     this.revoke = revoke;
     this.now = now;
@@ -61,8 +67,17 @@ export class GrantLedger {
     } catch (e) {
       throw new Error(`grant ledger ${this.file} is not valid JSON (${e.message}). Fix or remove it.`);
     }
+    // Newer files are { meta, grants }; older ones are a flat map of user id to record. Keeping the
+    // metadata in its own object matters beyond tidiness: a flat file cannot distinguish a metadata
+    // key from a platform user id that happens to share its name.
+    let grants = obj;
+    if (obj && typeof obj === "object" && obj.grants && typeof obj.grants === "object") {
+      grants = obj.grants;
+      const mark = Number(obj.meta?.clockMark);
+      if (Number.isFinite(mark)) this.clockMark = mark;
+    }
     const map = new Map();
-    for (const [userId, r] of Object.entries(obj)) {
+    for (const [userId, r] of Object.entries(grants)) {
       // The mode-specific target must be present, or a sweep would delete the record without being able
       // to revoke the real Discord access.
       if (!this.validate(r)) {
@@ -79,7 +94,10 @@ export class GrantLedger {
   async #save() {
     await mkdir(dirname(this.file), { recursive: true });
     const tmp = `${this.file}.tmp`;
-    await this.writeFileFn(tmp, JSON.stringify(Object.fromEntries(this.map), null, 2));
+    await this.writeFileFn(
+      tmp,
+      JSON.stringify({ meta: { clockMark: this.clockMark }, grants: Object.fromEntries(this.map) }, null, 2),
+    );
     // Rename alone is atomic but not durable: the whole point of persist-before-apply is that a grant
     // recorded here survives the machine losing power right after access was applied. Without these
     // flushes the record could still be in the page cache, the machine could come back with the old
@@ -129,6 +147,10 @@ export class GrantLedger {
   async grant(userId, record) {
     if (!this.validate(record)) throw new Error(`refusing to grant a malformed record for ${userId}`);
     return this.#run(async () => {
+      // Issuing a grant is an observation of the clock, so the high-water mark advances here too.
+      // Without this the mark stayed null until something happened to read liveness, and a restart
+      // then had nothing to compare against and could not see a rollback at all.
+      this.#guardedNow();
       const prev = this.map.get(userId);
       // If a renewal changes the target, revoke the parts of the prior grant the new one does not carry
       // forward, before applying the new grant, so old access (including a different mode or role id) is
@@ -169,12 +191,18 @@ export class GrantLedger {
   // notify them. The live record is re-checked inside the serialized operation, so a member who re-verified
   // during the sweep keeps their fresh access.
   async sweep() {
-    const due = [...this.map].filter(([, r]) => this.now() >= r.expiresAt).map(([u]) => u);
+    // A backward clock must not make the sweep think nothing is due, so it reads the guarded clock
+    // too. Once regressed, admission is refused above, and everything still on the books is swept.
+    const t = this.#guardedNow();
+    const due = [...this.map]
+      .filter(([, r]) => this.clockRegressed || t >= r.expiresAt)
+      .map(([u]) => u);
     const revoked = [];
     for (const userId of due) {
       await this.#run(async () => {
         const live = this.map.get(userId);
-        if (!live || this.now() < live.expiresAt) return; // re-verified meanwhile, leave it alone
+        if (!live) return;
+        if (!this.clockRegressed && this.now() < live.expiresAt) return; // re-verified meanwhile
         try {
           await this.revoke(userId, live);
         } catch (e) {
@@ -189,6 +217,21 @@ export class GrantLedger {
     return revoked;
   }
 
+  // The adapter's guarded clock. Time moving forward advances the mark; time moving backwards is
+  // recorded and, from then on, every admission is refused. Refusing is the safe direction: a member
+  // waiting for a corrected clock is an inconvenience, while admitting one whose epoch has ended is
+  // the failure the whole grant lifecycle exists to prevent.
+  #guardedNow() {
+    const t = this.now();
+    if (this.clockMark == null || t > this.clockMark) this.clockMark = t;
+    else if (t < this.clockMark) this.clockRegressed = true;
+    return t;
+  }
+
+  get clockIsSane() {
+    return !this.clockRegressed;
+  }
+
   // Decide admission and perform it INSIDE the serial queue, so a sweep cannot revoke and delete
   // between the liveness check and the platform call. Without this the two ran unsynchronized: a
   // handler could read a live grant, await the approval, and have the sweep delete the record while
@@ -201,7 +244,9 @@ export class GrantLedger {
   async admitIfLive(userId, admit, matches = () => true) {
     return this.#run(async () => {
       const record = this.map.get(userId);
-      if (!record || this.now() >= record.expiresAt) return false;
+      const t = this.#guardedNow();
+      if (this.clockRegressed) return false; // cannot vouch for any deadline against a clock that moved back
+      if (!record || t >= record.expiresAt) return false;
       if (!matches(record)) return false;
       await admit(record);
       return true;
@@ -219,7 +264,9 @@ export class GrantLedger {
   // Whether a grant exists and has not lapsed.
   live(userId) {
     const r = this.map.get(userId);
-    return Boolean(r) && this.now() < r.expiresAt;
+    const t = this.#guardedNow();
+    if (this.clockRegressed) return false;
+    return Boolean(r) && t < r.expiresAt;
   }
   size() {
     return this.map.size;

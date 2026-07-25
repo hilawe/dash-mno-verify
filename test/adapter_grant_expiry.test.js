@@ -133,3 +133,93 @@ test("a record with no expiry is refused rather than granted forever", async () 
     assert.equal(ledger.has("u1"), false);
   });
 });
+
+// --- the adapter's own clock, and the upgrade gate ------------------------------------------------
+
+test("an adapter clock moving backwards refuses admission rather than reviving a grant", async () => {
+  // The adapter decides admission independently of the gateway, against absolute deadlines. Its clock
+  // was unguarded, so moving it back before a sweep made an expired grant live again, admitting a
+  // member whose epoch had ended even while the gateway refused new proofs.
+  const dir = mkdtempSync(join(tmpdir(), "mno-grant-"));
+  try {
+    const clock = { t: 1000 };
+    const ledger = new GrantLedger({
+      file: join(dir, "grants.json"),
+      apply: async () => {},
+      revoke: async () => {},
+      now: () => clock.t,
+    });
+    await ledger.grant("u1", { expiresAt: 2000 });
+    assert.equal(ledger.live("u1"), true);
+
+    clock.t = 3000; // past expiry, the mark advances
+    assert.equal(ledger.live("u1"), false);
+
+    clock.t = 1500; // the clock is wound back to before the deadline
+    assert.equal(ledger.live("u1"), false, "a rolled-back clock must not revive an expired grant");
+    assert.equal(ledger.clockIsSane, false);
+
+    let admitted = false;
+    const ok = await ledger.admitIfLive("u1", async () => {
+      admitted = true;
+    });
+    assert.equal(ok, false, "admission is refused once the clock cannot be trusted");
+    assert.equal(admitted, false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the clock mark survives a restart, so a rollback across one is still caught", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mno-grant-"));
+  const file = join(dir, "grants.json");
+  try {
+    const first = new GrantLedger({ file, apply: async () => {}, revoke: async () => {}, now: () => 5000 });
+    await first.grant("u1", { expiresAt: 9000 });
+
+    // A fresh process whose clock is behind where the previous one had reached.
+    const second = new GrantLedger({ file, apply: async () => {}, revoke: async () => {}, now: () => 2000 });
+    assert.equal(second.live("u1"), false, "a restart must not clear the adapter's high-water clock");
+    assert.equal(second.clockIsSane, false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("admission is serialized against the sweep, so an approval cannot outlive its record", async () => {
+  // The race all three reviewers found: check live, await the platform approval, and have the sweep
+  // delete the record while that call is in flight, leaving a member admitted but untracked.
+  const dir = mkdtempSync(join(tmpdir(), "mno-grant-"));
+  try {
+    const clock = { t: 1000 };
+    const revoked = [];
+    const ledger = new GrantLedger({
+      file: join(dir, "grants.json"),
+      apply: async () => {},
+      revoke: async (id) => revoked.push(id),
+      now: () => clock.t,
+    });
+    await ledger.grant("u1", { expiresAt: 2000 });
+
+    let release;
+    const admitting = ledger.admitIfLive("u1", () => new Promise((r) => (release = r)));
+    await new Promise((r) => setImmediate(r)); // the admission is now in flight, holding the queue
+
+    clock.t = 2000; // the grant lapses while the approval is outstanding
+    const sweeping = ledger.sweep();
+    release();
+    assert.equal(await admitting, true, "the admission that was already authorized completes");
+    await sweeping;
+    assert.deepEqual(revoked, ["u1"], "and the sweep still removes them afterwards, so nothing is untracked");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("admission requires the record to match the current target", async () => {
+  await withLedger(async ({ ledger }) => {
+    await ledger.grant("u1", { expiresAt: 2000, chatId: "-100old" });
+    const ok = await ledger.admitIfLive("u1", async () => {}, (rec) => rec.chatId === "-100new");
+    assert.equal(ok, false, "a grant issued for another chat must not admit here");
+  });
+});
