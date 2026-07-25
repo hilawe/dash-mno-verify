@@ -150,7 +150,17 @@ follow-up below.
   web session expiry, and the oracle age check all still use wall-clock `Date.now()`, so a backward
   step still skews those durations. Move them to a monotonic process clock.
   (`core/time_guard.js`, `core/gateway.js`, `core/season.js`, `core/config.js`)
-- [ ] Members-tree capacity check before the durable append (2026-07-24 round, found independently by
+- [x] Members-tree capacity check before the durable append (2026-07-24 round, found independently by
+  two reviewers). DONE. `MembersTree` gained `capacity()`/`full()`, `append` throws past capacity, and
+  `fromCommitments` refuses an over-capacity record set rather than materializing a deeper tree.
+  `SeasonMembers.commit` checks `full()` BEFORE calling `appendDurable`, returning
+  `members-tree-full`, so the durable commit point is never written for a registration the tree
+  cannot hold (the gateway passes the reason straight through). Both classes take an optional depth
+  so the boundary is tested at depth 2 instead of building a 65,536-leaf tree; production uses the
+  circuit depth. 233 tests green, including that the power-of-two overflow (the silent
+  deeper-tree path) is refused and that the durable write does not run at capacity.
+  (`core/members_tree.js`, `core/season.js`)
+- [ ] (superseded, kept for the mechanism record) Members-tree capacity, found independently by
   two reviewers; the mechanism below is from tracing the code, and is worse than either described).
   `SeasonMembers.commit` writes the durable record before `tree.append`, and `MembersTree.append` has
   no `2**16` guard. Past capacity the zero-padding loop in `levels()` is skipped, and the failure then

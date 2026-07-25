@@ -24,9 +24,12 @@ export class SeasonMembers {
   // `monotonic` refuses a backward season roll. The gateway sets it, because its clock is guarded
   // and going back would revive lapsed registrations; it is off by default so the rebuild-from-
   // durable-records property stays directly testable.
-  constructor({ store, rootWindow, nowSec, emptyRoot, monotonic = false }) {
+  // `treeDepth` exists so the capacity boundary can be exercised at a small depth; production uses
+  // the MembersTree default, which is the depth the circuits are compiled for.
+  constructor({ store, rootWindow, nowSec, emptyRoot, monotonic = false, treeDepth }) {
     this.store = store;
     this.monotonic = monotonic;
+    this.treeDepth = treeDepth;
     this.rootWindow = rootWindow;
     this.nowSec = nowSec;
     this.emptyRoot = emptyRoot;
@@ -74,7 +77,9 @@ export class SeasonMembers {
   // the serial queue. Building a 2**16 tree is expensive, so this runs only for a context that has
   // records or is about to gain one (a commit), never for an arbitrary empty context.
   async _materializeFrom(contextHash, records) {
-    const tree = await MembersTree.fromCommitments(records.map((r) => r.commitment));
+    const tree = this.treeDepth
+      ? await MembersTree.fromCommitments(records.map((r) => r.commitment), this.treeDepth)
+      : await MembersTree.fromCommitments(records.map((r) => r.commitment));
     const roots = new RootStore(this.rootWindow);
     roots.update([{ height: tree.size(), root: tree.root(), ts: this.nowSec() }]);
     const c = { tree, roots };
@@ -121,6 +126,12 @@ export class SeasonMembers {
     return this._serial(async () => {
       if (this.current !== season) return { ok: false, reason: "season-rolled-retry" };
       const c = await this._materialize(contextHash);
+      // Capacity is checked BEFORE the durable write, because the durable record is the commit
+      // point. Writing it first and then failing to append would leave a bucket that can never be
+      // materialized again, so the order here is the whole point of the check.
+      if (c.tree.full()) {
+        return { ok: false, reason: "members-tree-full", capacity: c.tree.capacity() };
+      }
       const res = await appendDurable();
       if (res.duplicate) return { ok: false, reason: "already-registered" };
       // A bucket bound to a different (engine, statement), or an impossible engine/statement pair:
