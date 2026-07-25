@@ -17,7 +17,7 @@
 //
 // The marks are keyed by the configured epoch and season lengths, because changing either renumbers
 // every epoch and season and makes old marks meaningless rather than violated.
-import { readFileSync, writeFileSync, renameSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, renameSync, mkdirSync, openSync, fsyncSync, closeSync } from "node:fs";
 import { dirname } from "node:path";
 
 import { epochNow, seasonNow } from "../common/index.js";
@@ -62,6 +62,14 @@ export class TimeGuard {
     // Marks from a different epoch or season length describe a different numbering, so they are not
     // comparable. Start fresh rather than report a regression that never happened.
     if (raw?.epochSeconds !== this.epochSeconds || raw?.seasonSeconds !== this.seasonSeconds) return;
+    // Both marks must be well formed together. Accepting whichever one parsed would silently reset
+    // the other side of the guard, so a file with a valid season and a corrupt epoch would leave the
+    // epoch high-water at nothing and let an epoch rollback pass unnoticed.
+    for (const kind of ["epoch", "season"]) {
+      if (raw[kind] != null && !Number.isInteger(raw[kind])) {
+        throw new Error(`clock marks at ${this.path} have a malformed ${kind}. Fix or remove it.`);
+      }
+    }
     if (Number.isInteger(raw.epoch)) this.marks.epoch = raw.epoch;
     if (Number.isInteger(raw.season)) this.marks.season = raw.season;
     // A regression outlives the process. It was sticky in memory only, so a clock that caught up and
@@ -84,7 +92,31 @@ export class TimeGuard {
     mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
     const tmp = `${this.path}.tmp`;
     writeFileSync(tmp, body, { mode: 0o600 });
+    // Rename is atomic but not durable. Without these flushes a power loss can lose the newest mark,
+    // the process restarts against an OLDER high-water, and a rollback to a time between the two goes
+    // undetected, which is the whole failure this guard exists to catch. The adapter ledger already
+    // flushed for the same reason; this did not.
+    this.#fsync(tmp, true);
     renameSync(tmp, this.path);
+    this.#fsync(dirname(this.path), false); // best effort: not every filesystem flushes a directory
+  }
+
+  #fsync(target, required) {
+    let fd;
+    try {
+      fd = openSync(target, "r");
+      fsyncSync(fd);
+    } catch (e) {
+      if (required) throw new Error(`cannot flush the clock marks at ${target} (${e.message})`);
+    } finally {
+      if (fd !== undefined) {
+        try {
+          closeSync(fd);
+        } catch {
+          // already closed or never opened
+        }
+      }
+    }
   }
 
   // Compare a freshly computed period against its mark. Advancing updates the mark, standing still

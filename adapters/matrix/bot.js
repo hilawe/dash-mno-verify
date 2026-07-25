@@ -178,11 +178,12 @@ console.log(`[matrix] starting as ${USER_ID}`);
 // closed starting state is reachable automatically: remove everyone joined or invited that this bot
 // has no live grant for. Runs once, then records that it happened.
 async function reconcileRoom() {
-  if (await reconciliationDone(RECONCILE_MARKER)) return;
+  if (await reconciliationDone(RECONCILE_MARKER, GATED_ROOM)) return;
   const res = await api(`/rooms/${encodeURIComponent(GATED_ROOM)}/members`);
   if (!res.ok) throw new Error(`cannot read room membership to reconcile (${res.status})`);
   const body = await res.json();
   const removed = [];
+  const failed = [];
   for (const ev of body.chunk ?? []) {
     const who = ev.state_key;
     if (!who || who === USER_ID) continue; // never remove the bot itself
@@ -193,9 +194,22 @@ async function reconcileRoom() {
       body: JSON.stringify({ user_id: who, reason: "re-verify to regain access" }),
     });
     if (kick.ok) removed.push(who);
-    else console.error(`[matrix] could not remove ${who} during reconciliation (${kick.status})`);
+    else {
+      failed.push(who);
+      console.error(`[matrix] could not remove ${who} during reconciliation (${kick.status})`);
+    }
   }
-  await markReconciled(RECONCILE_MARKER, { removed: removed.length, room: GATED_ROOM });
+  // Only a CLEAN pass may be recorded. Marking a partial one done would skip reconciliation on every
+  // later start, leaving the members that could not be removed with permanent access the sweep can
+  // never see, which is precisely the historical hole this gate exists to close.
+  if (failed.length) {
+    throw new Error(
+      `refusing to start: could not remove ${failed.length} member(s) with no live grant during ` +
+        `reconciliation (${failed.join(", ")}). Give the bot power to kick them, or remove them by hand, ` +
+        `then start again. Nothing was recorded, so this will retry.`,
+    );
+  }
+  await markReconciled(RECONCILE_MARKER, { removed: removed.length, target: GATED_ROOM });
   console.log(`[matrix] reconciled the gated room, removed ${removed.length} member(s) with no live grant`);
 }
 

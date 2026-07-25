@@ -173,6 +173,10 @@ export const config = {
   // the deliberate operator override, and it should be done only when the correct time is known.
   timeMarksPath: process.env.MNO_TIME_MARKS_PATH ?? "data/time_marks.json",
 
+  // One-time acknowledgement that an existing registration store, written before the schedule header
+  // existed, really was produced under the current epoch and season lengths.
+  assumeSchedule: process.env.MNO_ASSUME_SCHEDULE === "1",
+
   // How many past epochs of spent nullifiers to keep beyond the current one. The verifier only ever
   // consults the epoch a challenge was minted for, so older rows are dead weight, but one past epoch
   // is retained because a challenge minted just before a rollover is still verified against its own

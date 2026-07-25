@@ -104,6 +104,7 @@ test("a re-verification during the epoch extends access instead of being swept",
 test("a revoke failure keeps the record so it retries rather than losing track of live access", async () => {
   const dir = mkdtempSync(join(tmpdir(), "mno-grant-"));
   try {
+    const clock = { t: 1000 };
     let fail = true;
     const ledger = new GrantLedger({
       file: join(dir, "grants.json"),
@@ -111,10 +112,11 @@ test("a revoke failure keeps the record so it retries rather than losing track o
       revoke: async () => {
         if (fail) throw new Error("platform unavailable");
       },
-      now: () => 3000,
+      now: () => clock.t,
       log: () => {},
     });
-    await ledger.grant("u1", { expiresAt: 2000 });
+    await ledger.grant("u1", { expiresAt: 2000 }); // granted while valid
+    clock.t = 3000;                                // and now past its deadline
     assert.deepEqual(await ledger.sweep(), [], "a failed revoke reports nothing revoked");
     assert.equal(ledger.has("u1"), true, "the record stays so the access is not left untracked");
 
@@ -136,10 +138,9 @@ test("a record with no expiry is refused rather than granted forever", async () 
 
 // --- the adapter's own clock, and the upgrade gate ------------------------------------------------
 
-test("an adapter clock moving backwards refuses admission rather than reviving a grant", async () => {
-  // The adapter decides admission independently of the gateway, against absolute deadlines. Its clock
-  // was unguarded, so moving it back before a sweep made an expired grant live again, admitting a
-  // member whose epoch had ended even while the gateway refused new proofs.
+test("a rolled-back clock cannot revive an expired grant", async () => {
+  // The security property. The adapter decides admission against absolute deadlines, so winding its
+  // clock back must not make a lapsed grant look live again.
   const dir = mkdtempSync(join(tmpdir(), "mno-grant-"));
   try {
     const clock = { t: 1000 };
@@ -150,37 +151,87 @@ test("an adapter clock moving backwards refuses admission rather than reviving a
       now: () => clock.t,
     });
     await ledger.grant("u1", { expiresAt: 2000 });
-    assert.equal(ledger.live("u1"), true);
 
-    clock.t = 3000; // past expiry, the mark advances
+    clock.t = 3000; // the grant lapses, and the mark records that this time was reached
     assert.equal(ledger.live("u1"), false);
 
-    clock.t = 1500; // the clock is wound back to before the deadline
-    assert.equal(ledger.live("u1"), false, "a rolled-back clock must not revive an expired grant");
-    assert.equal(ledger.clockIsSane, false);
-
+    clock.t = 1500; // wound back to before the deadline
+    assert.equal(ledger.live("u1"), false, "an expired grant must not come back to life");
     let admitted = false;
     const ok = await ledger.admitIfLive("u1", async () => {
       admitted = true;
     });
-    assert.equal(ok, false, "admission is refused once the clock cannot be trusted");
+    assert.equal(ok, false);
     assert.equal(admitted, false);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test("the clock mark survives a restart, so a rollback across one is still caught", async () => {
+test("a small backward clock correction does not revoke healthy members", async () => {
+  // The other half. An earlier cut treated any regression as "revoke everything", so a routine NTP
+  // step of a second would have destroyed every live grant and forced the whole community to
+  // re-verify. That is a self-inflicted outage, not a safety measure.
+  const dir = mkdtempSync(join(tmpdir(), "mno-grant-"));
+  try {
+    const clock = { t: 1000 };
+    const revoked = [];
+    const ledger = new GrantLedger({
+      file: join(dir, "grants.json"),
+      apply: async () => {},
+      revoke: async (id) => revoked.push(id),
+      now: () => clock.t,
+    });
+    await ledger.grant("u1", { expiresAt: 9000 });
+    await ledger.grant("u2", { expiresAt: 9000 });
+
+    clock.t = 999; // a one-second correction
+    assert.deepEqual(await ledger.sweep(), [], "nothing is due, so nothing may be revoked");
+    assert.deepEqual(revoked, []);
+    assert.equal(ledger.live("u1"), true, "healthy members keep the access they proved for");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the clock mark is durable even when no grant changes", async () => {
+  // A quiet sweep or admission check used to advance the mark in memory only, so a restart compared
+  // against an older mark and a rollback to a time between the two went unnoticed.
   const dir = mkdtempSync(join(tmpdir(), "mno-grant-"));
   const file = join(dir, "grants.json");
   try {
-    const first = new GrantLedger({ file, apply: async () => {}, revoke: async () => {}, now: () => 5000 });
-    await first.grant("u1", { expiresAt: 9000 });
+    const clock = { t: 1000 };
+    const first = new GrantLedger({ file, apply: async () => {}, revoke: async () => {}, now: () => clock.t });
+    await first.grant("u1", { expiresAt: 4000 });
 
-    // A fresh process whose clock is behind where the previous one had reached.
-    const second = new GrantLedger({ file, apply: async () => {}, revoke: async () => {}, now: () => 2000 });
-    assert.equal(second.live("u1"), false, "a restart must not clear the adapter's high-water clock");
-    assert.equal(second.clockIsSane, false);
+    clock.t = 5000; // past the deadline; nothing is granted or revoked, but time moved on
+    await first.sweep();
+
+    // A fresh process whose clock sits back before the deadline.
+    clock.t = 3000;
+    const second = new GrantLedger({ file, apply: async () => {}, revoke: async () => {}, now: () => clock.t });
+    assert.equal(second.live("u1"), false, "the persisted high-water keeps the grant expired");
+    assert.equal(second.clockStatus.mark, 5000, "the quiet observation was written down");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a clock regression is recorded for the operator and survives a restart", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mno-grant-"));
+  const file = join(dir, "grants.json");
+  try {
+    const clock = { t: 5000 };
+    const first = new GrantLedger({ file, apply: async () => {}, revoke: async () => {}, now: () => clock.t });
+    await first.grant("u1", { expiresAt: 9000 });
+    clock.t = 2000;
+    await first.admitIfLive("u1", async () => {});
+    assert.equal(first.clockIsSane, false, "the regression is noticed");
+
+    clock.t = 6000;
+    const second = new GrantLedger({ file, apply: async () => {}, revoke: async () => {}, now: () => clock.t });
+    assert.equal(second.clockIsSane, false, "and a corrected clock does not erase the evidence");
+    assert.equal(second.live("u1"), true, "while a still-valid grant is not punished for it");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

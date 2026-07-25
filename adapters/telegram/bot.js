@@ -204,6 +204,7 @@ await requireReconciled({
   platform: "Telegram",
   markerPath: RECONCILE_MARKER,
   ledgerSize: ledger.size(),
+  target: String(GROUP_ID),
   instructions:
     "Establish a closed starting state first. Either point TELEGRAM_GROUP_ID at a NEW gated group and\n" +
     "move members over as they re-verify, or have an admin remove every current member of the existing\n" +

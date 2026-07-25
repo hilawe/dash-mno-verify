@@ -383,7 +383,7 @@ if (twoTier) {
   regVkey = await loadVerificationKey(config.registrationVkeyPath);
   membersVkey = await loadVerificationKey(config.membersVkeyPath);
   const { RegistrationStore, FileBackend } = await import("./registration_store.js");
-  registrationStore = new RegistrationStore(new FileBackend(config.registrationStorePath, SCHEDULE));
+  registrationStore = new RegistrationStore(new FileBackend(config.registrationStorePath, SCHEDULE, config.assumeSchedule));
   await registrationStore.ready();
   console.log(`[gateway] durable registration records at ${config.registrationStorePath}`);
   // The empty members root, computed once via the fast hasher (instant), so an empty context never
@@ -509,9 +509,10 @@ const server = createServer(async (req, res) => {
       // Two-tier challenges run against this context's own members tree (review finding B2), so a
       // member registered for another community cannot prove here.
       let cur;
+      let challengeSeason;
       if (twoTier) {
-        const season = timeGuard.season();
-        await seasonMembers.ensureContext(season, ctx);
+        challengeSeason = timeGuard.season();
+        await seasonMembers.ensureContext(challengeSeason, ctx);
         cur = seasonMembers.rootCurrent(ctx);
       } else {
         cur = dmlRoots.current();
@@ -523,7 +524,22 @@ const server = createServer(async (req, res) => {
       const sig = signalHash(nonce, account).toString();
       if (!challenges.put(nonce, { account, signalHash: sig, epoch, contextHash: ctx }))
         return send(res, 429, { error: "too many pending challenges" });
-      return send(res, 200, { nonce, signalHash: sig, epoch, root: cur.root, contextHash: ctx, epochSeconds: config.epochSeconds, mode: config.mode });
+      return send(res, 200, {
+        nonce,
+        signalHash: sig,
+        epoch,
+        root: cur.root,
+        contextHash: ctx,
+        epochSeconds: config.epochSeconds,
+        mode: config.mode,
+        // The encoding version, so a rolling upgrade that mixes v1 and v2 gateways is visible rather
+        // than silently minting two membership domains for one community.
+        hashVersion: CONTEXT_VERSION,
+        // Two-tier provers select their member secret by context AND season. Without this the prover
+        // received null and fell back to whichever accepted secret readdir happened to return first,
+        // which after a rollover can be last season's, absent from the current tree.
+        ...(twoTier ? { season: challengeSeason } : {}),
+      });
     }
 
     if (req.method === "POST" && path === "/v1/verify") {

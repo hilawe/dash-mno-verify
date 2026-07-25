@@ -28,9 +28,11 @@ test("a grant persists and applies, and a fresh ledger on the same file sees it 
 test("the sweep revokes an expired grant, removes it, reports it, and leaves a valid one", async () => {
   const file = tmpFile();
   const revoked = [];
-  const l = new GrantLedger({ file, apply: noop, revoke: (u) => (revoked.push(u), noop()), now: () => 100 });
-  await l.grant("expired", rec(50));
-  await l.grant("valid", rec(500));
+  const clock = { t: 100 };
+  const l = new GrantLedger({ file, apply: noop, revoke: (u) => (revoked.push(u), noop()), now: () => clock.t });
+  await l.grant("expired", rec(200)); // both granted while valid
+  await l.grant("valid", rec(5000));
+  clock.t = 300; // only the first has lapsed
   assert.deepEqual(await l.sweep(), ["expired"]);
   assert.deepEqual(revoked, ["expired"]);
   assert.equal(l.has("expired"), false);
@@ -51,6 +53,10 @@ test("a not-yet-expired grant is left alone by the sweep", async () => {
 // fully completes before the new grant applies, and the fresh grant wins.
 test("a grant and a revoke for the same user do not interleave", async () => {
   const file = tmpFile();
+  // The grant is made while it is still valid and the clock then moves past it, which is how a grant
+  // actually expires. Granting an already-expired record is refused now, since that would apply
+  // access that is dead on arrival.
+  const clock = { t: 100 };
   const events = [];
   let release;
   const gate = new Promise((r) => (release = r));
@@ -58,12 +64,13 @@ test("a grant and a revoke for the same user do not interleave", async () => {
     file,
     apply: async (u) => { events.push(`apply:${u}`); },
     revoke: async (u) => { events.push(`revoke-start:${u}`); await gate; events.push(`revoke-end:${u}`); },
-    now: () => 100,
+    now: () => clock.t,
   });
-  await l.grant("u1", rec(50)); // expired
+  await l.grant("u1", rec(200)); // granted while valid
+  clock.t = 300;                // and now lapsed, so the sweep has work
   events.length = 0;
   const sweepP = l.sweep();              // begins revoking u1, then blocks on the gate
-  const grantP = l.grant("u1", rec(999)); // queues behind the revoke on the per-user lock
+  const grantP = l.grant("u1", rec(9999)); // a fresh re-verification, queued behind the revoke
   await Promise.resolve();
   release();
   await Promise.all([sweepP, grantP]);
@@ -129,14 +136,16 @@ test("a missing ledger file loads as empty (first run), a corrupt one fails star
 // the access goes untracked and permanent. The sweep keeps it and a later sweep retries.
 test("a revoke failure during the sweep keeps the grant for a later retry", async () => {
   const file = tmpFile();
+  const clock = { t: 100 };
   let failRevoke = true;
   const l = new GrantLedger({
     file,
     apply: noop,
     revoke: () => (failRevoke ? Promise.reject(new Error("discord 500")) : noop()),
-    now: () => 100,
+    now: () => clock.t,
   });
-  await l.grant("u1", rec(50)); // expired
+  await l.grant("u1", rec(200)); // granted while valid
+  clock.t = 300; // and now past its deadline
   assert.deepEqual(await l.sweep(), []); // revoke failed, nothing reported revoked
   assert.equal(l.has("u1"), true); // record kept
   failRevoke = false;

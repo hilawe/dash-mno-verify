@@ -186,9 +186,10 @@ function bucketsHaveEngine(byBucket, season, engine) {
 // Durable append-only backend. One JSON record per line. The in-memory index is rebuilt from
 // the file on load, so the tree survives a restart and every member keeps their leaf position.
 export class FileBackend {
-  constructor(path, schedule = null) {
+  constructor(path, schedule = null, assumeSchedule = false) {
     this.path = path;
     this.schedule = schedule;
+    this.assumeSchedule = assumeSchedule;
     this.seen = new Set();
     this.byBucket = new Map(); // "season:contextHash" -> records[] in insertion order
     this._loading = null; // memoized load, so concurrent first-callers share one read
@@ -233,8 +234,17 @@ export class FileBackend {
       }
       this.#remember(rec);
     }
-    // Stamp the schedule on a store that predates this header, or on a fresh one, so the NEXT change
-    // is caught. A pre-existing store cannot be checked retroactively, which is stated in TODO.
+    // A store that predates the header cannot be checked retroactively: stamping it ASSERTS that its
+    // existing records were written under the current schedule, which nobody verified. An empty store
+    // is safe to stamp; one with records is not, so it needs the operator to say so.
+    if (!seenHeader && this.schedule != null && this.seen.size > 0 && !this.assumeSchedule) {
+      throw new Error(
+        `${this.path} has registration records but no schedule header, so it predates this check and ` +
+          `its records cannot be attributed to a schedule. If you know they were written under ` +
+          `${this.schedule}, set MNO_ASSUME_SCHEDULE=1 once to stamp it; otherwise point MNO_REG_PATH ` +
+          `at a new file, which forces members to re-register.`,
+      );
+    }
     if (!seenHeader && this.schedule != null) {
       await appendFile(this.path, JSON.stringify({ type: "schedule", schedule: this.schedule }) + "\n");
     }

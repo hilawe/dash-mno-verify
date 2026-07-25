@@ -17,6 +17,7 @@ import { dirname } from "node:path";
 
 export class GrantLedger {
   #serial = Promise.resolve();
+  #saveSeq = 0;
 
   // `validate` decides whether a record is well formed, and `orphaned(prev, next)` returns the part
   // of a prior grant a renewal does not carry forward (so it can be revoked before the new grant is
@@ -48,6 +49,11 @@ export class GrantLedger {
     this.log = log;
     this.writeFileFn = writeFileFn; // injectable so the persist-failure path is testable
     this.map = this.#load();
+    // Compare the loaded high-water against the clock immediately. live() is a read-only check now,
+    // so without this a process that STARTS behind its own mark would report a sane clock until some
+    // async path happened to observe one, and admit on the strength of it in the meantime. The flag
+    // is persisted by the next write; detecting it at startup is what has to be immediate.
+    this.#observeClock();
   }
 
   // Only a missing file means an empty ledger (first run). A corrupt, unreadable, or malformed file is
@@ -75,6 +81,9 @@ export class GrantLedger {
       grants = obj.grants;
       const mark = Number(obj.meta?.clockMark);
       if (Number.isFinite(mark)) this.clockMark = mark;
+      // Sticky across restarts, exactly as the gateway's guard is. Held only in memory, a temporary
+      // glitch plus any failed revoke plus a restart would quietly re-admit expired members.
+      if (obj.meta?.clockRegressed) this.clockRegressed = obj.meta.clockRegressed;
     }
     const map = new Map();
     for (const [userId, r] of Object.entries(grants)) {
@@ -93,30 +102,47 @@ export class GrantLedger {
   // blocking read is harmless. Callers save only inside #run, so saves never overlap.
   async #save() {
     await mkdir(dirname(this.file), { recursive: true });
-    const tmp = `${this.file}.tmp`;
+    // A per-save temporary name. A single shared ".tmp" meant two saves could interleave and the
+    // second rename would find the file already consumed by the first.
+    const tmp = `${this.file}.${process.pid}.${(this.#saveSeq += 1)}.tmp`;
     await this.writeFileFn(
       tmp,
-      JSON.stringify({ meta: { clockMark: this.clockMark }, grants: Object.fromEntries(this.map) }, null, 2),
+      JSON.stringify(
+        { meta: { clockMark: this.clockMark, clockRegressed: this.clockRegressed }, grants: Object.fromEntries(this.map) },
+        null,
+        2,
+      ),
     );
     // Rename alone is atomic but not durable: the whole point of persist-before-apply is that a grant
     // recorded here survives the machine losing power right after access was applied. Without these
     // flushes the record could still be in the page cache, the machine could come back with the old
     // ledger, and the member's access would be live and untracked forever. Flush the file, then the
     // rename, then the directory entry that makes the rename visible.
-    await this.#fsync(tmp);
+    await this.#fsyncFile(tmp);
     await rename(tmp, this.file);
-    await this.#fsync(dirname(this.file));
+    await this.#fsyncDirBestEffort(dirname(this.file));
   }
 
-  // Best effort by design: a filesystem that cannot flush a directory handle is not a reason to
-  // refuse a grant, but everything that can be flushed is.
-  async #fsync(target) {
+  // Flushing the FILE is part of the persist-before-apply guarantee, so a failure there fails the
+  // grant rather than letting the caller apply access whose record may not survive a power loss.
+  // Flushing the DIRECTORY is best effort: some filesystems do not support it, and refusing every
+  // grant on that basis would be worse than the residual risk, which is stated rather than hidden.
+  async #fsyncFile(target) {
+    const fh = await open(target, "r");
+    try {
+      await fh.sync();
+    } finally {
+      await fh.close().catch(() => {});
+    }
+  }
+
+  async #fsyncDirBestEffort(target) {
     let fh;
     try {
       fh = await open(target, "r");
       await fh.sync();
     } catch {
-      // nothing to do, see above
+      // See above: not every filesystem can flush a directory handle.
     } finally {
       await fh?.close().catch(() => {});
     }
@@ -148,9 +174,14 @@ export class GrantLedger {
     if (!this.validate(record)) throw new Error(`refusing to grant a malformed record for ${userId}`);
     return this.#run(async () => {
       // Issuing a grant is an observation of the clock, so the high-water mark advances here too.
-      // Without this the mark stayed null until something happened to read liveness, and a restart
-      // then had nothing to compare against and could not see a rollback at all.
-      this.#guardedNow();
+      // The map mutation below persists it; a change with no mutation is written explicitly.
+      this.#observeClock();
+      // Refuse a deadline that has already passed. Near an epoch boundary a slow queue or a slow
+      // platform call could otherwise apply access that is expired the moment it is granted, and it
+      // would then sit live until the next sweep, up to a full sweep interval later.
+      if (this.#effectiveNow() >= record.expiresAt) {
+        throw new Error(`refusing to grant ${userId} access that has already expired`);
+      }
       const prev = this.map.get(userId);
       // If a renewal changes the target, revoke the parts of the prior grant the new one does not carry
       // forward, before applying the new grant, so old access (including a different mode or role id) is
@@ -191,18 +222,25 @@ export class GrantLedger {
   // notify them. The live record is re-checked inside the serialized operation, so a member who re-verified
   // during the sweep keeps their fresh access.
   async sweep() {
-    // A backward clock must not make the sweep think nothing is due, so it reads the guarded clock
-    // too. Once regressed, admission is refused above, and everything still on the books is swept.
-    const t = this.#guardedNow();
-    const due = [...this.map]
-      .filter(([, r]) => this.clockRegressed || t >= r.expiresAt)
-      .map(([u]) => u);
+    // Sweeping against the effective clock, so a rolled-back wall clock neither hides work that is
+    // due nor manufactures work that is not. Revoking everything on any regression was the earlier
+    // behaviour and it turned a one-second correction into a mass revocation. The observation runs
+    // inside the queue like every other write, so its save cannot race another one.
+    // Everything up to enqueuing the revocations stays SYNCHRONOUS. Awaiting here would yield the
+    // event loop and let a concurrent re-verification queue ahead of the revocations, so a stale
+    // revoke could land on top of freshly granted access. The metadata save is enqueued rather than
+    // awaited, which keeps it ordered without giving up that guarantee.
+    if (this.#observeClock()) {
+      this.#run(() => this.#save()).catch((e) => this.log(`could not persist the clock mark: ${e.message}`));
+    }
+    const t = this.#effectiveNow();
+    const due = [...this.map].filter(([, r]) => t >= r.expiresAt).map(([u]) => u);
     const revoked = [];
     for (const userId of due) {
       await this.#run(async () => {
         const live = this.map.get(userId);
         if (!live) return;
-        if (!this.clockRegressed && this.now() < live.expiresAt) return; // re-verified meanwhile
+        if (this.#effectiveNow() < live.expiresAt) return; // re-verified meanwhile, leave it alone
         try {
           await this.revoke(userId, live);
         } catch (e) {
@@ -221,15 +259,44 @@ export class GrantLedger {
   // recorded and, from then on, every admission is refused. Refusing is the safe direction: a member
   // waiting for a corrected clock is an inconvenience, while admitting one whose epoch has ended is
   // the failure the whole grant lifecycle exists to prevent.
-  #guardedNow() {
+  // Update the clock state in memory and report whether anything changed, so the async callers can
+  // persist it. Advancing the mark without persisting it was a real hole: a quiet interval could move
+  // the mark forward in memory only, and after a restart the guard compared against an OLDER mark, so
+  // a rollback to a time between the two went undetected and admitted members whose epoch had ended.
+  #observeClock() {
     const t = this.now();
-    if (this.clockMark == null || t > this.clockMark) this.clockMark = t;
-    else if (t < this.clockMark) this.clockRegressed = true;
-    return t;
+    if (this.clockMark == null || t > this.clockMark) {
+      this.clockMark = t;
+      return true;
+    }
+    if (t < this.clockMark && !this.clockRegressed) {
+      this.clockRegressed = { observed: t, mark: this.clockMark, at: t };
+      return true;
+    }
+    return false;
   }
 
-  get clockIsSane() {
-    return !this.clockRegressed;
+  // Read-only view of the clock, for callers that are not in a position to persist. It deliberately
+  // does NOT advance the mark: an observation that cannot be written down is one a restart would
+  // forget, and a forgotten high-water is what lets a later rollback pass unnoticed.
+  // The time every expiry decision is made against: the wall clock, floored at the highest value ever
+  // observed. This is the resolution of two opposing review findings. Treating a regression as
+  // "revoke everything" meant a routine one-second correction destroyed every member's access, and
+  // combined with a sticky flag it bricked the adapter permanently. Ignoring a regression meant a
+  // rolled-back clock revived grants that had already expired. Flooring at the mark does neither:
+  // time never moves backwards for expiry purposes, so nothing revives and nothing is mass-revoked.
+  // A forward jump that is later corrected leaves the mark high, which expires grants early, the
+  // conservative direction.
+  // Observing here as well as in the async paths is deliberate. An earlier cut made this read-only
+  // so that no observation could go unpersisted, and that was wrong in a worse way: the mark then
+  // never advanced on a plain liveness check, so the floor stayed stale and a rollback past it DID
+  // revive an expired grant. The mark advances on every read, and grant, admitIfLive and sweep write
+  // it down. A mark advance seen only by a read and then lost to a crash falls back to an older,
+  // lower floor, which is the same position as never having observed it.
+  #effectiveNow() {
+    this.#observeClock();
+    const t = this.now();
+    return this.clockMark == null ? t : Math.max(t, this.clockMark);
   }
 
   // Decide admission and perform it INSIDE the serial queue, so a sweep cannot revoke and delete
@@ -244,8 +311,8 @@ export class GrantLedger {
   async admitIfLive(userId, admit, matches = () => true) {
     return this.#run(async () => {
       const record = this.map.get(userId);
-      const t = this.#guardedNow();
-      if (this.clockRegressed) return false; // cannot vouch for any deadline against a clock that moved back
+      if (this.#observeClock()) await this.#save(); // durable before any admission decision rests on it
+      const t = this.#effectiveNow();
       if (!record || t >= record.expiresAt) return false;
       if (!matches(record)) return false;
       await admit(record);
@@ -262,11 +329,21 @@ export class GrantLedger {
     return this.map.get(userId) ?? null;
   }
   // Whether a grant exists and has not lapsed.
+  // A read-only liveness check. Callers that admit on the strength of it must use admitIfLive, which
+  // observes and persists the clock first; this one only reports.
   live(userId) {
     const r = this.map.get(userId);
-    const t = this.#guardedNow();
-    if (this.clockRegressed) return false;
-    return Boolean(r) && t < r.expiresAt;
+    return Boolean(r) && this.#effectiveNow() < r.expiresAt;
+  }
+
+  // Reported for the operator, not used to gate access: the effective clock already prevents a
+  // regression from reviving a grant, so refusing service on top of that would only add an outage.
+  get clockIsSane() {
+    return !this.clockRegressed;
+  }
+
+  get clockStatus() {
+    return { mark: this.clockMark, regression: this.clockRegressed || null };
   }
   size() {
     return this.map.size;
