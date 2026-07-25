@@ -150,8 +150,12 @@ follow-up below.
   web session expiry, and the oracle age check all still use wall-clock `Date.now()`, so a backward
   step still skews those durations. Move them to a monotonic process clock.
   (`core/time_guard.js`, `core/gateway.js`, `core/season.js`, `core/config.js`)
-- [x] Members-tree capacity check before the durable append (2026-07-24 round, found independently by
-  two reviewers). DONE. `MembersTree` gained `capacity()`/`full()`, `append` throws past capacity, and
+- [x] Members-tree capacity check before the durable append. DONE. Provenance, corrected after the
+  fact: this was FIRST raised on 2026-06-26 as a MAJOR finding ("tree capacity is implicit and
+  unchecked", naming both the DML and members trees), and it went unfixed for a month before two
+  reviewers in the 2026-07-24 round found it again independently. The DML half had since been closed
+  (`common/dml_root.js` refuses a leaf count over capacity, and the gateway validates snapshot leaves
+  against it), so the members-tree half was the remainder, and the June finding is now fully closed. `MembersTree` gained `capacity()`/`full()`, `append` throws past capacity, and
   `fromCommitments` refuses an over-capacity record set rather than materializing a deeper tree.
   `SeasonMembers.commit` checks `full()` BEFORE calling `appendDurable`, returning
   `members-tree-full`, so the durable commit point is never written for a registration the tree

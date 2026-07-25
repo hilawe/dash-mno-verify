@@ -34,9 +34,9 @@ The main active work is the zkVM registration integration, the durable fix for t
 cost (the 2.3 GB PLONK proving key). Its state:
 
 - Research phase COMPLETE and reviewed to convergence. A RISC Zero prototype (`research/risc0-registration/`)
-  implements and measures the registration statement. Four full multi-model adversarial rounds (Codex
-  CLI, Codex app, Gemini, Grok) found NO statement-soundness hole, and every real finding was in test
-  and measurement scaffolding and was folded. Cross-implementation golden vectors (`test/vectors/zkvm_golden.json`)
+  implements and measures the registration statement. Four full adversarial rounds, across three
+  model families other than the author's, found NO statement-soundness hole, and every real finding
+  was in test and measurement scaffolding and was folded. Cross-implementation golden vectors (`test/vectors/zkvm_golden.json`)
   are reproduced by circomlibjs (JS) and light-poseidon (Rust), so circomlib-compatible Poseidon in the
   guest holds and cross-engine nullifier identity is guaranteed.
 

@@ -4,8 +4,8 @@ Date: 2026-06-26
 Repository: dash-mno-verify (anonymous zero-knowledge proof of Dash masternode control, used to
 gate access to private communities)
 
-Reviewers: three independent passes. OpenAI Codex ran a whole-repo audit. Two Claude Code
-sub-reviews ran in parallel, one on zero-knowledge circuit and nullifier soundness, one on the
+Reviewers: three independent passes, across two model families other than the author's. One ran a
+whole-repo audit. Two sub-reviews ran in parallel, one on zero-knowledge circuit and nullifier soundness, one on the
 JavaScript gateway and oracle plus the live uncommitted diff. This review used the new third
 lens, creative out-of-the-box opportunities kept grounded in the code. Findings reached
 independently by more than one reviewer are marked (consensus).
@@ -33,7 +33,7 @@ account cannot grant another" (`core/stores.js:59`) is false as wired.
 Fix: every adapter must reject unless `out.account` equals the submitter, then grant `out.account`.
 Stronger fix in Lens 3 (bind the account into the circuit signal).
 
-### B2. The two-tier members root is not scoped to context, so one registration grants every community that season  (Codex, BLOCKER)
+### B2. The two-tier members root is not scoped to context, so one registration grants every community that season  (whole-repo pass, BLOCKER)
 The registration nullifier is context-scoped, but the accepted members root is a single global
 season tree (`core/gateway.js:71,144,190`, `core/registration_store.js:55`). A user who registers
 once for any `(platform, community, role)` in a season can then prove membership against that same
@@ -62,7 +62,7 @@ rebuild recovers, but within the process the views can disagree for the rest of 
 Fix: run the whole register critical section inside the season serialization (`seasonOp`), and
 re-check `currentSeason` immediately before `membersTree.append`, aborting if it moved.
 
-### M3. The oracle root is trusted without freshness or source authentication  (consensus: Codex + both passes, MAJOR)
+### M3. The oracle root is trusted without freshness or source authentication  (consensus: all three passes, MAJOR)
 The gateway accepts whatever JSON the single configured source returns and records `o.root` with
 no signature, no schema or format validation, and no recomputation (`core/stores.js:33`,
 `core/gateway.js:55`; `isRecent` only checks ring-buffer membership at `core/stores.js:27`). Plain
@@ -73,7 +73,7 @@ Fix: have the gateway recompute the root from the published leaves (it already s
 builder) and reject on mismatch, require https, add a max root age, validate `depth`, `height`,
 and `leaves.length`, and prefer signed or Platform-published roots. See Lens 3.
 
-### M4. Verification-key and public-signal binding is not asserted in continuous integration  (crypto pass + Codex, MAJOR)
+### M4. Verification-key and public-signal binding is not asserted in continuous integration  (crypto pass + whole-repo pass, MAJOR)
 The committed verification keys are not diffed against keys exported from the deployed circuits in
 CI, and `core/verifier.js` hard-codes the public-signal index map with a comment saying to confirm
 it against the compiled circuit's `public.json`, which is never done. A wrong signal-index map
@@ -102,10 +102,10 @@ the cookie on the initial GET.
 - Platform-backed two-tier is documented as available but the gateway aborts for
   `MNO_MODE=two-tier` plus `MNO_STORE=platform` (`core/gateway.js:91`). The abort itself is the
   safe choice (failing loud beats a non-shared store that could double-grant), but the docs
-  overpromise. Fix the docs or implement the backend. (Codex)
+  overpromise. Fix the docs or implement the backend. (whole-repo pass)
 - Two-tier commitments are linkable if a user reuses a secret, because the leaf is `Poseidon(secret)`
   with no domain separation (`circuits/mno_registration.circom:51`). The CLI draws a fresh secret,
-  so this is user-error dependent. Domain-separate with `contextHash`. (Codex)
+  so this is user-error dependent. Domain-separate with `contextHash`. (whole-repo pass)
 - No grace window at the epoch boundary, so a challenge minted just before a boundary is rejected
   (`core/gateway.js:148` vs `:175`). Availability, not security. (JS pass)
 - The file-backed registration store serializes appends only within one process; two gateways on
@@ -116,9 +116,9 @@ the cookie on the initial GET.
 - Tree capacity is implicit and unchecked. Both the DML and members trees assume depth 16 (65,536
   leaves). Beyond that, the JavaScript builders stop matching the circuit and fail oddly
   (`oracle/oracle.js:22`, `core/members_tree.js:52`). Reject inserts and snapshots over
-  `2 ** TREE_DEPTH`, and make depth a shared constant. (Codex, MAJOR)
+  `2 ** TREE_DEPTH`, and make depth a shared constant. (whole-repo pass, MAJOR)
 - The registration store's query model bakes in season-only roots, which is the structural source
-  of B2. Make context part of the store's primary read path. (Codex, MINOR)
+  of B2. Make context part of the store's primary read path. (whole-repo pass, MINOR)
 - Otherwise the architecture is reasonable. Module boundaries (circuits, prover, oracle, gateway,
   adapters, core) are clean, and the verifier hard-fails with no try/catch swallowing a failure
   into success and no default-allow.
@@ -194,6 +194,6 @@ the highest-value test work.
 ## Provenance
 
 This document is the durable, session-independent synthesis. Three reviewers ran on 2026-06-26
-(Codex plus two Claude sub-reviews). The Codex run cost 88,689 tokens. The raw reports are
+(a whole-repo pass plus two focused sub-reviews). The whole-repo run cost 88,689 tokens. The raw reports are
 transient. There is no FUTURE_DIRECTIONS file in this repo; TODO.md is the natural place to track
 these items, and it had uncommitted edits at review time, so it was left untouched here.
