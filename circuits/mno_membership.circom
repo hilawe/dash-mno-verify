@@ -18,7 +18,7 @@ template MnoMembership(treeDepth, n, k) {
     // public inputs
     signal input root;                     // current DML root from the oracle
     signal input epoch;
-    signal input contextHash;              // hash("dash-mno-verify:v1:platform:community:role")
+    signal input contextHash;              // opaque field element; derived in JS (common/index.js, v2 tuple encoding)
     signal input signalHash;               // bound to the per-request challenge nonce
 
     // public output
