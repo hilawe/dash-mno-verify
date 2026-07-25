@@ -210,6 +210,49 @@ test("an unknown nullifier store name fails at boot rather than falling back", a
   await assert.rejects(startGateway({ MNO_STORE: "postgres" }), /must be one of/);
 });
 
+test("a backward clock refuses the state-bearing endpoints and reports itself unready", async () => {
+  // Seed the high-water marks in the future, which is what a gateway that ran before a backward
+  // clock correction would have left behind. Rebuilding a past season's members tree from records
+  // still on disk would revive registrations that were meant to have lapsed, so it must refuse.
+  const dir = await mkdtemp(join(tmpdir(), "mno-clockback-"));
+  const marks = join(dir, "time_marks.json");
+  const epochSeconds = 100;
+  const seasonSeconds = 1000;
+  const future = Math.floor(Date.now() / 1000) + 10 * seasonSeconds;
+  await writeFile(
+    marks,
+    JSON.stringify({
+      epochSeconds,
+      seasonSeconds,
+      epoch: Math.floor(future / epochSeconds),
+      season: Math.floor(future / seasonSeconds),
+    }),
+  );
+
+  const gw = await startGateway({
+    MNO_STORE: "sqlite",
+    MNO_ALLOW_EPHEMERAL_NULLIFIERS: "",
+    MNO_NULLIFIER_PATH: join(dir, "nf.sqlite"),
+    MNO_TIME_MARKS_PATH: marks,
+    MNO_EPOCH_SECONDS: String(epochSeconds),
+    MNO_SEASON_SECONDS: String(seasonSeconds),
+  });
+  try {
+    const ch = await post(gw.base, "/v1/challenge", { platform: "p", communityId: "c", roleId: "r", account: "alice" });
+    assert.equal(ch.status, 503, "challenge must refuse while the clock is behind its high-water mark");
+    assert.equal(ch.body.error, "clock-regression");
+
+    const health = await (await fetch(gw.base + "/v1/health")).json();
+    assert.equal(health.ok, false, "health must report unready, not merely alive");
+    // The handler observes the epoch before the season, and both regressed, so the first one seen
+    // is what gets recorded.
+    assert.equal(health.clockRegression.kind, "epoch");
+  } finally {
+    gw.proc.kill();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("a zkVM registration engine refuses to boot until the receipt verifier is wired", async () => {
   await assert.rejects(
     startGateway({ MNO_MODE: "two-tier", MNO_REGISTRATION_ENGINE: "zkvm", MNO_REGISTRATION_STATEMENT: "custody" }),

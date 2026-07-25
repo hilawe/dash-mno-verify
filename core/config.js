@@ -166,6 +166,13 @@ export const config = {
   // The durable claim database for MNO_STORE=sqlite.
   nullifierStorePath: process.env.MNO_NULLIFIER_PATH ?? "data/nullifiers.sqlite",
 
+  // Where the highest observed epoch and season are recorded, so a backward clock cannot roll the
+  // gateway's security state back into a period it has already left. Unused in ephemeral mode
+  // (MNO_STORE=memory), which has no durable state to protect. If a clock jumped far forward and was
+  // then corrected, the gateway stays refused until real time passes the mark; deleting this file is
+  // the deliberate operator override, and it should be done only when the correct time is known.
+  timeMarksPath: process.env.MNO_TIME_MARKS_PATH ?? "data/time_marks.json",
+
   // How many past epochs of spent nullifiers to keep beyond the current one. The verifier only ever
   // consults the epoch a challenge was minted for, so older rows are dead weight, but one past epoch
   // is retained because a challenge minted just before a rollover is still verified against its own

@@ -131,15 +131,25 @@ follow-up below.
   at all, the registration nullifier spent for the season, and no recovery (the secret is
   client-side randomness the gateway never sees). Write-before plus exclusive create avoids both
   that and the overwrite bug. (`prover/two_tier.js`, `prover/prover.js`)
-- [ ] Clock-regression guard (2026-07-24 round). `epochNow`/`seasonNow` are pure wall-clock and
-  `SeasonMembers._roll` accepts any different season including a LOWER one, with old records still
-  durable, so a backward clock move across a season boundary reloads an earlier season's members
-  and revives expired credentials (also skews challenge TTLs, rate windows, grant sweeps, oracle
-  age checks). Fix: persist high-water season and epoch, refuse challenge/registration/verify when
-  computed time falls below either mark (report not-ready rather than silently clamping), use a
-  monotonic process clock for challenge TTL and rate-limit intervals, and on restart compare wall
-  time against a persisted last-observed time with a small tolerance. (`common/index.js`,
-  `core/season.js`, `core/gateway.js`, `core/stores.js`)
+- [x] Clock-regression guard (2026-07-24 round). DONE for the period-scoping half. `core/time_guard.js`
+  persists the highest epoch and season ever observed (0600, written to a temp file and renamed so a
+  crash mid-write cannot truncate the marks away) and every period the gateway derives from the clock
+  now goes through it, all ten former `epochNow`/`seasonNow` call sites. A computed value below its
+  mark records a sticky regression: `/v1/challenge`, `/v1/verify`, and `/v1/register` answer 503
+  `clock-regression`, and `/v1/health` reports `ok: false` with the detail, so readiness is visible
+  rather than inferred from failures elsewhere. The read endpoints stay up on purpose so an operator
+  can diagnose. Marks are keyed by the configured epoch and season lengths, so changing either
+  renumbers the periods and starts fresh instead of reporting a regression that never happened. In
+  ephemeral mode (`MNO_STORE=memory`) the marks stay in memory, since there is no durable state to
+  protect. `SeasonMembers` gained a `monotonic` option (the gateway sets it) that refuses a backward
+  season roll as defense in depth; it is off by default because rebuilding an arbitrary season from
+  the durable records is a real property of that class and is worth testing directly. Recovery from a
+  far-forward clock jump that was later corrected is to delete the marks file, documented at
+  `timeMarksPath` in `core/config.js` and in `docs/DEPLOY.md`. 226 tests green.
+  REMAINING (not done here, lower severity): challenge TTL, rate-limit windows, Discord grant sweeps,
+  web session expiry, and the oracle age check all still use wall-clock `Date.now()`, so a backward
+  step still skews those durations. Move them to a monotonic process clock.
+  (`core/time_guard.js`, `core/gateway.js`, `core/season.js`, `core/config.js`)
 - [ ] Members-tree capacity check before the durable append (2026-07-24 round, found independently by
   two reviewers; the mechanism below is from tracing the code, and is worse than either described).
   `SeasonMembers.commit` writes the durable record before `tree.append`, and `MembersTree.append` has

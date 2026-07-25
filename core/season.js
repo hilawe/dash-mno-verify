@@ -21,8 +21,12 @@ export class SeasonMembers {
   // its fast hasher, which returns it in O(1)). It is what an empty context serves WITHOUT building
   // and caching a 2**16 tree, so an attacker cannot force unbounded expensive tree builds by varying
   // the context on an unauthenticated read.
-  constructor({ store, rootWindow, nowSec, emptyRoot }) {
+  // `monotonic` refuses a backward season roll. The gateway sets it, because its clock is guarded
+  // and going back would revive lapsed registrations; it is off by default so the rebuild-from-
+  // durable-records property stays directly testable.
+  constructor({ store, rootWindow, nowSec, emptyRoot, monotonic = false }) {
     this.store = store;
+    this.monotonic = monotonic;
     this.rootWindow = rootWindow;
     this.nowSec = nowSec;
     this.emptyRoot = emptyRoot;
@@ -50,6 +54,16 @@ export class SeasonMembers {
   // and only a real rollover resets them (which is what makes a stale-season root stop being
   // accepted). Caller must hold the serial queue.
   _roll(season) {
+    // Under `monotonic`, never roll backwards. The gateway's TimeGuard already refuses to serve on a
+    // backward clock, so reaching here with an earlier season means something bypassed it, and
+    // rebuilding a past season's trees would revive registrations meant to have lapsed. Staying put
+    // is the safe direction: it serves a root nobody can prove against rather than one that grants
+    // access. It is off by default because rebuilding an arbitrary season from the durable records is
+    // a real property of this class (the tree is a cache, not the source of truth) and is worth
+    // exercising directly; only the gateway, which owns a monotonic clock, turns it on.
+    if (this.monotonic && this.current != null && season < this.current) {
+      throw new Error(`refusing to roll the members tree back from season ${this.current} to ${season}`);
+    }
     if (this.current !== season) {
       this.ctx.clear();
       this.current = season;

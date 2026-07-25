@@ -33,6 +33,7 @@ import { makeDmlRootHasher } from "./dml_root.js";
 import { shaRootFromLeaves } from "../common/dml_sha_root.js";
 import { isCanonicalField } from "../common/field.js";
 import { contextHash, signalHash, epochNow, seasonNow } from "../common/index.js";
+import { TimeGuard } from "./time_guard.js";
 import { snapshotMessage, verifySnapshotSig, snapshotVersion } from "../common/oracle_sig.js";
 
 const twoTier = config.mode === "two-tier";
@@ -57,6 +58,17 @@ if (config.oraclePubkeys.length === 0 && !config.allowUnsignedOracle) {
       "dev, demos, tests, or a trusted private network only).",
   );
 }
+
+// Monotonic epoch and season. Every period the gateway derives from the clock goes through this, so
+// a backward step cannot quietly rebuild a past season's members tree or reopen an epoch whose spent
+// nullifiers have already been pruned. In ephemeral mode there is no durable state to protect, so
+// the marks stay in memory and vanish with the process.
+const timeGuard = new TimeGuard({
+  path: config.store === "memory" ? null : config.timeMarksPath,
+  epochSeconds: config.epochSeconds,
+  seasonSeconds: config.seasonSeconds,
+  nowSec,
+});
 
 const challenges = new ChallengeStore(config.challengeTtlSeconds, config.maxPendingChallenges);
 
@@ -258,7 +270,7 @@ async function refreshRoots() {
     // deployment that has served zkVM registrations cannot be downgraded to v1 by clearing the flag.
     let requiresSha = config.requireShaRoot;
     if (!requiresSha && twoTier && registrationStore) {
-      requiresSha = await registrationStore.seasonHasEngine(seasonNow(config.seasonSeconds, nowSec()), "zkvm");
+      requiresSha = await registrationStore.seasonHasEngine(timeGuard.season(), "zkvm");
     }
     validateSnapshot(o, requiresSha);
     // Always recompute the root from the published leaves and trust only a self-consistent snapshot,
@@ -346,8 +358,16 @@ if (twoTier) {
   // The empty members root, computed once via the fast hasher (instant), so an empty context never
   // forces a 2**16 tree build (see SeasonMembers).
   const emptyMembersRoot = dmlRootFromLeaves([]);
-  seasonMembers = new SeasonMembers({ store: registrationStore, rootWindow: config.rootWindow, nowSec, emptyRoot: emptyMembersRoot });
-  await seasonMembers.ensure(seasonNow(config.seasonSeconds, nowSec()));
+  seasonMembers = new SeasonMembers({
+    store: registrationStore,
+    rootWindow: config.rootWindow,
+    nowSec,
+    emptyRoot: emptyMembersRoot,
+    // The gateway's seasons come from the guarded clock, so a backward roll here would mean the
+    // guard was bypassed. Refuse rather than rebuild a season that has already ended.
+    monotonic: true,
+  });
+  await seasonMembers.ensure(timeGuard.season());
 } else {
   vkey = await loadVerificationKey(config.verificationKeyPath);
 }
@@ -357,7 +377,7 @@ setInterval(refreshRoots, config.oracleRefreshSeconds * 1000);
 setInterval(() => challenges.sweep(), 60_000);
 setInterval(() => { challengeLimiter.sweep(); verifyLimiter.sweep(); registerLimiter.sweep(); membersLimiter.sweep(); }, 60_000);
 // Roll the members tree over at a season boundary even when no request arrives to trigger it.
-if (twoTier) setInterval(() => seasonMembers.ensure(seasonNow(config.seasonSeconds, nowSec())).catch(() => {}), 60_000);
+if (twoTier) setInterval(() => seasonMembers.ensure(timeGuard.season()).catch(() => {}), 60_000);
 
 // Drop spent nullifiers from epochs that can no longer be verified against, so a long-lived gateway
 // does not grow without bound. Only a durable store implements prune; the in-memory one dies with
@@ -367,7 +387,7 @@ if (twoTier) setInterval(() => seasonMembers.ensure(seasonNow(config.seasonSecon
 if (typeof nullifiers.prune === "function") {
   const pruneClaims = () => {
     try {
-      const cutoff = epochNow(config.epochSeconds, nowSec()) - config.nullifierRetainEpochs;
+      const cutoff = timeGuard.epoch() - config.nullifierRetainEpochs;
       const { removed } = nullifiers.prune(cutoff);
       if (removed) console.log(`[gateway] pruned ${removed} spent nullifiers older than epoch ${cutoff}`);
     } catch (e) {
@@ -429,6 +449,20 @@ const server = createServer(async (req, res) => {
     const url = new URL(req.url, "http://localhost");
     const path = url.pathname;
 
+    // Refuse the state-bearing endpoints if the clock has stepped backwards. Observing both periods
+    // here is what detects it, so this runs before any handler reads an epoch or a season. The read
+    // endpoints (dml, members, health) stay up on purpose, so an operator can still see what the
+    // gateway thinks the time is while diagnosing.
+    if (path === "/v1/challenge" || path === "/v1/verify" || path === "/v1/register") {
+      timeGuard.epoch();
+      timeGuard.season();
+      if (timeGuard.regressed) {
+        const { kind, observed, mark } = timeGuard.regression;
+        console.error(`[gateway] refusing ${path}: ${kind} went backwards (saw ${observed}, high-water ${mark})`);
+        return send(res, 503, { error: "clock-regression", period: kind });
+      }
+    }
+
     if (req.method === "POST" && path === "/v1/challenge") {
       // Auth before the rate limiter, so an unauthorized caller cannot burn the bucket for a client
       // key and block the real adapter.
@@ -445,7 +479,7 @@ const server = createServer(async (req, res) => {
       // member registered for another community cannot prove here.
       let cur;
       if (twoTier) {
-        const season = seasonNow(config.seasonSeconds, nowSec());
+        const season = timeGuard.season();
         await seasonMembers.ensureContext(season, ctx);
         cur = seasonMembers.rootCurrent(ctx);
       } else {
@@ -454,7 +488,7 @@ const server = createServer(async (req, res) => {
       if (!cur) return send(res, 503, { error: "no root available yet" });
 
       const nonce = randomUUID();
-      const epoch = epochNow(config.epochSeconds, nowSec());
+      const epoch = timeGuard.epoch();
       const sig = signalHash(nonce, account).toString();
       if (!challenges.put(nonce, { account, signalHash: sig, epoch, contextHash: ctx }))
         return send(res, 429, { error: "too many pending challenges" });
@@ -488,7 +522,7 @@ const server = createServer(async (req, res) => {
       // proof against the stale root is rejected as stale-or-unknown-root.
       let rootStore = dmlRoots;
       if (twoTier) {
-        await seasonMembers.ensureContext(seasonNow(config.seasonSeconds, nowSec()), pending.contextHash);
+        await seasonMembers.ensureContext(timeGuard.season(), pending.contextHash);
         rootStore = seasonMembers.rootStore(pending.contextHash);
       }
       let result;
@@ -540,7 +574,7 @@ const server = createServer(async (req, res) => {
       if (!platform || !communityId || !roleId || !proof || !publicSignals) return send(res, 400, { error: "missing fields" });
 
       const ctx = contextHash({ platform, communityId, roleId }).toString();
-      const season = seasonNow(config.seasonSeconds, nowSec());
+      const season = timeGuard.season();
       await seasonMembers.ensure(season);
       const result = await verifyRegistration({
         vkey: regVkey,
@@ -575,7 +609,7 @@ const server = createServer(async (req, res) => {
       if (!membersLimiter.allow(clientKey(req))) return send(res, 429, { error: "rate limited" });
       const ctx = url.searchParams.get("context");
       if (!ctx || !isCanonicalField(ctx)) return send(res, 400, { error: "context must be a canonical field element" });
-      await seasonMembers.ensureContext(seasonNow(config.seasonSeconds, nowSec()), ctx);
+      await seasonMembers.ensureContext(timeGuard.season(), ctx);
       return send(res, 200, { membersRoot: seasonMembers.root(ctx), size: seasonMembers.size(ctx), commitments: seasonMembers.commitments(ctx) });
     }
 
@@ -596,12 +630,17 @@ const server = createServer(async (req, res) => {
       // Two-tier has no single members root (one per context), so health reports the count of
       // active context trees instead, alongside the shared DML root.
       const dmlRoot = dmlRoots.current()?.root ?? null;
+      // ok reports readiness, not liveness: a clock regression leaves the process healthy but
+      // unwilling to issue or verify, and an operator needs to see that here rather than infer it
+      // from 503s on the other endpoints.
+      const season = timeGuard.season();
       return send(res, 200, {
-        ok: true,
+        ok: !timeGuard.regressed,
         mode: config.mode,
         root: twoTier ? null : dmlRoot,
         dmlRoot,
-        season: seasonNow(config.seasonSeconds, nowSec()),
+        season,
+        ...(timeGuard.regressed ? { clockRegression: timeGuard.regression } : {}),
         ...(twoTier ? { contexts: seasonMembers.contextCount() } : {}),
       });
     }
