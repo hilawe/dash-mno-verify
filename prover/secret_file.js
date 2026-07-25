@@ -21,8 +21,26 @@
 // that same secret rather than minting a new one, so the proof it rebuilds still matches the
 // commitment the gateway may already hold.
 import { open, readFile, chmod, rename, readdir } from "node:fs/promises";
+import { dirname } from "node:path";
 
 const MODE = 0o600;
+
+// Flushing the file is not enough: the DIRECTORY ENTRY that makes it findable is a separate write.
+// A power loss between the two leaves the gateway holding a committed registration and the member
+// holding nothing, with the seasonal nullifier already spent, which is unrecoverable for that season.
+// Best effort, because not every filesystem can flush a directory handle, and refusing to register on
+// that basis would be worse than the residual risk.
+async function fsyncDir(path) {
+  let fh;
+  try {
+    fh = await open(dirname(path), "r");
+    await fh.sync();
+  } catch {
+    // see above
+  } finally {
+    await fh?.close().catch(() => {});
+  }
+}
 
 // One file per (platform, community, role, season), so registering for a second community or a new
 // season cannot collide with a secret that is still in use. Anything outside a conservative
@@ -53,6 +71,7 @@ export async function writePendingSecret(path, record) {
   } finally {
     await fh.close();
   }
+  await fsyncDir(path);
 }
 
 // Promote a pending secret once the gateway has accepted the registration. The secret itself is
@@ -65,8 +84,9 @@ export async function markSecretAccepted(path, extra = {}) {
   // loss during promotion could leave an empty or half-written file, destroying the only copy of the
   // secret and stranding the member for the season. That is the very failure this module exists to
   // prevent, so promotion has to be atomic too, not just creation.
-  const tmp = `${path}.tmp`;
-  const fh = await open(tmp, "w", MODE);
+  // A unique temporary name, so two runs promoting at once cannot consume each other's file.
+  const tmp = `${path}.${process.pid}.tmp`;
+  const fh = await open(tmp, "wx", MODE);
   try {
     await fh.writeFile(JSON.stringify({ ...current, ...extra, status: "accepted" }, null, 2));
     await fh.sync();
@@ -75,6 +95,7 @@ export async function markSecretAccepted(path, extra = {}) {
   }
   await rename(tmp, path);
   await chmod(path, MODE);
+  await fsyncDir(path);
 }
 
 // Find the secret that belongs to a challenge's context, so the per-epoch prove does not make the

@@ -19,6 +19,12 @@ export MATRIX_USER_ID=@yourbot:matrix.org
 export MATRIX_GATED_ROOM=!roomid:matrix.org
 export MNO_GATEWAY_URL=http://127.0.0.1:8787
 
+# recovery only
+# MATRIX_RESET_CLOCK=1 drops the adapter's clock floor to the current time, for the case where a large
+# forward clock glitch was recorded and every grant now reads as expired. Start once with it, then
+# unset it. Only use it when the host clock is known to be correct: the floor is what stops a
+# rolled-back clock reviving access that has already lapsed.
+
 # optional
 export MATRIX_GRANT_LEDGER=data/matrix-grants.json  # where granted access is recorded
 export MATRIX_SWEEP_SECONDS=60                      # how often lapsed access is taken back

@@ -178,7 +178,7 @@ test("a retry refuses a secret recorded for a different context", async () => {
   });
 });
 
-test("promotion is atomic: the secret survives a failed write", async () => {
+test("promotion leaves the secret intact and 0600", async () => {
   await withDir(async (dir) => {
     const p = join(dir, "m.secret.json");
     await writePendingSecret(p, { secret: "keepme", contextHash: "ctx", season: "9" });
@@ -187,5 +187,23 @@ test("promotion is atomic: the secret survives a failed write", async () => {
     assert.equal(rec.secret, "keepme", "promotion must never disturb the secret itself");
     assert.equal(rec.status, "accepted");
     assert.equal(statSync(p).mode & 0o777, 0o600);
+  });
+});
+
+test("a promotion interrupted before its rename leaves the pending secret readable", async () => {
+  // The earlier version of this test was named for a failed write and never injected one, so it
+  // proved nothing about the crash it claimed to cover. Promotion writes a sibling and renames, so
+  // the state to check is: the original is still whole while the temporary exists.
+  await withDir(async (dir) => {
+    const p = join(dir, "m.secret.json");
+    await writePendingSecret(p, { secret: "keepme", contextHash: "ctx", season: "9" });
+
+    // Stand in for a crash after the sibling is written but before the rename commits.
+    writeFileSync(`${p}.${process.pid}.tmp`, "partially written garbage");
+
+    const rec = await readSecretFile(p);
+    assert.equal(rec.secret, "keepme", "the only copy of the secret is untouched by an interrupted promotion");
+    assert.equal(rec.status, "pending", "and it is still resumable");
+    assert.equal((await resolveSecret(p, { contextHash: "ctx", season: "9" })).kind, "retry");
   });
 });

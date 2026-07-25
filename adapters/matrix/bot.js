@@ -136,6 +136,7 @@ async function handle(roomId, sender, body, state) {
 // re-verify and be invited again next epoch.
 const ledger = new GrantLedger({
   file: LEDGER_FILE,
+  resetClock: process.env.MATRIX_RESET_CLOCK === "1",
   log: (m) => console.error("[matrix]", m),
   apply: async (userId) => {
     const res = await api(`/rooms/${encodeURIComponent(GATED_ROOM)}/invite`, {

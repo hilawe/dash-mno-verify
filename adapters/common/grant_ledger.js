@@ -33,6 +33,7 @@ export class GrantLedger {
     validate = (r) => Boolean(r) && Number.isFinite(r.expiresAt),
     orphaned = () => null,
     now = () => Math.floor(Date.now() / 1000),
+    resetClock = false,
     log = () => {},
     writeFileFn = writeFile,
   } = {}) {
@@ -48,6 +49,7 @@ export class GrantLedger {
     this.apply = apply;
     this.revoke = revoke;
     this.now = now;
+    this.resetClock = resetClock;
     this.log = log;
     this.writeFileFn = writeFileFn; // injectable so the persist-failure path is testable
     this.map = this.#load();
@@ -55,6 +57,17 @@ export class GrantLedger {
     // so without this a process that STARTS behind its own mark would report a sane clock until some
     // async path happened to observe one, and admit on the strength of it in the meantime. The flag
     // is persisted by the next write; detecting it at startup is what has to be immediate.
+    // A large forward clock jump, once observed, floors every later decision above every real
+    // deadline, so existing grants read as expired and admissions are refused until wall time catches
+    // up. That is the conservative direction but it has no way back on its own, so the operator gets
+    // one: start once with resetClock and the floor is dropped to the current clock. It is deliberately
+    // explicit and logged, because using it while the clock is genuinely wrong reopens the rollback
+    // hole the floor exists to close.
+    if (this.resetClock) {
+      this.log(`clock floor reset by request: was ${this.clockMark}, now ${this.now()}`);
+      this.clockMark = null;
+      this.clockRegressed = false;
+    }
     this.#observeClock();
     this.#persistIfMoved();
   }

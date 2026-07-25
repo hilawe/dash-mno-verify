@@ -47,6 +47,7 @@ const bot = new Bot(TOKEN);
 // to do at grant time because admission happens later, when the member actually asks to join.
 const ledger = new GrantLedger({
   file: LEDGER_FILE,
+  resetClock: process.env.TELEGRAM_RESET_CLOCK === "1",
   log: (m) => console.error("[telegram]", m),
   apply: async () => {},
   revoke: async (userId) => {
