@@ -8,6 +8,7 @@ import process from "node:process";
 import { randomUUID } from "node:crypto";
 import { proveInstructions } from "../../common/prover_instructions.js";
 import { RoomStateTracker, isPrivateDirectRoomState } from "./room_privacy.js";
+import { GrantLedger } from "../common/grant_ledger.js";
 
 const HS = process.env.MATRIX_HOMESERVER; // e.g. https://matrix.org
 const TOKEN = process.env.MATRIX_ACCESS_TOKEN;
@@ -20,6 +21,8 @@ const ADAPTER_SECRET = process.env.MNO_ADAPTER_SECRET;
 const authHeaders = ADAPTER_SECRET ? { authorization: `Bearer ${ADAPTER_SECRET}` } : {};
 const COMMUNITY = process.env.MATRIX_COMMUNITY ?? GATED_ROOM;
 const ROLE = process.env.MATRIX_ROLE ?? "member";
+const LEDGER_FILE = process.env.MATRIX_GRANT_LEDGER ?? "data/matrix-grants.json";
+const SWEEP_SECONDS = Number(process.env.MATRIX_SWEEP_SECONDS ?? 60);
 
 const api = (path, opts = {}) =>
   fetch(`${HS}/_matrix/client/v3${path}`, {
@@ -93,13 +96,55 @@ async function handle(roomId, sender, body, state) {
   const out = await res.json();
   if (!out.ok) return sendText(roomId, `Verification failed (${out.reason ?? "unknown"}). Send !verify to start over.`);
 
-  // access is membership in the gated room
-  await api(`/rooms/${encodeURIComponent(GATED_ROOM)}/invite`, {
-    method: "POST",
-    body: JSON.stringify({ user_id: sender }),
-  });
-  return sendText(roomId, "Verified. You have been invited to the members room for this epoch.");
+  // Access is membership in the gated room, recorded so it can be taken back when the epoch lapses.
+  if (!Number.isFinite(out.expiresAt)) {
+    console.error("[matrix] gateway returned no valid expiresAt");
+    return sendText(roomId, "Verification succeeded but the gateway did not say when access ends. Nothing was granted; try again.");
+  }
+  try {
+    await ledger.grant(sender, { expiresAt: out.expiresAt });
+  } catch (e) {
+    console.error("[matrix] grant failed:", e.message);
+    return sendText(roomId, "Verification succeeded but the invite could not be issued. Send !verify to try again.");
+  }
+  const until = new Date(out.expiresAt * 1000).toISOString().replace("T", " ").slice(0, 16);
+  return sendText(roomId, `Verified. You have been invited to the members room until ${until} UTC. Re-verify before then to keep access.`);
 }
+
+// Access here is membership in the gated room, so granting is an invite and revoking is a kick. The
+// bot used to invite and never look again, which left a member in the room long after the epoch they
+// proved for had passed; the grant is now recorded and swept, the same lifecycle the Discord adapter
+// has. A kick (not a ban) is the right revoke: it removes the member while leaving them free to
+// re-verify and be invited again next epoch.
+const ledger = new GrantLedger({
+  file: LEDGER_FILE,
+  log: (m) => console.error("[matrix]", m),
+  apply: async (userId) => {
+    const res = await api(`/rooms/${encodeURIComponent(GATED_ROOM)}/invite`, {
+      method: "POST",
+      body: JSON.stringify({ user_id: userId }),
+    });
+    // Already in the room is success, not failure: the member re-verified before their grant lapsed.
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      if (body?.errcode === "M_FORBIDDEN" && /already in the room/i.test(body?.error ?? "")) return;
+      throw new Error(`invite failed (${res.status} ${body?.errcode ?? ""})`);
+    }
+  },
+  revoke: async (userId) => {
+    const res = await api(`/rooms/${encodeURIComponent(GATED_ROOM)}/kick`, {
+      method: "POST",
+      body: JSON.stringify({ user_id: userId, reason: "membership epoch lapsed, re-verify to rejoin" }),
+    });
+    // A member who already left is the state we wanted, so treat it as revoked rather than retrying
+    // forever. Anything else is a real failure and must propagate, so the sweep keeps the record.
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      if (body?.errcode === "M_FORBIDDEN" && /not in the room/i.test(body?.error ?? "")) return;
+      throw new Error(`kick failed (${res.status} ${body?.errcode ?? ""})`);
+    }
+  },
+});
 
 // The privacy check reads room state as of each message, so the bot keeps a room-state cache fed from
 // every sync. The initial sync (no `since`) loads the current state of each joined room without
@@ -107,6 +152,15 @@ async function handle(roomId, sender, body, state) {
 // order, updating state on state events and judging each message against the state at its position.
 const rooms = new RoomStateTracker();
 console.log(`[matrix] starting as ${USER_ID}`);
+
+// Sweep at startup as well as on the interval, so grants that lapsed while the bot was down are
+// taken back promptly rather than waiting for the first tick.
+async function sweep() {
+  const revoked = await ledger.sweep();
+  for (const userId of revoked) console.log(`[matrix] access revoked for ${userId} (epoch lapsed)`);
+}
+await sweep().catch((e) => console.error("[matrix] startup sweep failed:", e.message));
+setInterval(() => sweep().catch((e) => console.error("[matrix] sweep failed:", e.message)), SWEEP_SECONDS * 1000).unref();
 
 const init = await (await api("/sync?timeout=0")).json();
 for (const [roomId, room] of Object.entries(init.rooms?.join ?? {})) {

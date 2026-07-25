@@ -7,8 +7,8 @@ anywhere else in the repo.
 
 - `discord/` grants a server role.
 - `web/` a browser gate for a token-gated site, grants a session.
-- `telegram/` gates a group with a single-use invite link.
-- `matrix/` invites the member to a gated room.
+- `telegram/` gates a group by approving join requests from verified accounts, and removes them when the epoch lapses.
+- `matrix/` invites the member to a gated room, and kicks them when the epoch lapses.
 
 Four different access actions, one gateway contract. That is the platform-neutral seam
 working.

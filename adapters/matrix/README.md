@@ -7,7 +7,7 @@ the member to the gated room.
 ## Setup
 
 1. Create a Matrix account for the bot and get an access token for it.
-2. Put the bot in the gated room with permission to invite users.
+2. Put the bot in the gated room with permission to invite users AND to kick them (removal at expiry needs the kick power level, typically 50).
 3. Set the environment, then run `npm run matrix`.
 
 Members verify in a direct chat with the bot whose history visibility is "joined". A freshly created direct message often defaults to "shared", which the bot declines, so a member may need to set the room's history visibility to "Members only (since they joined)" before running `!verify`. A configured private verification room is tracked as a follow-up in `TODO.md`.
@@ -18,6 +18,10 @@ export MATRIX_ACCESS_TOKEN=...           # the bot's access token
 export MATRIX_USER_ID=@yourbot:matrix.org
 export MATRIX_GATED_ROOM=!roomid:matrix.org
 export MNO_GATEWAY_URL=http://127.0.0.1:8787
+
+# optional
+export MATRIX_GRANT_LEDGER=data/matrix-grants.json  # where granted access is recorded
+export MATRIX_SWEEP_SECONDS=60                      # how often lapsed access is taken back
 ```
 
 ## Flow

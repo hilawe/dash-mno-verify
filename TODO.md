@@ -180,7 +180,30 @@ follow-up below.
   exactly-at-capacity accept and capacity-plus-one reject at a small parameterized depth, and assert
   the power-of-two case cannot publish a deeper-than-TREE_DEPTH root.
   (`core/season.js`, `core/members_tree.js`, `core/registration_store.js`)
-- [ ] Telegram and Matrix grant lifecycle (2026-07-24 round). Only Discord enforces epoch expiry
+- [x] Telegram and Matrix grant lifecycle (2026-07-24 round). DONE. The Discord ledger's mechanics
+  (persist before applying, every operation serialized, atomic replace on save, a failed revoke
+  keeping the record so it retries) moved to `adapters/common/grant_ledger.js`, with the record
+  validator and the renewal-migration hook injected. Discord re-exports it already carrying its own
+  two, so the bot and its 14 tests are unchanged.
+  Matrix now records each grant and sweeps it at startup and on an interval, kicking (not banning) a
+  member whose epoch lapsed so they can re-verify and be invited again; "already in the room" on
+  invite and "not in the room" on kick are treated as success, anything else propagates so the sweep
+  retries.
+  Telegram's transferable invite link is gone. The gateway binds a proof to one account and the
+  adapter used to hand out a bearer link anyone could use; the link now only creates a JOIN REQUEST,
+  and `chat_join_request` is approved solely for an account holding a live grant and declined
+  otherwise, so a forwarded link grants nobody. The grant is recorded BEFORE the link is issued, so a
+  usable link can never exist without a record behind it. Expiry removes the member with a ban
+  immediately followed by an unban, which is Telegram's way of removing without leaving a standing
+  ban. `allowed_updates` now asks for `chat_join_request`, which grammY does not request by default.
+  Both adapters' READMEs document the new permission each needs (Telegram: restrict members; Matrix:
+  the kick power level) and the new optional env vars, and the descriptions no longer present either
+  as an invite-and-forget gate. 240 tests green, including that a second account is never live under
+  another's grant, that a grant survives a restart and is still swept, that a re-verification extends
+  rather than being swept, and that a failed revoke retries.
+  (`adapters/common/grant_ledger.js`, `adapters/telegram/bot.js`, `adapters/matrix/bot.js`,
+  `adapters/discord/grant_ledger.js`)
+- [ ] (superseded, kept for the finding record) Telegram and Matrix grant lifecycle. Only Discord enforced epoch expiry
   (durable ledger plus sweep). Telegram converts the account-bound verification into a transferable
   one-use invite link (forwardable, and consumable by a different account) and never removes members;
   Matrix invites the verified account directly but membership survives the epoch. Fix: per-adapter
