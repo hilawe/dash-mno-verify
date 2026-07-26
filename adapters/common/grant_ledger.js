@@ -250,21 +250,33 @@ export class GrantLedger {
   // ledger. A clean shutdown releases it, so an ordinary restart is immediate. A process that dies
   // without releasing leaves the lease to go stale, which is why there is a timeout rather than a
   // permanent claim.
+  // Read-and-claim has to be ONE atomic step. Read then write would let two processes starting
+  // together after a crash both see the same stale claim, both decide it was theirs to take, and both
+  // run, which is the situation this whole mechanism exists to prevent. BEGIN IMMEDIATE takes the
+  // write lock up front, so the second process blocks, then reads the first one's fresh claim and
+  // refuses.
   #claimLease() {
-    const held = this.#readLease();
-    if (held && held.token !== this.#leaseToken) {
-      const age = this.#wallClock() - Number(held.at);
-      if (Number.isFinite(age) && age >= 0 && age < this.#leaseStaleMs) {
-        throw new Error(
-          `refusing to start: another process holds ${this.file} (pid ${held.pid} on ${held.host}, ` +
-            `last seen ${Math.round(age / 1000)}s ago). Running two adapters against one ledger lets a ` +
-            `removal and a fresh grant for the same member interleave. Stop the other process first. ` +
-            `If it crashed, the claim expires ${Math.ceil((this.#leaseStaleMs - age) / 1000)}s from now.`,
-        );
+    this.#db.exec("BEGIN IMMEDIATE");
+    try {
+      const held = this.#readLease();
+      if (held && held.token !== this.#leaseToken) {
+        const age = this.#wallClock() - Number(held.at);
+        if (Number.isFinite(age) && age >= 0 && age < this.#leaseStaleMs) {
+          throw new Error(
+            `refusing to start: another process holds ${this.file} (pid ${held.pid} on ${held.host}, ` +
+              `last seen ${Math.round(age / 1000)}s ago). Running two adapters against one ledger lets a ` +
+              `removal and a fresh grant for the same member interleave. Stop the other process first. ` +
+              `If it crashed, the claim expires ${Math.ceil((this.#leaseStaleMs - age) / 1000)}s from now.`,
+          );
+        }
+        this.log(`taking over ${this.file} from pid ${held.pid} on ${held.host}, whose claim went stale`);
       }
-      this.log(`taking over ${this.file} from pid ${held.pid} on ${held.host}, whose claim went stale`);
+      this.#writeLease();
+      this.#db.exec("COMMIT");
+    } catch (e) {
+      this.#db.exec("ROLLBACK");
+      throw e;
     }
-    this.#writeLease();
   }
 
   #readLease() {
