@@ -85,6 +85,7 @@ test("a grant survives a restart, so the sweep still knows to revoke it", async 
   try {
     const first = new GrantLedger({ file, apply: async () => {}, revoke: async () => {}, now: () => 1000 });
     await first.grant("u1", { expiresAt: 2000 });
+    first.close(); // a restart means the first process is gone, and closing releases its claim
 
     // A fresh process, after the epoch has passed.
     const revoked = [];
@@ -219,6 +220,7 @@ test("the clock mark is durable even when no grant changes", async () => {
 
     clock.t = 5000; // past the deadline; nothing is granted or revoked, but time moved on
     await first.sweep();
+    first.close();
 
     // A fresh process whose clock sits back before the deadline.
     clock.t = 3000;
@@ -240,6 +242,7 @@ test("a clock regression is recorded for the operator and survives a restart", a
     clock.t = 2000;
     await first.admitIfLive("u1", async () => {});
     assert.equal(first.clockIsSane, false, "the regression is noticed");
+    first.close();
 
     clock.t = 6000;
     const second = new GrantLedger({ file, apply: async () => {}, revoke: async () => {}, now: () => clock.t });
@@ -311,6 +314,7 @@ test("a refused grant persists the clock it refused against before it returns", 
     assert.equal(storedMark(file), 3000, "the observation must be durable before the caller is told");
 
     // And the point of it: a restart with a corrected, lower clock must not revive the old grant.
+    first.close();
     const second = new GrantLedger({ file, apply: async () => {}, revoke: async () => {}, now: () => 2000 });
     assert.equal(second.live("u1"), false, "an expired grant must not come back under a rolled-back clock");
   } finally {
@@ -400,20 +404,19 @@ test("a slow platform call for one member does not hold up another", async () =>
   }
 });
 
-// Cross-process safety, which the single-file ledger never had: two instances would have interleaved
-// whole-map writes and lost grants. Both sides now see each other's rows, and the clock floor is read
-// back from the database on every observation rather than trusted from memory, so a lagging process
-// cannot admit against a floor another process has already moved past.
+// Shared state between two instances. `lease: false` on both, because the startup lease normally
+// refuses the second one outright; what is under test here is what the state does when two of them
+// DO coexist, which is the window a stale lease leaves open after a process dies without releasing.
 test("two ledgers on one database share the grants and the clock floor", async () => {
   const dir = mkdtempSync(join(tmpdir(), "mno-grant-"));
   const file = join(dir, "grants.db");
   try {
     const aClock = { t: 1000 };
-    const a = new GrantLedger({ file, apply: async () => {}, revoke: async () => {}, now: () => aClock.t });
+    const a = new GrantLedger({ file, lease: false, apply: async () => {}, revoke: async () => {}, now: () => aClock.t });
     await a.grant("u1", { expiresAt: 2000 });
 
     // A second process, still back at its own start time.
-    const b = new GrantLedger({ file, apply: async () => {}, revoke: async () => {}, now: () => 1000 });
+    const b = new GrantLedger({ file, lease: false, apply: async () => {}, revoke: async () => {}, now: () => 1000 });
     assert.equal(b.has("u1"), true, "the grant one process wrote is visible to the other");
     assert.equal(b.live("u1"), true);
 
@@ -429,6 +432,121 @@ test("two ledgers on one database share the grants and the clock floor", async (
     assert.equal(a.has("u2"), true);
     a.close();
     b.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// The blocker two independent reviewers found in the SQLite migration, and the reason the sweep's
+// delete is conditional on the revision it read.
+//
+// The per-member chain is a promise chain in memory, so it binds only the process it lives in. Two
+// adapter processes therefore have no shared lock across the platform call in the middle of a
+// removal. Process A's sweep reads an expired row and starts removing the access; process B records
+// a fresh grant for that member and applies it; A then finishes and deletes the row. With an
+// unconditional delete that left the member holding live access with NO record, which no later sweep
+// can find, and which is exactly the outcome the whole lifecycle exists to prevent.
+//
+// The startup lease normally stops two processes coexisting at all. This is the backstop for the
+// window a stale lease leaves open, so both instances here run with the lease off.
+test("a stale sweep in another process cannot delete a fresh grant", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mno-grant-"));
+  const file = join(dir, "grants.db");
+  try {
+    const clock = { t: 1000 };
+    let releaseRevoke;
+    const revokeGate = new Promise((r) => (releaseRevoke = r));
+    let applied = false;
+
+    const a = new GrantLedger({
+      file,
+      lease: false,
+      apply: async () => {},
+      revoke: async () => {
+        await revokeGate; // A is inside the platform call, holding only ITS OWN in-memory lock
+      },
+      now: () => clock.t,
+      log: () => {},
+    });
+    const b = new GrantLedger({
+      file,
+      lease: false,
+      apply: async () => {
+        applied = true;
+      },
+      revoke: async () => {},
+      now: () => clock.t,
+    });
+
+    await a.grant("u1", { expiresAt: 2000 });
+    clock.t = 3000; // the grant lapses
+
+    const sweeping = a.sweep(); // reads the expired row, then blocks inside revoke
+    await new Promise((r) => setImmediate(r));
+
+    // The member re-verifies against the OTHER process while that removal is still in flight.
+    await b.grant("u1", { expiresAt: 9000 });
+    assert.equal(applied, true, "the fresh access was applied on the platform");
+
+    releaseRevoke();
+    const revoked = await sweeping;
+
+    assert.deepEqual(revoked, [], "a sweep that was overtaken must not report a revocation");
+    assert.equal(b.has("u1"), true, "the fresh grant must survive the stale sweep");
+    assert.equal(b.get("u1").expiresAt, 9000, "and it must still be the fresh record");
+    a.close();
+    b.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// The layer that stops the situation above arising at all.
+test("a second process refuses to start while the first still holds the ledger", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mno-grant-"));
+  const file = join(dir, "grants.db");
+  try {
+    const opts = { file, apply: async () => {}, revoke: async () => {}, now: () => 1000 };
+    const first = new GrantLedger(opts);
+    await first.grant("u1", { expiresAt: 9000 });
+
+    assert.throws(() => new GrantLedger(opts), /another process holds/, "two adapters on one ledger");
+
+    // A clean shutdown releases the claim, so an ordinary restart is immediate rather than making the
+    // operator wait out the staleness window.
+    first.close();
+    const second = new GrantLedger(opts);
+    assert.equal(second.has("u1"), true);
+    second.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a claim left behind by a process that died is taken over once it goes stale", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mno-grant-"));
+  const file = join(dir, "grants.db");
+  try {
+    const wall = { ms: 1_000_000 };
+    const opts = {
+      file,
+      apply: async () => {},
+      revoke: async () => {},
+      now: () => 1000,
+      leaseStaleMs: 30_000,
+      wallClock: () => wall.ms,
+      log: () => {},
+    };
+    const crashed = new GrantLedger(opts); // never closed, standing in for a process that died
+    await crashed.grant("u1", { expiresAt: 9000 });
+
+    wall.ms += 29_000; // still within the window
+    assert.throws(() => new GrantLedger(opts), /another process holds/);
+
+    wall.ms += 2_000; // now past it
+    const taken = new GrantLedger(opts);
+    assert.equal(taken.has("u1"), true, "and the ledger it left behind is intact");
+    taken.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

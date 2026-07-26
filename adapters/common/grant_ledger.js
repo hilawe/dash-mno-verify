@@ -37,13 +37,19 @@
 import { DatabaseSync } from "node:sqlite";
 import { chmodSync, mkdirSync, readFileSync, renameSync, existsSync } from "node:fs";
 import { dirname } from "node:path";
+import { randomUUID } from "node:crypto";
+import { hostname } from "node:os";
 
+// `rev` increments on every write to a row and is what makes the sweep's delete conditional. Without
+// it the delete was unconditional and ran after the platform call, so a fresh grant written by ANOTHER
+// process during that call was silently deleted by this one, leaving live access with no record.
 const SCHEMA = `
   CREATE TABLE IF NOT EXISTS grants (
     user_id    TEXT PRIMARY KEY,
     expires_at INTEGER NOT NULL,
     record     TEXT    NOT NULL,
-    updated_at INTEGER NOT NULL
+    updated_at INTEGER NOT NULL,
+    rev        INTEGER NOT NULL DEFAULT 1
   );
   CREATE INDEX IF NOT EXISTS grants_expires_at ON grants (expires_at);
   CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
@@ -53,6 +59,10 @@ export class GrantLedger {
   #db;
   #chain = new Map(); // userId -> tail of that member's operation chain
   #stmt = {};
+  #leaseToken = randomUUID();
+  #leaseEnabled = true;
+  #leaseStaleMs = 30_000;
+  #wallClock = () => Date.now();
 
   // `validate` decides whether a record is well formed, and `orphaned(prev, next)` returns the part
   // of a prior grant a renewal does not carry forward (so it can be revoked before the new grant is
@@ -74,6 +84,9 @@ export class GrantLedger {
     log = () => {},
     importFrom = null,
     putFn = null,
+    lease = true,
+    leaseStaleMs = 30_000,
+    wallClock = () => Date.now(),
   } = {}) {
     this.file = file;
     this.validate = validate;
@@ -84,7 +97,10 @@ export class GrantLedger {
     this.log = log;
     this.putFn = putFn; // injectable so the persist-failure path stays testable
 
-    if (file !== ":memory:") mkdirSync(dirname(file), { recursive: true });
+    // Owner-only on the directory too. The database and its siblings are set to 0600 below, which a
+    // direct check confirms covers the -wal and -shm files, but a restrictive directory costs nothing
+    // and still holds if a chmod ever fails on an unusual filesystem.
+    if (file !== ":memory:") mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
     this.#db = new DatabaseSync(file);
     // Narrow the file BEFORE enabling write-ahead logging: SQLite creates the sibling -wal and -shm
     // files from the database file's own mode, so doing this afterwards leaves those two holding the
@@ -104,16 +120,23 @@ export class GrantLedger {
     // Two adapter processes on one ledger should wait for each other rather than fail immediately.
     this.#db.exec("PRAGMA busy_timeout=5000");
     this.#db.exec(SCHEMA);
+    // A database written before `rev` existed has no such column, and CREATE TABLE IF NOT EXISTS will
+    // not add one. Add it in place rather than making the operator start over.
+    if (!this.#db.prepare("PRAGMA table_info(grants)").all().some((c) => c.name === "rev")) {
+      this.#db.exec("ALTER TABLE grants ADD COLUMN rev INTEGER NOT NULL DEFAULT 1");
+    }
 
     this.#stmt = {
-      get: this.#db.prepare("SELECT record FROM grants WHERE user_id=?"),
+      get: this.#db.prepare("SELECT record, rev FROM grants WHERE user_id=?"),
       all: this.#db.prepare("SELECT user_id, record FROM grants"),
       due: this.#db.prepare("SELECT user_id FROM grants WHERE expires_at <= ? ORDER BY user_id"),
       put: this.#db.prepare(
-        "INSERT INTO grants (user_id, expires_at, record, updated_at) VALUES (?, ?, ?, ?) " +
-          "ON CONFLICT(user_id) DO UPDATE SET expires_at=excluded.expires_at, record=excluded.record, updated_at=excluded.updated_at",
+        "INSERT INTO grants (user_id, expires_at, record, updated_at, rev) VALUES (?, ?, ?, ?, 1) " +
+          "ON CONFLICT(user_id) DO UPDATE SET expires_at=excluded.expires_at, record=excluded.record, " +
+          "updated_at=excluded.updated_at, rev=grants.rev+1",
       ),
-      del: this.#db.prepare("DELETE FROM grants WHERE user_id=?"),
+      // Conditional on the revision the caller read. See the sweep for why.
+      del: this.#db.prepare("DELETE FROM grants WHERE user_id=? AND rev=?"),
       count: this.#db.prepare("SELECT COUNT(*) AS n FROM grants"),
       readMeta: this.#db.prepare("SELECT v FROM meta WHERE k=?"),
       // MAX, not a plain assignment. Another process may already have observed a later time, and a
@@ -125,6 +148,13 @@ export class GrantLedger {
       setMeta: this.#db.prepare("INSERT INTO meta (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v"),
       delMeta: this.#db.prepare("DELETE FROM meta WHERE k=?"),
     };
+
+    // Claim the ledger BEFORE the migration, so two processes starting together cannot both try to
+    // adopt the legacy file.
+    this.#leaseStaleMs = leaseStaleMs;
+    this.#wallClock = wallClock;
+    this.#leaseEnabled = lease;
+    if (lease) this.#claimLease();
 
     this.#importLegacy(importFrom);
     this.#validateAll();
@@ -166,9 +196,15 @@ export class GrantLedger {
   }
 
   #row(userId) {
+    return this.#rowWithRev(userId)?.record ?? null;
+  }
+
+  // The record together with the revision it was read at, so a caller that awaits a platform call and
+  // then writes can tell whether the row is still the one it decided about.
+  #rowWithRev(userId) {
     const row = this.#stmt.get.get(String(userId));
     if (row === undefined) return null;
-    return this.#parse(String(userId), row.record);
+    return { record: this.#parse(String(userId), row.record), rev: Number(row.rev) };
   }
 
   #parse(userId, json) {
@@ -200,12 +236,68 @@ export class GrantLedger {
     return this.putFn ? this.putFn(write, userId, record) : write();
   }
 
+  // ---- one process at a time ---------------------------------------------------------------------
+
+  // The ledger is designed for exactly one adapter process per platform, and until now nothing
+  // enforced that. SQLite serializes individual statements, but a grant or a removal is a statement,
+  // then an await on a platform call, then another statement. Nothing in the database holds a lock
+  // across that gap, and the per-member chain that does hold it is a promise chain in memory, so it
+  // binds only the process it lives in. Two processes could therefore interleave a removal and a
+  // fresh grant for one member.
+  //
+  // The conditional delete in sweep() keeps that from stranding untracked access. This lease is what
+  // stops the situation arising: a second process refuses to start while a first one still holds the
+  // ledger. A clean shutdown releases it, so an ordinary restart is immediate. A process that dies
+  // without releasing leaves the lease to go stale, which is why there is a timeout rather than a
+  // permanent claim.
+  #claimLease() {
+    const held = this.#readLease();
+    if (held && held.token !== this.#leaseToken) {
+      const age = this.#wallClock() - Number(held.at);
+      if (Number.isFinite(age) && age >= 0 && age < this.#leaseStaleMs) {
+        throw new Error(
+          `refusing to start: another process holds ${this.file} (pid ${held.pid} on ${held.host}, ` +
+            `last seen ${Math.round(age / 1000)}s ago). Running two adapters against one ledger lets a ` +
+            `removal and a fresh grant for the same member interleave. Stop the other process first. ` +
+            `If it crashed, the claim expires ${Math.ceil((this.#leaseStaleMs - age) / 1000)}s from now.`,
+        );
+      }
+      this.log(`taking over ${this.file} from pid ${held.pid} on ${held.host}, whose claim went stale`);
+    }
+    this.#writeLease();
+  }
+
+  #readLease() {
+    const row = this.#stmt.readMeta.get("owner");
+    if (row === undefined) return null;
+    try {
+      return JSON.parse(row.v);
+    } catch {
+      return null; // an unreadable claim is treated as none, and is overwritten below
+    }
+  }
+
+  #writeLease() {
+    this.#stmt.setMeta.run(
+      "owner",
+      JSON.stringify({ token: this.#leaseToken, pid: process.pid, host: hostname(), at: this.#wallClock() }),
+    );
+  }
+
+  // Refreshed from every operation, so an active adapter's claim never goes stale under it. There is
+  // deliberately no timer: a bot with no traffic for the timeout window is one whose ledger another
+  // process may safely take over, and a timer would only keep a dead-idle process holding it.
+  #touchLease() {
+    if (this.#leaseEnabled) this.#writeLease();
+  }
+
   // ---- the guarded clock -------------------------------------------------------------------------
 
   // Time moving forward raises the mark; time moving backwards is recorded and stays recorded. Both
   // are written at the moment they are observed, so no part of this exists only in memory, which is
   // what every earlier version got wrong in a different way.
   #observeClock() {
+    this.#touchLease(); // every operation reaches here, so this is where the claim stays fresh
     const t = this.now();
     const mark = this.#mark();
     if (mark == null || t > mark) {
@@ -325,16 +417,26 @@ export class GrantLedger {
       // just granted. Taking one member's lock at a time is also what lets unrelated grants proceed
       // while a long sweep runs.
       await this.#run(userId, async () => {
-        const live = this.#row(userId);
-        if (!live) return;
-        if (this.#effective() < live.expiresAt) return; // re-verified meanwhile, leave it alone
+        const seen = this.#rowWithRev(userId);
+        if (!seen) return;
+        if (this.#effective() < seen.record.expiresAt) return; // re-verified meanwhile, leave it alone
         try {
-          await this.revoke(userId, live);
+          await this.revoke(userId, seen.record);
         } catch (e) {
           this.log(`revoke failed for ${userId}, keeping the grant to retry: ${e.message}`);
           return; // a real revoke failure must not drop the record, or live access goes untracked
         }
-        this.#stmt.del.run(String(userId));
+        // Delete only the row we judged. The member's lock covers the await above WITHIN this process,
+        // but it is only a promise chain in memory, so a SECOND adapter process running against the
+        // same database is not held by it at all. It can record a fresh grant while the removal above
+        // is still in flight, and an unconditional delete then threw that fresh row away and left the
+        // member holding live access with nothing to revoke it by. Matching on the revision means the
+        // worst case is now the recoverable direction: the record survives, the member's access may
+        // have been removed by this stale removal, and they get it back by re-verifying.
+        if (this.#stmt.del.run(String(userId), seen.rev).changes === 0) {
+          this.log(`sweep for ${userId} was overtaken by a fresh grant, keeping it and reporting nothing`);
+          return; // not "revoked": the caller notifies on that, and this member is granted again
+        }
         revoked.push(userId);
       });
     }
@@ -406,7 +508,14 @@ export class GrantLedger {
     return { mark: this.#mark(), regression: this.#regression() };
   }
 
+  // Releasing the claim on a clean shutdown is what makes an ordinary restart immediate rather than
+  // making the operator wait out the staleness window.
   close() {
+    try {
+      if (this.#leaseEnabled && this.#readLease()?.token === this.#leaseToken) this.#stmt.delMeta.run("owner");
+    } catch {
+      // A ledger that is already unusable is not worth failing a shutdown over.
+    }
     this.#db.close();
   }
 
@@ -453,8 +562,20 @@ export class GrantLedger {
     // Only now, with the rows committed, move the old file aside. Leaving it would make the next start
     // try to import it again into a database that already holds it, and deleting it would throw away
     // the operator's only copy of the previous state.
+    //
+    // A missing source here means another process migrated the same file and renamed it first. Both
+    // transactions were serialized and idempotent, so the database is correct either way, and the only
+    // question is whether this process refuses to start over a rename it did not need to do. It should
+    // not. The startup lease normally prevents two processes reaching this at all, but a stale lease
+    // leaves the window open, so treat it as done rather than as a failure.
     const kept = `${importFrom}.migrated`;
-    renameSync(importFrom, kept);
+    try {
+      renameSync(importFrom, kept);
+    } catch (e) {
+      if (e.code !== "ENOENT") throw e;
+      this.log(`${importFrom} was already migrated by another process; continuing`);
+      return;
+    }
     this.log(
       `migrated ${Object.keys(grants).length} grant(s) from ${importFrom} into ${this.file}; ` +
         `the old file is now ${kept}`,

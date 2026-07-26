@@ -18,11 +18,25 @@ enqueued behind the operation doing the updating, and a decision returned to the
 there is no window to lose. Nothing enqueues a save any more because there is no save to enqueue. The
 only asynchronous things left are the platform calls themselves.
 
-Two tracked items closed as a consequence rather than as separate work. Locking is per member instead
-of one global queue, so a slow platform call for one member no longer blocks every other member's
-grant. And two adapter processes on one ledger are now safe, because SQLite arbitrates, the clock
-floor is read back from the database on every observation instead of trusted from memory, and the
-high-water mark is raised with a MAX so a lagging process cannot pull another's floor down.
+Locking is per member instead of one global queue, so a slow platform call for one member no longer
+blocks every other member's grant.
+
+On running two adapter processes against one ledger, be careful, because the first version of this
+section claimed more than was true and a review round rejected it. SQLite serializes individual
+statements. It does not serialize a grant or a removal, each of which is a statement, then an await on
+a platform call, then another statement. The per-member lock that spans that gap is a promise chain in
+memory and binds only its own process. Two processes could therefore interleave a removal and a fresh
+grant for one member, and an unconditional delete then discarded the fresh row and left live access
+with no record. Two independent reviewers found it, one with a reproduction.
+
+It is closed in two layers, and the distinction matters if anyone touches this. The sweep's delete is
+conditional on the row revision it read, which does not make two processes safe but makes the worst
+case recoverable, meaning the record survives and a member whose access was removed by a stale sweep
+gets it back by re-verifying. A startup lease then stops the situation arising: a second process
+refuses to start while a first holds the ledger, a clean shutdown releases the claim so an ordinary
+restart is immediate, and a claim left by a process that died goes stale after 30 seconds and is taken
+over. Shared state itself does behave as described, since the clock floor is read from the database on
+every observation and raised with a MAX so a lagging process cannot pull another's floor down.
 
 Operationally: the database path is `DISCORD_GRANTS_DB`, `TELEGRAM_GRANT_LEDGER_DB`,
 `MATRIX_GRANT_LEDGER_DB`. The old variables keep their old meaning and name the JSON file, which is
@@ -30,8 +44,22 @@ imported once on first start, in one transaction, and only then renamed with a `
 interrupted migration leaves the database untouched, and a malformed record fails the whole migration
 rather than adopting part of it.
 
-Next: a fresh full review round over this, built from the post-migration code. It is the first thing
-in `TODO.md` under the 2026-07-25 P1 section.
+### The 2026-07-26 round
+
+Four reviewers, three verdicts worth recording. Two independent model families found the cross-process
+blocker above, one with a working reproduction, which is the strongest signal this process produces. A
+third found a genuine minor, where two processes could both migrate the legacy file and the second
+would then fail on a rename whose source the first had already moved; a missing source is now treated
+as already done. A fourth reported that the write-ahead log files were left world readable, and that
+one is a false positive: the modes were checked directly here and by two of the other reviewers, and
+they are 0600 in both the fresh case and the already-in-WAL-mode reopen case it described. The
+directory is now created 0700 anyway, since that costs nothing.
+
+Worth carrying forward as a process note: the reviewer that reasoned without running anything produced
+the only wrong finding, and the two that reproduced their claims produced the right ones.
+
+Next: the fix above changes a locking model, so it wants a fresh round rather than a focused
+confirmation.
 
 ## CURRENT STATE, 2026-07-25 (late session, round 4)
 

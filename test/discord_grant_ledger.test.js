@@ -36,6 +36,7 @@ test("a grant persists and applies, and a fresh ledger on the same file sees it 
   await l1.grant("u1", rec(200));
   assert.deepEqual(applied, [["u1", 200]]);
   assert.ok(existsSync(file));
+  l1.close(); // a restart means the first process is gone, and closing releases its claim
   const l2 = new GrantLedger({ file, apply: noop, revoke: noop, now: () => 100 });
   assert.equal(l2.has("u1"), true);
 });

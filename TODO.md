@@ -254,12 +254,28 @@ built from the post-migration code rather than from any earlier packet.
   `synchronous=FULL` so persist-before-apply means what it says, and `busy_timeout` so two processes
   wait for each other. Supersedes the P1.5 grant-ledger persistence item below.
   (`adapters/common/grant_ledger.js`, `adapters/*/bot.js`)
-- [x] Cross-process ledger safety. DONE, by construction, as a consequence of the row store. SQLite
-  arbitrates concurrent writers, the clock floor is read back from the database on every observation
-  rather than trusted from memory, and the high-water mark is raised with a `MAX` so a lagging process
-  cannot pull another process's floor back down. Pinned by a test that runs two ledgers against one
-  database and checks that a grant one records is visible to the other and that the shared floor
-  expires a grant for both. (`adapters/common/grant_ledger.js`)
+- [x] Cross-process ledger safety. DONE, but NOT "by construction", which is what this entry claimed
+  when the migration landed and what the 2026-07-26 round rejected. SQLite serializes individual
+  statements. It does not serialize a grant or a removal, each of which is a statement, then an await
+  on a platform call, then another statement. The per-member lock that does span that gap is a promise
+  chain in memory, so it binds only the process it lives in. Two processes could therefore interleave a
+  removal and a fresh grant for one member, and the sweep's unconditional delete then threw the fresh
+  row away and left live access with no record, the exact outcome the lifecycle exists to prevent.
+  Two independent reviewers found this, one with a reproduction. Closed in two layers:
+    - The sweep's delete is conditional on the row revision it read (`rev`, bumped on every write), so
+      a sweep overtaken by a fresh grant deletes nothing and reports nothing. This does not make two
+      processes safe, it makes the worst case recoverable: the record survives and the member's access
+      may have been removed, which re-verifying fixes.
+    - A startup lease. A second process refuses to start while a first still holds the ledger. A clean
+      shutdown releases it so an ordinary restart is immediate; a process that dies leaves a claim that
+      goes stale after `leaseStaleMs` (30s default) and is then taken over.
+  Shared state itself does work as described: the clock floor is read from the database on every
+  observation and raised with a `MAX`, so a lagging process cannot pull another's floor down.
+  (`adapters/common/grant_ledger.js`)
+- [x] Concurrent first-start migration (2026-07-26 round, minor). Two processes could both import the
+  legacy file, both commit, and the second then fail on a rename whose source the first had already
+  moved. A missing source is now treated as already done rather than as a startup failure. The lease
+  above normally prevents both reaching it at all. (`adapters/common/grant_ledger.js`)
 - [x] Migrate existing deployments off the JSON ledger. DONE. Each adapter passes its old JSON path as
   `importFrom`; on a fresh database that file's grants and clock state are adopted in one transaction,
   and only after it commits is the file renamed with a `.migrated` suffix, so an interrupted migration
