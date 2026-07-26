@@ -36,3 +36,7 @@ witness.json
 
 # Discord adapter runtime grant ledger (holds user ids; not source)
 adapters/discord/grants.json
+adapters/discord/grants.json.migrated
+adapters/discord/grants.db
+adapters/discord/grants.db-wal
+adapters/discord/grants.db-shm

@@ -32,7 +32,11 @@ const GATEWAY = process.env.MNO_GATEWAY_URL ?? "http://127.0.0.1:8787";
 // Adapter bearer token the gateway requires when MNO_ADAPTER_SECRET is set there (review B1/M5).
 const ADAPTER_SECRET = process.env.MNO_ADAPTER_SECRET;
 const authHeaders = ADAPTER_SECRET ? { authorization: `Bearer ${ADAPTER_SECRET}` } : {};
-const LEDGER_FILE = process.env.TELEGRAM_GRANT_LEDGER ?? "data/telegram-grants.json";
+// The ledger is a SQLite database now. TELEGRAM_GRANT_LEDGER keeps its old meaning, the JSON file,
+// and is read once on first start to migrate its grants and clock state across, after which it is
+// renamed with a .migrated suffix and never read again.
+const LEDGER_DB = process.env.TELEGRAM_GRANT_LEDGER_DB ?? "data/telegram-grants.db";
+const LEGACY_LEDGER_FILE = process.env.TELEGRAM_GRANT_LEDGER ?? "data/telegram-grants.json";
 const SWEEP_SECONDS = Number(process.env.TELEGRAM_SWEEP_SECONDS ?? 60);
 const RECONCILE_MARKER = process.env.TELEGRAM_RECONCILED_MARKER ?? "data/telegram-reconciled.json";
 const LINK_TTL_SECONDS = Number(process.env.TELEGRAM_LINK_TTL_SECONDS ?? 3600);
@@ -46,7 +50,8 @@ const bot = new Bot(TOKEN);
 // what the join-request handler checks, so admission can never outrun the record. `apply` has nothing
 // to do at grant time because admission happens later, when the member actually asks to join.
 const ledger = new GrantLedger({
-  file: LEDGER_FILE,
+  file: LEDGER_DB,
+  importFrom: LEGACY_LEDGER_FILE,
   resetClock: process.env.TELEGRAM_RESET_CLOCK === "1",
   log: (m) => console.error("[telegram]", m),
   apply: async () => {},

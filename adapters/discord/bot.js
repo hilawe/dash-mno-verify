@@ -45,7 +45,12 @@ const GRANT_CHANNEL_IDS = (process.env.DISCORD_GRANT_CHANNEL_IDS ?? "").split(",
 // change if the role or channel ids do.
 const CONTEXT_ID = process.env.DISCORD_CONTEXT_ID ?? (GRANT_MODE === "channel" ? GRANT_CHANNEL_IDS[0] : ROLE_ID);
 const SWEEP_SECONDS = Number(process.env.DISCORD_SWEEP_SECONDS ?? 300);
-const GRANTS_FILE = process.env.DISCORD_GRANTS_FILE ?? "adapters/discord/grants.json";
+// The ledger is a SQLite database now. DISCORD_GRANTS_FILE keeps its old meaning, the JSON file, and
+// is read once on first start to migrate its grants and clock state across, after which it is renamed
+// with a .migrated suffix and never read again. Point DISCORD_GRANTS_DB somewhere else to move the
+// database itself.
+const GRANTS_DB = process.env.DISCORD_GRANTS_DB ?? "adapters/discord/grants.db";
+const LEGACY_GRANTS_FILE = process.env.DISCORD_GRANTS_FILE ?? "adapters/discord/grants.json";
 
 if (GRANT_MODE !== "channel" && GRANT_MODE !== "role") {
   console.error(`[discord] DISCORD_GRANT_MODE must be 'channel' or 'role', got '${GRANT_MODE}'`);
@@ -112,7 +117,8 @@ async function revokeAccess(userId, record) {
 }
 
 const ledger = new GrantLedger({
-  file: GRANTS_FILE,
+  file: GRANTS_DB,
+  importFrom: LEGACY_GRANTS_FILE,
   apply: applyAccess,
   revoke: revokeAccess,
   log: (m) => console.error("[discord]", m),

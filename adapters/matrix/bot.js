@@ -23,7 +23,11 @@ const ADAPTER_SECRET = process.env.MNO_ADAPTER_SECRET;
 const authHeaders = ADAPTER_SECRET ? { authorization: `Bearer ${ADAPTER_SECRET}` } : {};
 const COMMUNITY = process.env.MATRIX_COMMUNITY ?? GATED_ROOM;
 const ROLE = process.env.MATRIX_ROLE ?? "member";
-const LEDGER_FILE = process.env.MATRIX_GRANT_LEDGER ?? "data/matrix-grants.json";
+// The ledger is a SQLite database now. MATRIX_GRANT_LEDGER keeps its old meaning, the JSON file, and
+// is read once on first start to migrate its grants and clock state across, after which it is renamed
+// with a .migrated suffix and never read again.
+const LEDGER_DB = process.env.MATRIX_GRANT_LEDGER_DB ?? "data/matrix-grants.db";
+const LEGACY_LEDGER_FILE = process.env.MATRIX_GRANT_LEDGER ?? "data/matrix-grants.json";
 const SWEEP_SECONDS = Number(process.env.MATRIX_SWEEP_SECONDS ?? 60);
 const RECONCILE_MARKER = process.env.MATRIX_RECONCILED_MARKER ?? "data/matrix-reconciled.json";
 // The room and proof context this bot admits for. Recorded on every grant, so a ledger reused after
@@ -135,7 +139,8 @@ async function handle(roomId, sender, body, state) {
 // has. A kick (not a ban) is the right revoke: it removes the member while leaving them free to
 // re-verify and be invited again next epoch.
 const ledger = new GrantLedger({
-  file: LEDGER_FILE,
+  file: LEDGER_DB,
+  importFrom: LEGACY_LEDGER_FILE,
   resetClock: process.env.MATRIX_RESET_CLOCK === "1",
   log: (m) => console.error("[matrix]", m),
   // Both act on the room named in the RECORD, never on whatever MATRIX_GATED_ROOM currently says.

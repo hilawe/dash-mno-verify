@@ -1,10 +1,23 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { GrantLedger } from "../adapters/common/grant_ledger.js";
+
+// The persisted high-water clock, read straight out of the ledger rather than through the instance
+// that wrote it, so a test can tell "recorded in memory" from "actually on disk".
+function storedMark(file) {
+  const db = new DatabaseSync(file);
+  try {
+    const row = db.prepare("SELECT v FROM meta WHERE k='clockMark'").get();
+    return row === undefined ? null : Number(row.v);
+  } finally {
+    db.close();
+  }
+}
 
 // Telegram and Matrix used to hand out access and never take it back, so a member kept the room or
 // the group long after the epoch they proved for. Both now record the grant and sweep it, using the
@@ -292,9 +305,10 @@ test("a refused grant persists the clock it refused against before it returns", 
     clock.t = 3000;
     await assert.rejects(first.grant("u1", { expiresAt: 2900 }), /already expired/);
 
-    // Read the file as it stands the instant the rejection returned. Before the fix this was 1000.
-    const onDisk = JSON.parse(readFileSync(file, "utf8"));
-    assert.equal(onDisk.meta.clockMark, 3000, "the observation must be durable before the caller is told");
+    // Read the stored clock as it stands the instant the rejection returned. Before the fix this was
+    // still 1000, because the write that would have raised it was queued behind the very operation
+    // that threw. It is now written synchronously at the point of observation, so there is no window.
+    assert.equal(storedMark(file), 3000, "the observation must be durable before the caller is told");
 
     // And the point of it: a restart with a corrected, lower clock must not revive the old grant.
     const second = new GrantLedger({ file, apply: async () => {}, revoke: async () => {}, now: () => 2000 });
@@ -350,6 +364,71 @@ test("a renewal onto a different target revokes the old one before granting the 
     // A renewal that stays put carries forward and revokes nothing.
     await ledger.grant("u1", { expiresAt: 2400, roomId: "!new:hs" });
     assert.deepEqual(revoked, ["!old:hs"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// The point of moving off the whole-map rewrite. That rewrite forced ONE global queue, so a slow
+// platform call for one member blocked every other member's grant behind it. Locking is per member
+// now, and a per-row write needs no cross-member coordination. If this ever regresses the test does
+// not fail an assertion, it times out, which is exactly what the old design did to real members.
+test("a slow platform call for one member does not hold up another", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mno-grant-"));
+  try {
+    let release;
+    const gate = new Promise((r) => (release = r));
+    const ledger = new GrantLedger({
+      file: join(dir, "grants.db"),
+      apply: async (id) => {
+        if (id === "slow") await gate;
+      },
+      revoke: async () => {},
+      now: () => 1000,
+    });
+    const slow = ledger.grant("slow", { expiresAt: 2000 });
+    await new Promise((r) => setImmediate(r)); // "slow" is now inside its platform call
+
+    await ledger.grant("fast", { expiresAt: 2000 });
+    assert.equal(ledger.has("fast"), true, "an unrelated member must not wait on someone else's call");
+
+    release();
+    await slow;
+    assert.equal(ledger.has("slow"), true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Cross-process safety, which the single-file ledger never had: two instances would have interleaved
+// whole-map writes and lost grants. Both sides now see each other's rows, and the clock floor is read
+// back from the database on every observation rather than trusted from memory, so a lagging process
+// cannot admit against a floor another process has already moved past.
+test("two ledgers on one database share the grants and the clock floor", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mno-grant-"));
+  const file = join(dir, "grants.db");
+  try {
+    const aClock = { t: 1000 };
+    const a = new GrantLedger({ file, apply: async () => {}, revoke: async () => {}, now: () => aClock.t });
+    await a.grant("u1", { expiresAt: 2000 });
+
+    // A second process, still back at its own start time.
+    const b = new GrantLedger({ file, apply: async () => {}, revoke: async () => {}, now: () => 1000 });
+    assert.equal(b.has("u1"), true, "the grant one process wrote is visible to the other");
+    assert.equal(b.live("u1"), true);
+
+    // The first process reaches a time past the deadline. The second one's own clock has not moved.
+    aClock.t = 3000;
+    assert.equal(a.live("u1"), false);
+
+    assert.equal(b.live("u1"), false, "the shared floor expires the grant for both");
+    assert.equal(storedMark(file), 3000, "and the lagging process did not pull the floor back down");
+
+    // A grant the second process records is likewise visible to the first.
+    await b.grant("u2", { expiresAt: 9000 });
+    assert.equal(a.has("u2"), true);
+    a.close();
+    b.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

@@ -86,7 +86,7 @@ To make the 2.3 GB a download instead of a rebuild, host each large key once on 
 
 ## How access ends
 
-Access is for one epoch. A member keeps it by running `/verify` again each epoch. If they stop, for example after selling the node, the next proof would fail, and the bot's sweep removes their channel access. Tune the cadence with `DISCORD_SWEEP_SECONDS` (default 300). The bot persists its grant ledger to a file, so access is still revoked after a restart, and it sweeps once at startup.
+Access is for one epoch. A member keeps it by running `/verify` again each epoch. If they stop, for example after selling the node, the next proof would fail, and the bot's sweep removes their channel access. Tune the cadence with `DISCORD_SWEEP_SECONDS` (default 300). The bot persists its grant ledger to a SQLite database, so access is still revoked after a restart, and it sweeps once at startup. An older JSON ledger is migrated into it automatically on first start.
 
 ## Honest status
 

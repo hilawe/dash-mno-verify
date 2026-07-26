@@ -26,7 +26,9 @@ export MNO_GATEWAY_URL=http://127.0.0.1:8787
 # rolled-back clock reviving access that has already lapsed.
 
 # optional
-export MATRIX_GRANT_LEDGER=data/matrix-grants.json  # where granted access is recorded
+export MATRIX_GRANT_LEDGER_DB=data/matrix-grants.db  # where granted access is recorded
+# An older JSON ledger at MATRIX_GRANT_LEDGER (default data/matrix-grants.json) is migrated
+# into it on first start, then renamed with a .migrated suffix.
 export MATRIX_SWEEP_SECONDS=60                      # how often lapsed access is taken back
 ```
 

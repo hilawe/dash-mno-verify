@@ -12,7 +12,7 @@ A verified member is granted access in one of two ways, set by `DISCORD_GRANT_MO
 
 The verification conversation itself is always private, since `/verify` and `/submit` use ephemeral replies that only the member sees. The grant is the only step that can be public, which is why `channel` mode exists.
 
-Either way, the bot runs a sweep (`DISCORD_SWEEP_SECONDS`, default 300) that removes a member's access once their epoch grant lapses and they have not re-verified, so access tracks current masternode control rather than being permanent once granted. It persists its grant ledger to a file (`DISCORD_GRANTS_FILE`, default `adapters/discord/grants.json`, which holds user ids and is gitignored), so access is still revoked after a restart, and it sweeps once at startup.
+Either way, the bot runs a sweep (`DISCORD_SWEEP_SECONDS`, default 300) that removes a member's access once their epoch grant lapses and they have not re-verified, so access tracks current masternode control rather than being permanent once granted. It persists its grant ledger to a SQLite database (`DISCORD_GRANTS_DB`, default `adapters/discord/grants.db`, which holds user ids, is mode 0600, and is gitignored), so access is still revoked after a restart, and it sweeps once at startup. An existing JSON ledger at `DISCORD_GRANTS_FILE` is migrated into it on first start and then renamed with a `.migrated` suffix.
 
 In `channel` mode, treat the configured channels as bot-managed. The bot cannot tell a member it added from one added by hand, so when a grant lapses its sweep resets the access bits it manages on that channel for that member. Do not also add members to a bot-managed channel manually.
 

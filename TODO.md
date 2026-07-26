@@ -236,21 +236,36 @@ instead at the surface no earlier round had read, meaning the code that changed 
 packets were built plus the modules never packaged at all, and seven of its ten findings were in that
 never-reviewed set. Its confirmed findings are folded. What follows is what remains.
 
-The standing recommendation, reached independently by two reviewers and unchallenged by round 4:
-move adapter state to a transactional store rather than keep patching the file-and-queue machinery.
-Every round that has looked at it has found a fresh generation of the same class of defect.
+The standing recommendation, reached independently by two reviewers and unchallenged by round 4, was
+to move adapter state to a transactional store rather than keep patching the file-and-queue
+machinery, since every round that looked at it found a fresh generation of the same class of defect.
+That move is done (the first three items below). The next review round should cover it, and should be
+built from the post-migration code rather than from any earlier packet.
 
-- [ ] Move adapter grant state to SQLite. `GrantLedger` rewrites the whole map JSON on every change
-  and serializes every operation on one in-process queue to make that safe, which head-of-line-blocks
-  unrelated grants behind a slow platform call and does not scale. A per-row store with native file
-  locking removes the whole-map rewrite, and with it the reason the queue has to be global. This also
-  subsumes the P1.5 grant-ledger persistence item below, which names the pre-extraction path
-  `adapters/discord/grant_ledger.js`; the shared implementation now lives in
-  `adapters/common/grant_ledger.js`. (`adapters/common/grant_ledger.js`)
-- [ ] Cross-process ledger safety. The file locking assumes one process per adapter. Two instances of
-  the same bot, whether from a botched restart or a supervisor racing itself, would interleave
-  whole-map writes and lose grants. Not a concern in the single-process reference deployment, and one
-  the per-row store above would close by construction. (`adapters/common/grant_ledger.js`)
+- [x] Move adapter grant state to SQLite. DONE. `GrantLedger` is a per-row `node:sqlite` store
+  (`DatabaseSync`, no npm dependency, no native build, matching `core/nullifier_sqlite.js`). The
+  headline is that it is a correctness change and not only a throughput one: reads and writes are
+  synchronous and durable at the point of call, so "observed" and "persisted" are the same instant and
+  nothing enqueues a save any more. That deletes the shape every round kept finding defects in, where
+  state was updated in memory, the durable write was queued behind the operation doing the updating,
+  and a decision reached the caller in between. Locking is now per member rather than one global
+  queue, so a slow platform call for one member no longer blocks every other member's grant, and the
+  test for that times out rather than failing an assertion if it regresses. Mode 0600 set before WAL,
+  `synchronous=FULL` so persist-before-apply means what it says, and `busy_timeout` so two processes
+  wait for each other. Supersedes the P1.5 grant-ledger persistence item below.
+  (`adapters/common/grant_ledger.js`, `adapters/*/bot.js`)
+- [x] Cross-process ledger safety. DONE, by construction, as a consequence of the row store. SQLite
+  arbitrates concurrent writers, the clock floor is read back from the database on every observation
+  rather than trusted from memory, and the high-water mark is raised with a `MAX` so a lagging process
+  cannot pull another process's floor back down. Pinned by a test that runs two ledgers against one
+  database and checks that a grant one records is visible to the other and that the shared floor
+  expires a grant for both. (`adapters/common/grant_ledger.js`)
+- [x] Migrate existing deployments off the JSON ledger. DONE. Each adapter passes its old JSON path as
+  `importFrom`; on a fresh database that file's grants and clock state are adopted in one transaction,
+  and only after it commits is the file renamed with a `.migrated` suffix, so an interrupted migration
+  leaves the database untouched and the operator never loses their only copy. A malformed record fails
+  the migration whole rather than adopting part of it. The database path is `*_GRANTS_DB` /
+  `*_GRANT_LEDGER_DB`; the old variables keep their old meaning as the import source.
 - [ ] Prevention, not just recovery, for an implausible forward clock jump. The floor is conservative
   by design and an operator-driven reset gets out of it, but nothing refuses an obviously wrong jump
   at the moment it is observed. A bound on plausible movement between observations would stop the

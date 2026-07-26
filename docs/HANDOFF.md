@@ -5,6 +5,34 @@ counts and supersedes everything below it. Historical sections are append-only a
 only marked superseded. Read this first when picking the project back up, then `TODO.md` for the full
 prioritized punch list.
 
+## CURRENT STATE, 2026-07-26 (the SQLite migration)
+
+The adapter grant ledger is a SQLite database now, not a JSON file rewritten in full behind one global
+queue. 268 tests green. Everything in the round-4 section below still stands except where it describes
+the ledger's storage.
+
+Why it matters more than a storage swap. Four rounds found defects in the old arrangement, and the
+recurring shape was always the same: state updated in memory, the write that would make it durable
+enqueued behind the operation doing the updating, and a decision returned to the caller in between.
+`node:sqlite`'s `DatabaseSync` is synchronous, so observed and persisted are now the same instant and
+there is no window to lose. Nothing enqueues a save any more because there is no save to enqueue. The
+only asynchronous things left are the platform calls themselves.
+
+Two tracked items closed as a consequence rather than as separate work. Locking is per member instead
+of one global queue, so a slow platform call for one member no longer blocks every other member's
+grant. And two adapter processes on one ledger are now safe, because SQLite arbitrates, the clock
+floor is read back from the database on every observation instead of trusted from memory, and the
+high-water mark is raised with a MAX so a lagging process cannot pull another's floor down.
+
+Operationally: the database path is `DISCORD_GRANTS_DB`, `TELEGRAM_GRANT_LEDGER_DB`,
+`MATRIX_GRANT_LEDGER_DB`. The old variables keep their old meaning and name the JSON file, which is
+imported once on first start, in one transaction, and only then renamed with a `.migrated` suffix. An
+interrupted migration leaves the database untouched, and a malformed record fails the whole migration
+rather than adopting part of it.
+
+Next: a fresh full review round over this, built from the post-migration code. It is the first thing
+in `TODO.md` under the 2026-07-25 P1 section.
+
 ## CURRENT STATE, 2026-07-25 (late session, round 4)
 
 ### Read this first

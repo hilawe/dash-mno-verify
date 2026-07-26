@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, existsSync, readFileSync, writeFileSync } from "node:fs";
-import { writeFile } from "node:fs/promises";
+import { mkdtempSync, existsSync, writeFileSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { GrantLedger, extraTargets } from "../adapters/discord/grant_ledger.js";
@@ -10,7 +10,22 @@ import { GrantLedger, extraTargets } from "../adapters/discord/grant_ledger.js";
 // behaviors the review flagged: survive a restart, revoke on expiry, leave a fresh re-verification
 // alone, and never keep a record for access that did not actually apply.
 
-const tmpFile = () => join(mkdtempSync(join(tmpdir(), "mno-grant-")), "grants.json");
+const tmpDir = () => mkdtempSync(join(tmpdir(), "mno-grant-"));
+const tmpFile = () => join(tmpDir(), "grants.db");
+
+// Read the durable state back independently of the instance under test, which is the whole point of
+// the assertions that use it. Opening a second connection is also the closest thing to what a restart
+// or a second adapter process would see.
+function onDisk(file) {
+  const db = new DatabaseSync(file);
+  try {
+    const out = {};
+    for (const r of db.prepare("SELECT user_id, record FROM grants").all()) out[r.user_id] = JSON.parse(r.record);
+    return out;
+  } finally {
+    db.close();
+  }
+}
 const rec = (expiresAt) => ({ expiresAt, mode: "channel", channels: ["c1"] });
 const noop = () => Promise.resolve();
 
@@ -87,7 +102,7 @@ test("a failed first grant keeps a record and best-effort revokes", async () => 
   await assert.rejects(l.grant("u1", rec(200)), /discord down/);
   assert.equal(l.has("u1"), true);
   assert.deepEqual(revoked, ["u1"]);
-  assert.equal("u1" in JSON.parse(readFileSync(file, "utf8")).grants, true);
+  assert.equal("u1" in onDisk(file), true);
 });
 
 // A failed renewal must not touch the member's existing valid access, and must keep tracking it under
@@ -107,29 +122,93 @@ test("a failed same-target renewal keeps the new grant and strands nothing", asy
   await l.grant("u1", rec(200));
   fail = true;
   await assert.rejects(l.grant("u1", { expiresAt: 999, mode: "channel", channels: ["c1"] }), /down/);
-  assert.equal(JSON.parse(readFileSync(file, "utf8")).grants.u1.expiresAt, 999);
+  assert.equal(onDisk(file).u1.expiresAt, 999);
   assert.equal(revoked.length, 0);
 });
 
-test("a missing ledger file loads as empty (first run), a corrupt one fails startup", () => {
+// A ledger that cannot be read is an error, never "nothing to revoke". Reading it as empty would
+// silently strand every live grant, because the sweep only ever looks at what it loaded.
+test("a missing ledger loads as empty (first run), an unreadable one fails startup", () => {
   const empty = tmpFile(); // the dir exists, the file does not
   assert.equal(new GrantLedger({ file: empty, apply: noop, revoke: noop }).size(), 0);
 
-  const corrupt = tmpFile();
-  writeFileSync(corrupt, "{ not json");
-  assert.throws(() => new GrantLedger({ file: corrupt, apply: noop, revoke: noop }), /not valid JSON/);
+  const notADatabase = tmpFile();
+  writeFileSync(notADatabase, "{ not a database");
+  assert.throws(() => new GrantLedger({ file: notADatabase, apply: noop, revoke: noop }));
+});
 
-  const malformed = tmpFile();
-  writeFileSync(malformed, JSON.stringify({ u1: { mode: "channel" } })); // no expiresAt
-  assert.throws(() => new GrantLedger({ file: malformed, apply: noop, revoke: noop }), /malformed record/);
+// A row that does not satisfy the adapter's own validator fails the load rather than being skipped.
+// The mode-specific target has to be there, or a sweep would delete the record without being able to
+// revoke the real access behind it.
+test("a malformed row already in the database fails startup", () => {
+  for (const bad of [
+    { mode: "channel" }, // no expiresAt
+    { expiresAt: 100, mode: "channel" }, // a mode with no target
+    { expiresAt: 100, mode: "role" }, // likewise
+  ]) {
+    const file = tmpFile();
+    new GrantLedger({ file, apply: noop, revoke: noop }).close();
+    const db = new DatabaseSync(file);
+    db.prepare("INSERT INTO grants (user_id, expires_at, record, updated_at) VALUES (?, ?, ?, ?)").run(
+      "u1",
+      Number(bad.expiresAt ?? 0),
+      JSON.stringify(bad),
+      0,
+    );
+    db.close();
+    assert.throws(() => new GrantLedger({ file, apply: noop, revoke: noop }), /malformed record/);
+  }
+});
 
-  const noChannels = tmpFile();
-  writeFileSync(noChannels, JSON.stringify({ u1: { expiresAt: 100, mode: "channel" } })); // mode but no target
-  assert.throws(() => new GrantLedger({ file: noChannels, apply: noop, revoke: noop }), /malformed record/);
+// The migration off the JSON file this store replaces. It has to move the grants and the clock state
+// across, refuse a file it cannot vouch for rather than adopt it partially, and leave the old file
+// behind under a new name so the operator keeps their only copy of the previous state.
+test("a legacy JSON ledger is adopted once, with its clock state, and moved aside", () => {
+  const dir = tmpDir();
+  const legacy = join(dir, "grants.json");
+  const file = join(dir, "grants.db");
+  writeFileSync(
+    legacy,
+    JSON.stringify({
+      meta: { clockMark: 4242, clockRegressed: { observed: 5, mark: 9, at: 5 } },
+      grants: { u1: { expiresAt: 9000, mode: "channel", channels: ["c1"] } },
+    }),
+  );
 
-  const noRole = tmpFile();
-  writeFileSync(noRole, JSON.stringify({ u1: { expiresAt: 100, mode: "role" } })); // mode but no roleId
-  assert.throws(() => new GrantLedger({ file: noRole, apply: noop, revoke: noop }), /malformed record/);
+  const l = new GrantLedger({ file, importFrom: legacy, apply: noop, revoke: noop, now: () => 100 });
+  assert.equal(l.has("u1"), true, "the grant came across");
+  assert.equal(l.clockStatus.mark, 4242, "and so did the high-water clock");
+  assert.equal(l.clockIsSane, false, "a recorded regression is not forgotten by the migration");
+  assert.equal(existsSync(legacy), false, "the old file is moved aside");
+  assert.equal(existsSync(`${legacy}.migrated`), true, "but never deleted");
+  l.close();
+
+  // Re-opening must not import a second time, including if someone restores the old file by hand.
+  writeFileSync(legacy, JSON.stringify({ grants: { u2: { expiresAt: 9000, mode: "role", roleId: "r1" } } }));
+  const again = new GrantLedger({ file, importFrom: legacy, apply: noop, revoke: noop, now: () => 100 });
+  assert.equal(again.has("u2"), false, "a database that has already been imported into is left alone");
+  assert.equal(existsSync(legacy), true, "and the restored file is not consumed");
+});
+
+test("a legacy ledger with a malformed record fails the migration rather than adopting part of it", () => {
+  const dir = tmpDir();
+  const legacy = join(dir, "grants.json");
+  const file = join(dir, "grants.db");
+  writeFileSync(
+    legacy,
+    JSON.stringify({
+      grants: {
+        u1: { expiresAt: 9000, mode: "channel", channels: ["c1"] },
+        u2: { expiresAt: 9000, mode: "channel" }, // no target
+      },
+    }),
+  );
+  assert.throws(
+    () => new GrantLedger({ file, importFrom: legacy, apply: noop, revoke: noop }),
+    /malformed record for u2/,
+  );
+  assert.equal(existsSync(legacy), true, "the source is untouched so it can be fixed and retried");
+  assert.deepEqual(onDisk(file), {}, "and nothing was adopted, not even the record that was fine");
 });
 
 // A real revoke failure (a Discord outage or lost permission, not a 404) must not drop the record, or
@@ -167,7 +246,7 @@ test("a renewal that drops a target revokes the orphaned one before applying", a
   await l.grant("u1", { expiresAt: 200, mode: "channel", channels: ["c1", "c2"] });
   await l.grant("u1", { expiresAt: 999, mode: "channel", channels: ["c1"] }); // drops c2
   assert.deepEqual(revokedRecords, [{ mode: "channel", channels: ["c2"] }]);
-  assert.deepEqual(JSON.parse(readFileSync(file, "utf8")).grants.u1, { expiresAt: 999, mode: "channel", channels: ["c1"] });
+  assert.deepEqual(onDisk(file).u1, { expiresAt: 999, mode: "channel", channels: ["c1"] });
 });
 
 // If revoking the orphaned target fails, the renewal must abort with the prior grant intact, so the
@@ -184,7 +263,7 @@ test("if migrating the prior grant fails, the renewal aborts and keeps the prior
   await l.grant("u1", { expiresAt: 200, mode: "channel", channels: ["c1", "c2"] });
   migrateFail = true;
   await assert.rejects(l.grant("u1", { expiresAt: 999, mode: "channel", channels: ["c1"] }), /could not migrate/);
-  assert.deepEqual(JSON.parse(readFileSync(file, "utf8")).grants.u1, { expiresAt: 200, mode: "channel", channels: ["c1", "c2"] });
+  assert.deepEqual(onDisk(file).u1, { expiresAt: 200, mode: "channel", channels: ["c1", "c2"] });
 });
 
 // The write path must reject a malformed record (here a non-finite expiry), or it would persist and
@@ -196,23 +275,23 @@ test("grant refuses a malformed record before writing or applying", async () => 
   await assert.rejects(l.grant("u1", { mode: "channel", channels: ["c1"] }), /malformed/); // no expiresAt
   assert.equal(l.has("u1"), false);
   assert.equal(applied.length, 0);
-  assert.equal(existsSync(file), false); // nothing was written
+  assert.deepEqual(onDisk(file), {}, "nothing was written");
 });
 
-// Operations are globally serialized, so concurrent grants for different users must not clobber the
-// shared temp file or lose an update: all three must end up persisted.
+// Grants for different members now run in parallel rather than behind one global queue, so this is
+// the check that parallelism does not lose an update. Under the old whole-map rewrite two saves could
+// interleave and one would win; a per-row write cannot.
 test("concurrent grants for different users all persist", async () => {
   const file = tmpFile();
   const l = new GrantLedger({ file, apply: noop, revoke: noop, now: () => 100 });
   await Promise.all([l.grant("u1", rec(200)), l.grant("u2", rec(200)), l.grant("u3", rec(200))]);
-  assert.deepEqual(Object.keys(JSON.parse(readFileSync(file, "utf8")).grants).sort(), ["u1", "u2", "u3"]);
+  assert.deepEqual(Object.keys(onDisk(file)).sort(), ["u1", "u2", "u3"]);
 });
 
-// The commit-boundary invariant, the point of serializing every operation: when a grant's own persist
-// fails, it rolls back in memory and the file must not contain it either. A prior committed grant is
-// left intact. (Global serialization is what keeps a concurrent grant from having persisted the
-// in-flight record in the meantime.)
-test("a persist failure rolls back the grant and writes nothing", async () => {
+// The commit boundary: when a grant's own write fails, nothing is granted and the ledger does not
+// contain it either, while a prior committed grant is left intact. There is no in-memory rollback to
+// get wrong any more, because a single row write either committed or it did not.
+test("a persist failure grants nothing and writes nothing", async () => {
   const file = tmpFile();
   let failNextWrite = false;
   const l = new GrantLedger({
@@ -220,16 +299,16 @@ test("a persist failure rolls back the grant and writes nothing", async () => {
     apply: noop,
     revoke: noop,
     now: () => 100,
-    writeFileFn: async (tmp, data) => {
+    putFn: (write) => {
       if (failNextWrite) throw new Error("disk full");
-      return writeFile(tmp, data);
+      return write();
     },
   });
   await l.grant("a", rec(200)); // committed
   failNextWrite = true;
   await assert.rejects(l.grant("b", rec(300)), /could not persist/);
-  assert.equal(l.has("b"), false); // rolled back in memory
-  assert.deepEqual(Object.keys(JSON.parse(readFileSync(file, "utf8")).grants), ["a"]); // and never written
+  assert.equal(l.has("b"), false);
+  assert.deepEqual(Object.keys(onDisk(file)), ["a"]); // and never written
 });
 
 test("extraTargets returns only targets the prior grant did not cover", () => {
