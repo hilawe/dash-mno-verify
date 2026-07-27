@@ -104,6 +104,23 @@ export class GrantLedger {
     // and still holds if a chmod ever fails on an unusual filesystem.
     if (file !== ":memory:") mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
     this.#db = new DatabaseSync(file);
+    // Everything below the open can throw: a chmod that fails, a malformed row, a migration that
+    // refuses a bad record. The exclusive lock is taken by the first statement, so leaving the handle
+    // open on the way out would mean the operator cannot open the database to fix the very thing the
+    // error just told them to fix. Close it, then rethrow the original.
+    try {
+      this.#open({ file, exclusive, importFrom, resetClock });
+    } catch (e) {
+      try {
+        this.#db.close();
+      } catch {
+        // already closed, or never got far enough to matter
+      }
+      throw e;
+    }
+  }
+
+  #open({ file, exclusive, importFrom, resetClock }) {
     // Narrow the file BEFORE enabling write-ahead logging: SQLite creates the sibling -wal and -shm
     // files from the database file's own mode, so doing this afterwards leaves those two holding the
     // same rows at the default mode. The ledger pairs platform accounts with the access they hold,

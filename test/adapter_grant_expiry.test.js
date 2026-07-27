@@ -632,3 +632,28 @@ test("a decision is never made on a clock reading that was not persisted", async
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// The error says "fix or remove it", so the operator has to be able to open the database to do that.
+// The exclusive lock is taken by the first statement, so a constructor that threw while still holding
+// the handle left the ledger locked by the very process that had just refused to start.
+test("a constructor that refuses to start does not leave the ledger locked", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mno-grant-"));
+  const file = join(dir, "grants.db");
+  try {
+    const opts = { file, apply: async () => {}, revoke: async () => {}, now: () => 100 };
+    const seed = new GrantLedger(opts);
+    await seed.grant("u1", { expiresAt: 9000 });
+    seed.close();
+
+    // A validator this row cannot satisfy, so the next construction throws after opening.
+    const strict = { ...opts, validate: (r) => Boolean(r) && Number.isFinite(r.expiresAt) && Boolean(r.mustHave) };
+    assert.throws(() => new GrantLedger(strict), /malformed record/);
+
+    // The operator must now be able to get in and repair it.
+    const repair = new GrantLedger(opts);
+    assert.equal(repair.has("u1"), true, "the ledger is openable again, and intact");
+    repair.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
