@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
+import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -29,7 +30,7 @@ function withLedger(fn, { now } = {}) {
   const applied = [];
   const revoked = [];
   const clock = { t: 1000 };
-  const ledger = new GrantLedger({
+  const ledger = new GrantLedger({ exclusive: false,
     file: join(dir, "grants.json"),
     apply: async (id, r) => applied.push([id, r]),
     revoke: async (id) => revoked.push(id),
@@ -83,13 +84,13 @@ test("a grant survives a restart, so the sweep still knows to revoke it", async 
   const dir = mkdtempSync(join(tmpdir(), "mno-grant-"));
   const file = join(dir, "grants.json");
   try {
-    const first = new GrantLedger({ file, apply: async () => {}, revoke: async () => {}, now: () => 1000 });
+    const first = new GrantLedger({ exclusive: false, file, apply: async () => {}, revoke: async () => {}, now: () => 1000 });
     await first.grant("u1", { expiresAt: 2000 });
     first.close(); // a restart means the first process is gone, and closing releases its claim
 
     // A fresh process, after the epoch has passed.
     const revoked = [];
-    const second = new GrantLedger({
+    const second = new GrantLedger({ exclusive: false,
       file,
       apply: async () => {},
       revoke: async (id) => revoked.push(id),
@@ -120,7 +121,7 @@ test("a revoke failure keeps the record so it retries rather than losing track o
   try {
     const clock = { t: 1000 };
     let fail = true;
-    const ledger = new GrantLedger({
+    const ledger = new GrantLedger({ exclusive: false,
       file: join(dir, "grants.json"),
       apply: async () => {},
       revoke: async () => {
@@ -158,7 +159,7 @@ test("a rolled-back clock cannot revive an expired grant", async () => {
   const dir = mkdtempSync(join(tmpdir(), "mno-grant-"));
   try {
     const clock = { t: 1000 };
-    const ledger = new GrantLedger({
+    const ledger = new GrantLedger({ exclusive: false,
       file: join(dir, "grants.json"),
       apply: async () => {},
       revoke: async () => {},
@@ -190,7 +191,7 @@ test("a small backward clock correction does not revoke healthy members", async 
   try {
     const clock = { t: 1000 };
     const revoked = [];
-    const ledger = new GrantLedger({
+    const ledger = new GrantLedger({ exclusive: false,
       file: join(dir, "grants.json"),
       apply: async () => {},
       revoke: async (id) => revoked.push(id),
@@ -215,7 +216,7 @@ test("the clock mark is durable even when no grant changes", async () => {
   const file = join(dir, "grants.json");
   try {
     const clock = { t: 1000 };
-    const first = new GrantLedger({ file, apply: async () => {}, revoke: async () => {}, now: () => clock.t });
+    const first = new GrantLedger({ exclusive: false, file, apply: async () => {}, revoke: async () => {}, now: () => clock.t });
     await first.grant("u1", { expiresAt: 4000 });
 
     clock.t = 5000; // past the deadline; nothing is granted or revoked, but time moved on
@@ -224,7 +225,7 @@ test("the clock mark is durable even when no grant changes", async () => {
 
     // A fresh process whose clock sits back before the deadline.
     clock.t = 3000;
-    const second = new GrantLedger({ file, apply: async () => {}, revoke: async () => {}, now: () => clock.t });
+    const second = new GrantLedger({ exclusive: false, file, apply: async () => {}, revoke: async () => {}, now: () => clock.t });
     assert.equal(second.live("u1"), false, "the persisted high-water keeps the grant expired");
     assert.equal(second.clockStatus.mark, 5000, "the quiet observation was written down");
   } finally {
@@ -237,7 +238,7 @@ test("a clock regression is recorded for the operator and survives a restart", a
   const file = join(dir, "grants.json");
   try {
     const clock = { t: 5000 };
-    const first = new GrantLedger({ file, apply: async () => {}, revoke: async () => {}, now: () => clock.t });
+    const first = new GrantLedger({ exclusive: false, file, apply: async () => {}, revoke: async () => {}, now: () => clock.t });
     await first.grant("u1", { expiresAt: 9000 });
     clock.t = 2000;
     await first.admitIfLive("u1", async () => {});
@@ -245,7 +246,7 @@ test("a clock regression is recorded for the operator and survives a restart", a
     first.close();
 
     clock.t = 6000;
-    const second = new GrantLedger({ file, apply: async () => {}, revoke: async () => {}, now: () => clock.t });
+    const second = new GrantLedger({ exclusive: false, file, apply: async () => {}, revoke: async () => {}, now: () => clock.t });
     assert.equal(second.clockIsSane, false, "and a corrected clock does not erase the evidence");
     assert.equal(second.live("u1"), true, "while a still-valid grant is not punished for it");
   } finally {
@@ -260,7 +261,7 @@ test("admission is serialized against the sweep, so an approval cannot outlive i
   try {
     const clock = { t: 1000 };
     const revoked = [];
-    const ledger = new GrantLedger({
+    const ledger = new GrantLedger({ exclusive: false,
       file: join(dir, "grants.json"),
       apply: async () => {},
       revoke: async (id) => revoked.push(id),
@@ -301,7 +302,7 @@ test("a refused grant persists the clock it refused against before it returns", 
   const file = join(dir, "grants.json");
   try {
     const clock = { t: 1000 };
-    const first = new GrantLedger({ file, apply: async () => {}, revoke: async () => {}, now: () => clock.t });
+    const first = new GrantLedger({ exclusive: false, file, apply: async () => {}, revoke: async () => {}, now: () => clock.t });
     await first.grant("u1", { expiresAt: 2500 });
 
     // Time moves well past that grant, and a late renewal arrives carrying a deadline already gone.
@@ -315,7 +316,7 @@ test("a refused grant persists the clock it refused against before it returns", 
 
     // And the point of it: a restart with a corrected, lower clock must not revive the old grant.
     first.close();
-    const second = new GrantLedger({ file, apply: async () => {}, revoke: async () => {}, now: () => 2000 });
+    const second = new GrantLedger({ exclusive: false, file, apply: async () => {}, revoke: async () => {}, now: () => 2000 });
     assert.equal(second.live("u1"), false, "an expired grant must not come back under a rolled-back clock");
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -330,7 +331,7 @@ test("a sweep revokes against the target the grant recorded, not the one now con
   try {
     const calls = [];
     const clock = { t: 1000 };
-    const ledger = new GrantLedger({
+    const ledger = new GrantLedger({ exclusive: false,
       file: join(dir, "grants.json"),
       apply: async () => {},
       revoke: async (id, r) => calls.push([id, r.roomId]),
@@ -352,7 +353,7 @@ test("a renewal onto a different target revokes the old one before granting the 
   try {
     const revoked = [];
     const applied = [];
-    const ledger = new GrantLedger({
+    const ledger = new GrantLedger({ exclusive: false,
       file: join(dir, "grants.json"),
       apply: async (id, r) => applied.push(r.roomId),
       revoke: async (id, r) => revoked.push(r.roomId),
@@ -382,7 +383,7 @@ test("a slow platform call for one member does not hold up another", async () =>
   try {
     let release;
     const gate = new Promise((r) => (release = r));
-    const ledger = new GrantLedger({
+    const ledger = new GrantLedger({ exclusive: false,
       file: join(dir, "grants.db"),
       apply: async (id) => {
         if (id === "slow") await gate;
@@ -412,11 +413,11 @@ test("two ledgers on one database share the grants and the clock floor", async (
   const file = join(dir, "grants.db");
   try {
     const aClock = { t: 1000 };
-    const a = new GrantLedger({ file, lease: false, apply: async () => {}, revoke: async () => {}, now: () => aClock.t });
+    const a = new GrantLedger({ exclusive: false, file, lease: false, apply: async () => {}, revoke: async () => {}, now: () => aClock.t });
     await a.grant("u1", { expiresAt: 2000 });
 
     // A second process, still back at its own start time.
-    const b = new GrantLedger({ file, lease: false, apply: async () => {}, revoke: async () => {}, now: () => 1000 });
+    const b = new GrantLedger({ exclusive: false, file, lease: false, apply: async () => {}, revoke: async () => {}, now: () => 1000 });
     assert.equal(b.has("u1"), true, "the grant one process wrote is visible to the other");
     assert.equal(b.live("u1"), true);
 
@@ -458,7 +459,7 @@ test("a stale sweep in another process cannot delete a fresh grant", async () =>
     const revokeGate = new Promise((r) => (releaseRevoke = r));
     let applied = false;
 
-    const a = new GrantLedger({
+    const a = new GrantLedger({ exclusive: false,
       file,
       lease: false,
       apply: async () => {},
@@ -468,7 +469,7 @@ test("a stale sweep in another process cannot delete a fresh grant", async () =>
       now: () => clock.t,
       log: () => {},
     });
-    const b = new GrantLedger({
+    const b = new GrantLedger({ exclusive: false,
       file,
       lease: false,
       apply: async () => {
@@ -502,7 +503,7 @@ test("a stale sweep in another process cannot delete a fresh grant", async () =>
 });
 
 // The layer that stops the situation above arising at all.
-test("a second process refuses to start while the first still holds the ledger", async () => {
+test("a second process is refused while the first holds the ledger", async () => {
   const dir = mkdtempSync(join(tmpdir(), "mno-grant-"));
   const file = join(dir, "grants.db");
   try {
@@ -510,43 +511,123 @@ test("a second process refuses to start while the first still holds the ledger",
     const first = new GrantLedger(opts);
     await first.grant("u1", { expiresAt: 9000 });
 
-    assert.throws(() => new GrantLedger(opts), /another process holds/, "two adapters on one ledger");
+    // Held by the kernel for the life of the process, so this is refused outright rather than by any
+    // reasoning of ours about staleness. The hand-rolled lease that used to sit here was wrong in four
+    // separate ways, all of which came from having to decide when a claim had gone stale.
+    assert.throws(() => new GrantLedger(opts), /already in use|locked/i, "two adapters on one ledger");
 
-    // A clean shutdown releases the claim, so an ordinary restart is immediate rather than making the
-    // operator wait out the staleness window.
     first.close();
     const second = new GrantLedger(opts);
-    assert.equal(second.has("u1"), true);
+    assert.equal(second.has("u1"), true, "and the ledger is intact for the process that takes over");
     second.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test("a claim left behind by a process that died is taken over once it goes stale", async () => {
+// The previous version of this test kept the "crashed" ledger open in this very process and advanced a
+// fake clock, which both reviewers correctly said proves nothing about a dead process. This one really
+// exits a child and checks that the lock died with it, with no staleness window to wait out.
+test("the ledger is released when the process holding it exits, however it exits", async () => {
   const dir = mkdtempSync(join(tmpdir(), "mno-grant-"));
   const file = join(dir, "grants.db");
   try {
-    const wall = { ms: 1_000_000 };
-    const opts = {
+    const url = new URL("../adapters/common/grant_ledger.js", import.meta.url).href;
+    const child = `
+      const { GrantLedger } = await import(${JSON.stringify(url)});
+      const l = new GrantLedger({ file: ${JSON.stringify(file)}, apply: async () => {}, revoke: async () => {}, now: () => 1000 });
+      await l.grant("u1", { expiresAt: 9000 });
+      process.kill(process.pid, "SIGKILL");   // no close(), no handler, nothing released by hand
+    `;
+    await new Promise((resolve) => {
+      const p = spawn(process.execPath, ["--input-type=module", "-e", child], { stdio: "ignore" });
+      p.on("exit", resolve);
+    });
+
+    const after = new GrantLedger({ file, apply: async () => {}, revoke: async () => {}, now: () => 1000 });
+    assert.equal(after.has("u1"), true, "the grant the child wrote is there");
+    after.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// The revision must never be reused, including after a row is deleted and a new one inserted for the
+// same member. Deriving it from the ROW (start at 1 on insert, increment on update) failed exactly
+// there: a sweep could read revision 1, another sweep could delete the row, a fresh grant could insert
+// a new row that also got revision 1, and the first sweep's conditional delete would then match the
+// fresh row and delete it. Two reviewers reproduced that independently. The counter is database-wide,
+// so a revision retired by a delete is never handed out again.
+test("a revision is never reused, so delete-then-reinsert cannot collide", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mno-grant-"));
+  const file = join(dir, "grants.db");
+  try {
+    const revOf = (l) => {
+      const db = new DatabaseSync(file);
+      try {
+        return db.prepare("SELECT rev FROM grants WHERE user_id='u1'").get()?.rev ?? null;
+      } finally {
+        db.close();
+      }
+    };
+    const clock = { t: 1000 };
+    const ledger = new GrantLedger({
+      exclusive: false,
       file,
       apply: async () => {},
       revoke: async () => {},
-      now: () => 1000,
-      leaseStaleMs: 30_000,
-      wallClock: () => wall.ms,
-      log: () => {},
-    };
-    const crashed = new GrantLedger(opts); // never closed, standing in for a process that died
-    await crashed.grant("u1", { expiresAt: 9000 });
+      now: () => clock.t,
+    });
 
-    wall.ms += 29_000; // still within the window
-    assert.throws(() => new GrantLedger(opts), /another process holds/);
+    await ledger.grant("u1", { expiresAt: 2000 });
+    const first = revOf();
 
-    wall.ms += 2_000; // now past it
-    const taken = new GrantLedger(opts);
-    assert.equal(taken.has("u1"), true, "and the ledger it left behind is intact");
-    taken.close();
+    // Retire the row entirely, the way an expiry sweep does.
+    clock.t = 2000;
+    assert.deepEqual(await ledger.sweep(), ["u1"]);
+    assert.equal(revOf(), null, "the row is gone");
+
+    // A fresh grant for the same member is an INSERT, which is where the revision used to restart.
+    await ledger.grant("u1", { expiresAt: 9000 });
+    const second = revOf();
+
+    assert.ok(second > first, `a reinserted row must not reuse a retired revision (${first} then ${second})`);
+    ledger.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// A decision must never rest on a clock reading that was not written down. The old code sampled TWICE
+// per decision, once to persist and once to decide, and real time can cross an expiry boundary between
+// the two. The adapter would then refuse on the strength of a time it had never recorded, and a later
+// start with a lower clock found a floor one tick short of what it had already acted on and let the
+// expired grant back in. The invariant, stated without reference to how it is achieved: once the
+// ledger has reported a grant dead, no restart at any clock may report it live again.
+test("a decision is never made on a clock reading that was not persisted", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mno-grant-"));
+  const file = join(dir, "grants.db");
+  try {
+    // Advances on EVERY call, which is what a real clock does, and what a double sample cannot survive.
+    let t = 1998;
+    const mode = { advancing: false, fixed: 1000 };
+    const now = () => (mode.advancing ? ++t : mode.fixed);
+
+    const first = new GrantLedger({ exclusive: false, file, apply: async () => {}, revoke: async () => {}, now });
+    await first.grant("u1", { expiresAt: 2000 });
+
+    mode.advancing = true; // the next reading is 1999, the one after that 2000
+    const reportedDead = first.live("u1") === false;
+    first.close();
+
+    // A restart with the clock well before the deadline.
+    mode.advancing = false;
+    mode.fixed = 1500;
+    const second = new GrantLedger({ exclusive: false, file, apply: async () => {}, revoke: async () => {}, now });
+    if (reportedDead) {
+      assert.equal(second.live("u1"), false, "a grant already reported dead must not come back after a restart");
+    }
+    second.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

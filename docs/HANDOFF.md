@@ -5,6 +5,63 @@ counts and supersedes everything below it. Historical sections are append-only a
 only marked superseded. Read this first when picking the project back up, then `TODO.md` for the full
 prioritized punch list.
 
+## CURRENT STATE, 2026-07-26 (third attempt at one property)
+
+273 tests green. The adapter grant ledger is a SQLite database. Read the section below for what that
+change is and why; read this section for what was wrong with it twice.
+
+### The property, and two failed attempts at it
+
+The property is that a grant and a removal for one member must never interleave. Within one process a
+per-member promise chain gives it. Across processes nothing did, and two reviewers reproduced live
+platform access with no ledger record behind it, which nothing can then take away.
+
+The first attempt claimed SQLite closed this "by construction". Wrong: SQLite serializes individual
+statements, and a grant is a statement, then an await on a platform call, then another statement.
+
+The second attempt was a lease row with a staleness timeout. Also rejected, and the reasons are worth
+keeping so nobody rebuilds it. The timeout has to exceed the longest quiet period, and the default
+sweep intervals of 60 and 300 seconds were already longer than the 30-second window, so a live but
+idle bot lost its ledger routinely. The old owner's next operation silently took the claim back,
+because refreshes were not conditioned on still holding it. A backward wall-clock step made the age
+negative, which read as stale and handed the ledger over. And no adapter released it on shutdown, so
+the documented immediate restart never existed. Every one of those came from having to decide when a
+claim had gone stale.
+
+### What it is now
+
+The database is opened with `PRAGMA locking_mode=EXCLUSIVE`. The kernel holds it for the life of the
+process and releases it when the process ends, however it ends. A second process is refused. There is
+no staleness window, no heartbeat, no ownership fencing, and no signal handler to forget. A test
+really terminates a child process and restarts immediately.
+
+Tests that need to inspect the database while a ledger is open pass `exclusive: false`, which is a
+test seam in the same spirit as `putFn`. Production passes nothing and gets the lock.
+
+Two other defects from the same round, both single-process and both real:
+
+- The clock was sampled TWICE per decision, once to persist and once to decide, and time can cross an
+  expiry boundary between them. `#observeClock()` now returns its sample and every decision uses that
+  exact value. This was the same "acted on state that was not durable" shape the SQLite move was meant
+  to end, surviving where there were two observations rather than one.
+- The row revision restarted at 1 on every insert, so a row could be deleted and reinserted at the
+  same revision and a stale conditional delete would match the fresh row anyway. It is now a
+  database-wide counter that is never reused.
+
+### On the reviews themselves
+
+Six tests were found to claim coverage they did not provide, including ones written in this session.
+The worst was a "process that died" test that kept the supposedly dead instance running in-process.
+Both are rewritten. When writing a test for a crash, terminate something.
+
+One process note: the Grok packet used in the last round was the earlier build, so its findings were
+against superseded code and added nothing. Rebuild every packet from the current commit, and check the
+reviewer is describing code that still exists before acting on it.
+
+### Next
+
+A fresh round over this, the third on the same property. Build packets from the current commit.
+
 ## CURRENT STATE, 2026-07-26 (the SQLite migration)
 
 The adapter grant ledger is a SQLite database now, not a JSON file rewritten in full behind one global

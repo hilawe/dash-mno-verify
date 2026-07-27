@@ -30,9 +30,10 @@ export MATRIX_GRANT_LEDGER_DB=data/matrix-grants.db  # where granted access is r
 # An older JSON ledger at MATRIX_GRANT_LEDGER (default data/matrix-grants.json) is migrated
 # into it on first start, then renamed with a .migrated suffix.
 
-Only one adapter process may run against a given ledger at a time. A second refuses to start while
-the first holds it. A clean shutdown releases the claim, so an ordinary restart is immediate; a
-process that dies leaves a claim that expires after 30 seconds.
+Only one adapter process may run against a given ledger at a time. The database is opened in an
+exclusive locking mode, so the operating system holds it for the life of the process and a second one
+is refused. The lock is released whenever the process ends, however it ends, so a restart is always
+immediate and there is nothing to wait out and nothing to clean up by hand.
 
 export MATRIX_SWEEP_SECONDS=60                      # how often lapsed access is taken back
 ```

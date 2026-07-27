@@ -32,12 +32,12 @@ const noop = () => Promise.resolve();
 test("a grant persists and applies, and a fresh ledger on the same file sees it (restart)", async () => {
   const file = tmpFile();
   const applied = [];
-  const l1 = new GrantLedger({ file, apply: (u, r) => (applied.push([u, r.expiresAt]), noop()), revoke: noop, now: () => 100 });
+  const l1 = new GrantLedger({ exclusive: false, file, apply: (u, r) => (applied.push([u, r.expiresAt]), noop()), revoke: noop, now: () => 100 });
   await l1.grant("u1", rec(200));
   assert.deepEqual(applied, [["u1", 200]]);
   assert.ok(existsSync(file));
   l1.close(); // a restart means the first process is gone, and closing releases its claim
-  const l2 = new GrantLedger({ file, apply: noop, revoke: noop, now: () => 100 });
+  const l2 = new GrantLedger({ exclusive: false, file, apply: noop, revoke: noop, now: () => 100 });
   assert.equal(l2.has("u1"), true);
 });
 
@@ -45,7 +45,7 @@ test("the sweep revokes an expired grant, removes it, reports it, and leaves a v
   const file = tmpFile();
   const revoked = [];
   const clock = { t: 100 };
-  const l = new GrantLedger({ file, apply: noop, revoke: (u) => (revoked.push(u), noop()), now: () => clock.t });
+  const l = new GrantLedger({ exclusive: false, file, apply: noop, revoke: (u) => (revoked.push(u), noop()), now: () => clock.t });
   await l.grant("expired", rec(200)); // both granted while valid
   await l.grant("valid", rec(5000));
   clock.t = 300; // only the first has lapsed
@@ -58,7 +58,7 @@ test("the sweep revokes an expired grant, removes it, reports it, and leaves a v
 test("a not-yet-expired grant is left alone by the sweep", async () => {
   const file = tmpFile();
   const revoked = [];
-  const l = new GrantLedger({ file, apply: noop, revoke: (u) => (revoked.push(u), noop()), now: () => 100 });
+  const l = new GrantLedger({ exclusive: false, file, apply: noop, revoke: (u) => (revoked.push(u), noop()), now: () => 100 });
   await l.grant("u1", rec(500));
   assert.deepEqual(await l.sweep(), []);
   assert.equal(revoked.length, 0);
@@ -76,7 +76,7 @@ test("a grant and a revoke for the same user do not interleave", async () => {
   const events = [];
   let release;
   const gate = new Promise((r) => (release = r));
-  const l = new GrantLedger({
+  const l = new GrantLedger({ exclusive: false,
     file,
     apply: async (u) => { events.push(`apply:${u}`); },
     revoke: async (u) => { events.push(`revoke-start:${u}`); await gate; events.push(`revoke-end:${u}`); },
@@ -99,7 +99,7 @@ test("a grant and a revoke for the same user do not interleave", async () => {
 test("a failed first grant keeps a record and best-effort revokes", async () => {
   const file = tmpFile();
   const revoked = [];
-  const l = new GrantLedger({ file, apply: () => Promise.reject(new Error("discord down")), revoke: (u) => (revoked.push(u), noop()), now: () => 100 });
+  const l = new GrantLedger({ exclusive: false, file, apply: () => Promise.reject(new Error("discord down")), revoke: (u) => (revoked.push(u), noop()), now: () => 100 });
   await assert.rejects(l.grant("u1", rec(200)), /discord down/);
   assert.equal(l.has("u1"), true);
   assert.deepEqual(revoked, ["u1"]);
@@ -114,7 +114,7 @@ test("a failed same-target renewal keeps the new grant and strands nothing", asy
   const file = tmpFile();
   let fail = false;
   const revoked = [];
-  const l = new GrantLedger({
+  const l = new GrantLedger({ exclusive: false,
     file,
     apply: () => (fail ? Promise.reject(new Error("down")) : noop()),
     revoke: (u) => (revoked.push(u), noop()),
@@ -131,11 +131,11 @@ test("a failed same-target renewal keeps the new grant and strands nothing", asy
 // silently strand every live grant, because the sweep only ever looks at what it loaded.
 test("a missing ledger loads as empty (first run), an unreadable one fails startup", () => {
   const empty = tmpFile(); // the dir exists, the file does not
-  assert.equal(new GrantLedger({ file: empty, apply: noop, revoke: noop }).size(), 0);
+  assert.equal(new GrantLedger({ exclusive: false, file: empty, apply: noop, revoke: noop }).size(), 0);
 
   const notADatabase = tmpFile();
   writeFileSync(notADatabase, "{ not a database");
-  assert.throws(() => new GrantLedger({ file: notADatabase, apply: noop, revoke: noop }));
+  assert.throws(() => new GrantLedger({ exclusive: false, file: notADatabase, apply: noop, revoke: noop }));
 });
 
 // A row that does not satisfy the adapter's own validator fails the load rather than being skipped.
@@ -176,7 +176,7 @@ test("a legacy JSON ledger is adopted once, with its clock state, and moved asid
     }),
   );
 
-  const l = new GrantLedger({ file, importFrom: legacy, apply: noop, revoke: noop, now: () => 100 });
+  const l = new GrantLedger({ exclusive: false, file, importFrom: legacy, apply: noop, revoke: noop, now: () => 100 });
   assert.equal(l.has("u1"), true, "the grant came across");
   assert.equal(l.clockStatus.mark, 4242, "and so did the high-water clock");
   assert.equal(l.clockIsSane, false, "a recorded regression is not forgotten by the migration");
@@ -186,7 +186,7 @@ test("a legacy JSON ledger is adopted once, with its clock state, and moved asid
 
   // Re-opening must not import a second time, including if someone restores the old file by hand.
   writeFileSync(legacy, JSON.stringify({ grants: { u2: { expiresAt: 9000, mode: "role", roleId: "r1" } } }));
-  const again = new GrantLedger({ file, importFrom: legacy, apply: noop, revoke: noop, now: () => 100 });
+  const again = new GrantLedger({ exclusive: false, file, importFrom: legacy, apply: noop, revoke: noop, now: () => 100 });
   assert.equal(again.has("u2"), false, "a database that has already been imported into is left alone");
   assert.equal(existsSync(legacy), true, "and the restored file is not consumed");
 });
@@ -205,7 +205,7 @@ test("a legacy ledger with a malformed record fails the migration rather than ad
     }),
   );
   assert.throws(
-    () => new GrantLedger({ file, importFrom: legacy, apply: noop, revoke: noop }),
+    () => new GrantLedger({ exclusive: false, file, importFrom: legacy, apply: noop, revoke: noop }),
     /malformed record for u2/,
   );
   assert.equal(existsSync(legacy), true, "the source is untouched so it can be fixed and retried");
@@ -218,7 +218,7 @@ test("a revoke failure during the sweep keeps the grant for a later retry", asyn
   const file = tmpFile();
   const clock = { t: 100 };
   let failRevoke = true;
-  const l = new GrantLedger({
+  const l = new GrantLedger({ exclusive: false,
     file,
     apply: noop,
     revoke: () => (failRevoke ? Promise.reject(new Error("discord 500")) : noop()),
@@ -238,7 +238,7 @@ test("a revoke failure during the sweep keeps the grant for a later retry", asyn
 test("a renewal that drops a target revokes the orphaned one before applying", async () => {
   const file = tmpFile();
   const revokedRecords = [];
-  const l = new GrantLedger({
+  const l = new GrantLedger({ exclusive: false,
     file,
     apply: noop,
     revoke: (u, r) => (revokedRecords.push(r), noop()),
@@ -255,7 +255,7 @@ test("a renewal that drops a target revokes the orphaned one before applying", a
 test("if migrating the prior grant fails, the renewal aborts and keeps the prior grant", async () => {
   const file = tmpFile();
   let migrateFail = false;
-  const l = new GrantLedger({
+  const l = new GrantLedger({ exclusive: false,
     file,
     apply: noop,
     revoke: () => (migrateFail ? Promise.reject(new Error("revoke down")) : noop()),
@@ -272,7 +272,7 @@ test("if migrating the prior grant fails, the renewal aborts and keeps the prior
 test("grant refuses a malformed record before writing or applying", async () => {
   const file = tmpFile();
   const applied = [];
-  const l = new GrantLedger({ file, apply: (u) => (applied.push(u), noop()), revoke: noop, now: () => 100 });
+  const l = new GrantLedger({ exclusive: false, file, apply: (u) => (applied.push(u), noop()), revoke: noop, now: () => 100 });
   await assert.rejects(l.grant("u1", { mode: "channel", channels: ["c1"] }), /malformed/); // no expiresAt
   assert.equal(l.has("u1"), false);
   assert.equal(applied.length, 0);
@@ -284,7 +284,7 @@ test("grant refuses a malformed record before writing or applying", async () => 
 // interleave and one would win; a per-row write cannot.
 test("concurrent grants for different users all persist", async () => {
   const file = tmpFile();
-  const l = new GrantLedger({ file, apply: noop, revoke: noop, now: () => 100 });
+  const l = new GrantLedger({ exclusive: false, file, apply: noop, revoke: noop, now: () => 100 });
   await Promise.all([l.grant("u1", rec(200)), l.grant("u2", rec(200)), l.grant("u3", rec(200))]);
   assert.deepEqual(Object.keys(onDisk(file)).sort(), ["u1", "u2", "u3"]);
 });
@@ -295,7 +295,7 @@ test("concurrent grants for different users all persist", async () => {
 test("a persist failure grants nothing and writes nothing", async () => {
   const file = tmpFile();
   let failNextWrite = false;
-  const l = new GrantLedger({
+  const l = new GrantLedger({ exclusive: false,
     file,
     apply: noop,
     revoke: noop,

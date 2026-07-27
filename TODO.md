@@ -261,21 +261,39 @@ built from the post-migration code rather than from any earlier packet.
   chain in memory, so it binds only the process it lives in. Two processes could therefore interleave a
   removal and a fresh grant for one member, and the sweep's unconditional delete then threw the fresh
   row away and left live access with no record, the exact outcome the lifecycle exists to prevent.
-  Two independent reviewers found this, one with a reproduction. Closed in two layers:
-    - The sweep's delete is conditional on the row revision it read (`rev`, bumped on every write), so
-      a sweep overtaken by a fresh grant deletes nothing and reports nothing. This does not make two
-      processes safe, it makes the worst case recoverable: the record survives and the member's access
-      may have been removed, which re-verifying fixes.
-    - A startup lease. A second process refuses to start while a first still holds the ledger. A clean
-      shutdown releases it so an ordinary restart is immediate; a process that dies leaves a claim that
-      goes stale after `leaseStaleMs` (30s default) and is then taken over.
+  Two independent reviewers found this, one with a reproduction. The FIRST attempt to close it was a
+  hand-rolled lease row with a staleness timeout, and the next round rejected that too. It is worth
+  recording why, so nobody rebuilds it: the timeout has to exceed the longest quiet period or a live
+  but idle bot loses its ledger (the default sweep intervals, 60s and 300s, were already longer than
+  the 30s window); the old owner's next operation silently took the claim back, because refreshes were
+  not conditioned on still holding it; a backward wall-clock step made the age negative, which read as
+  stale and handed the ledger over; and no adapter released it on shutdown, so the documented immediate
+  restart did not exist. Every one of those defects came from having to decide when a claim had gone
+  stale.
+  Closed instead by not deciding that at all. The database is opened with `PRAGMA
+  locking_mode=EXCLUSIVE`, so the kernel holds it for the life of the process and releases it whenever
+  the process ends, however it ends. A second process is refused outright. There is no staleness
+  window, no heartbeat, no ownership fencing, and no signal handler to forget. Verified by a test that
+  really terminates a child process and restarts immediately.
+  The revision-conditional delete stays as defence in depth, with the revision now drawn from a
+  database-wide counter rather than derived from the row. Deriving it from the row restarted it at 1 on
+  every insert, so a row could be deleted and reinserted at the same revision and a stale delete would
+  match the fresh row anyway. Two reviewers reproduced that independently.
   Shared state itself does work as described: the clock floor is read from the database on every
-  observation and raised with a `MAX`, so a lagging process cannot pull another's floor down.
-  (`adapters/common/grant_ledger.js`)
+  observation and raised with a `MAX`. (`adapters/common/grant_ledger.js`)
+- [x] One clock sample per decision (2026-07-26 round, blocker). The clock was sampled twice per
+  decision, once to persist it and once to decide on it, and real time can cross an expiry boundary
+  between the two. The adapter could refuse an admission on the strength of a reading it had never
+  recorded, and a later start with a lower clock then found a floor one tick short of what it had
+  already acted on and let the expired grant back in. That is the same "acted on state that was not
+  durable" shape the SQLite move was meant to end, surviving in the one place with two observations
+  rather than one. `#observeClock()` now returns its sample and every decision uses that exact value.
+  Pinned by a test written as the invariant rather than the mechanism: once the ledger has reported a
+  grant dead, no restart at any clock may report it live again. (`adapters/common/grant_ledger.js`)
 - [x] Concurrent first-start migration (2026-07-26 round, minor). Two processes could both import the
   legacy file, both commit, and the second then fail on a rename whose source the first had already
-  moved. A missing source is now treated as already done rather than as a startup failure. The lease
-  above normally prevents both reaching it at all. (`adapters/common/grant_ledger.js`)
+  moved. A missing source is now treated as already done rather than as a startup failure. The
+  exclusive lock above now prevents both reaching it at all. (`adapters/common/grant_ledger.js`)
 - [x] Migrate existing deployments off the JSON ledger. DONE. Each adapter passes its old JSON path as
   `importFrom`; on a fresh database that file's grants and clock state are adopted in one transaction,
   and only after it commits is the file renamed with a `.migrated` suffix, so an interrupted migration

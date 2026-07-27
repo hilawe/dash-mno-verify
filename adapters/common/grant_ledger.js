@@ -26,14 +26,22 @@
 // save to enqueue. What remains asynchronous is exactly what genuinely is, the platform calls in
 // `apply` and `revoke`.
 //
-// The other two things it buys, both of which were tracked follow-ups:
-//   - Per-member locking instead of one global queue. The global queue existed because a whole-map
-//     rewrite could otherwise persist another member's in-flight record. With a per-row store that
-//     cannot happen, so one member's slow platform call no longer blocks every other member's grant.
-//   - Cross-process safety. The old file locking assumed a single process per adapter, and two
-//     instances would have interleaved whole-map writes and lost grants. SQLite arbitrates, the clock
-//     floor is read back from the database on every observation rather than trusted from memory, and
-//     the mark is raised with a MAX so a lagging process cannot pull another's floor back down.
+// It also allows per-member locking instead of one global queue. The global queue existed because a
+// whole-map rewrite could otherwise persist another member's in-flight record. With a per-row store
+// that cannot happen, so one member's slow platform call no longer blocks every other member's grant.
+//
+// WHAT THIS DOES NOT DO, STATED PLAINLY BECAUSE IT WAS TWICE CLAIMED THAT IT DID
+//
+// It does not make two processes on one ledger safe. The per-member chain is a promise chain in
+// memory and binds only its own process; SQLite serializes individual statements, but a grant is a
+// statement, then an await on a platform call, then another statement, and nothing holds a lock
+// across that gap. Two processes could interleave a removal and a fresh grant and leave live access
+// with no record.
+//
+// The answer is not to make two processes safe, it is to make two processes impossible. The database
+// is opened in an exclusive locking mode, so the kernel holds it for the life of the process and a
+// second one is refused. Everything above then rests on there being exactly one writer, which is what
+// the deployment has always assumed and what nothing previously enforced.
 import { DatabaseSync } from "node:sqlite";
 import { chmodSync, mkdirSync, readFileSync, renameSync, existsSync } from "node:fs";
 import { dirname } from "node:path";
@@ -59,10 +67,6 @@ export class GrantLedger {
   #db;
   #chain = new Map(); // userId -> tail of that member's operation chain
   #stmt = {};
-  #leaseToken = randomUUID();
-  #leaseEnabled = true;
-  #leaseStaleMs = 30_000;
-  #wallClock = () => Date.now();
 
   // `validate` decides whether a record is well formed, and `orphaned(prev, next)` returns the part
   // of a prior grant a renewal does not carry forward (so it can be revoked before the new grant is
@@ -84,9 +88,7 @@ export class GrantLedger {
     log = () => {},
     importFrom = null,
     putFn = null,
-    lease = true,
-    leaseStaleMs = 30_000,
-    wallClock = () => Date.now(),
+    exclusive = true,
   } = {}) {
     this.file = file;
     this.validate = validate;
@@ -113,6 +115,26 @@ export class GrantLedger {
         throw new Error(`refusing to start: cannot restrict ${file} to mode 0600 (${e.message})`);
       }
     }
+    // ONE PROCESS AT A TIME, enforced by the operating system rather than by us.
+    //
+    // A grant or a removal is a statement, then an await on a platform call, then another statement.
+    // SQLite serializes the statements but nothing holds a lock across that gap, and the per-member
+    // chain that does hold it is a promise chain in memory, so it binds only its own process. Two
+    // processes could therefore interleave a removal and a fresh grant for one member and leave live
+    // access with no record.
+    //
+    // A previous attempt at this was a lease row with a staleness timeout. It did not work, for
+    // reasons worth recording so nobody rebuilds it: the timeout has to be longer than the longest
+    // quiet period or a live-but-idle bot loses its ledger (the default sweep intervals, 60s and 300s,
+    // were already longer than the window), the old owner's next operation silently took the claim
+    // back because refreshes were not conditioned on still owning it, a backward wall-clock step made
+    // the age negative and read as stale, and nothing in any adapter released it on shutdown.
+    //
+    // An exclusive locking mode is the primitive that was wanted all along. The kernel holds it for
+    // the life of the process and drops it when the process dies, however it dies, so there is no
+    // staleness window to reason about, no heartbeat, no ownership fencing, and no signal handler to
+    // forget. A second process is refused outright.
+    if (exclusive && file !== ":memory:") this.#db.exec("PRAGMA locking_mode=EXCLUSIVE");
     this.#db.exec("PRAGMA journal_mode=WAL");
     // The caller is told a grant was recorded only once the write reached disk, which is the whole of
     // persist-before-apply. One flush per grant is nothing next to the platform call that follows it.
@@ -131,9 +153,18 @@ export class GrantLedger {
       all: this.#db.prepare("SELECT user_id, record FROM grants"),
       due: this.#db.prepare("SELECT user_id FROM grants WHERE expires_at <= ? ORDER BY user_id"),
       put: this.#db.prepare(
-        "INSERT INTO grants (user_id, expires_at, record, updated_at, rev) VALUES (?, ?, ?, ?, 1) " +
+        "INSERT INTO grants (user_id, expires_at, record, updated_at, rev) VALUES (?, ?, ?, ?, ?) " +
           "ON CONFLICT(user_id) DO UPDATE SET expires_at=excluded.expires_at, record=excluded.record, " +
-          "updated_at=excluded.updated_at, rev=grants.rev+1",
+          "updated_at=excluded.updated_at, rev=excluded.rev",
+      ),
+      // A database-wide counter, never reset and never reused. Deriving the revision from the ROW
+      // (starting at 1 on insert, incrementing on update) let a row be deleted and reinserted at the
+      // same revision, so a stale sweep's conditional delete matched the fresh row anyway and deleted
+      // it, which is the exact outcome the conditional delete exists to prevent. RETURNING makes the
+      // bump and the read one statement.
+      nextRev: this.#db.prepare(
+        "INSERT INTO meta (k, v) VALUES ('revSeq', '1') " +
+          "ON CONFLICT(k) DO UPDATE SET v = CAST(meta.v AS INTEGER) + 1 RETURNING CAST(v AS INTEGER) AS rev",
       ),
       // Conditional on the revision the caller read. See the sweep for why.
       del: this.#db.prepare("DELETE FROM grants WHERE user_id=? AND rev=?"),
@@ -148,13 +179,6 @@ export class GrantLedger {
       setMeta: this.#db.prepare("INSERT INTO meta (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v"),
       delMeta: this.#db.prepare("DELETE FROM meta WHERE k=?"),
     };
-
-    // Claim the ledger BEFORE the migration, so two processes starting together cannot both try to
-    // adopt the legacy file.
-    this.#leaseStaleMs = leaseStaleMs;
-    this.#wallClock = wallClock;
-    this.#leaseEnabled = lease;
-    if (lease) this.#claimLease();
 
     this.#importLegacy(importFrom);
     this.#validateAll();
@@ -232,107 +256,51 @@ export class GrantLedger {
 
   #put(userId, record) {
     const write = () =>
-      this.#stmt.put.run(String(userId), Number(record.expiresAt), JSON.stringify(record), Date.now());
+      this.#stmt.put.run(
+        String(userId),
+        Number(record.expiresAt),
+        JSON.stringify(record),
+        Date.now(),
+        this.#stmt.nextRev.get().rev,
+      );
     return this.putFn ? this.putFn(write, userId, record) : write();
-  }
-
-  // ---- one process at a time ---------------------------------------------------------------------
-
-  // The ledger is designed for exactly one adapter process per platform, and until now nothing
-  // enforced that. SQLite serializes individual statements, but a grant or a removal is a statement,
-  // then an await on a platform call, then another statement. Nothing in the database holds a lock
-  // across that gap, and the per-member chain that does hold it is a promise chain in memory, so it
-  // binds only the process it lives in. Two processes could therefore interleave a removal and a
-  // fresh grant for one member.
-  //
-  // The conditional delete in sweep() keeps that from stranding untracked access. This lease is what
-  // stops the situation arising: a second process refuses to start while a first one still holds the
-  // ledger. A clean shutdown releases it, so an ordinary restart is immediate. A process that dies
-  // without releasing leaves the lease to go stale, which is why there is a timeout rather than a
-  // permanent claim.
-  // Read-and-claim has to be ONE atomic step. Read then write would let two processes starting
-  // together after a crash both see the same stale claim, both decide it was theirs to take, and both
-  // run, which is the situation this whole mechanism exists to prevent. BEGIN IMMEDIATE takes the
-  // write lock up front, so the second process blocks, then reads the first one's fresh claim and
-  // refuses.
-  #claimLease() {
-    this.#db.exec("BEGIN IMMEDIATE");
-    try {
-      const held = this.#readLease();
-      if (held && held.token !== this.#leaseToken) {
-        const age = this.#wallClock() - Number(held.at);
-        if (Number.isFinite(age) && age >= 0 && age < this.#leaseStaleMs) {
-          throw new Error(
-            `refusing to start: another process holds ${this.file} (pid ${held.pid} on ${held.host}, ` +
-              `last seen ${Math.round(age / 1000)}s ago). Running two adapters against one ledger lets a ` +
-              `removal and a fresh grant for the same member interleave. Stop the other process first. ` +
-              `If it crashed, the claim expires ${Math.ceil((this.#leaseStaleMs - age) / 1000)}s from now.`,
-          );
-        }
-        this.log(`taking over ${this.file} from pid ${held.pid} on ${held.host}, whose claim went stale`);
-      }
-      this.#writeLease();
-      this.#db.exec("COMMIT");
-    } catch (e) {
-      this.#db.exec("ROLLBACK");
-      throw e;
-    }
-  }
-
-  #readLease() {
-    const row = this.#stmt.readMeta.get("owner");
-    if (row === undefined) return null;
-    try {
-      return JSON.parse(row.v);
-    } catch {
-      return null; // an unreadable claim is treated as none, and is overwritten below
-    }
-  }
-
-  #writeLease() {
-    this.#stmt.setMeta.run(
-      "owner",
-      JSON.stringify({ token: this.#leaseToken, pid: process.pid, host: hostname(), at: this.#wallClock() }),
-    );
-  }
-
-  // Refreshed from every operation, so an active adapter's claim never goes stale under it. There is
-  // deliberately no timer: a bot with no traffic for the timeout window is one whose ledger another
-  // process may safely take over, and a timer would only keep a dead-idle process holding it.
-  #touchLease() {
-    if (this.#leaseEnabled) this.#writeLease();
   }
 
   // ---- the guarded clock -------------------------------------------------------------------------
 
-  // Time moving forward raises the mark; time moving backwards is recorded and stays recorded. Both
-  // are written at the moment they are observed, so no part of this exists only in memory, which is
-  // what every earlier version got wrong in a different way.
+  // ONE sample per decision, and the decision uses exactly the sample that was persisted.
+  //
+  // The previous version sampled twice. #observeClock read the clock and wrote it down, then
+  // #effective read the clock AGAIN, and every caller decided on that second value. Between the two
+  // samples real time can cross an expiry boundary, so an adapter could refuse an admission on the
+  // strength of a time it had never recorded, and a restart with a lower clock then found a floor one
+  // tick short of what it had already acted on and let the expired grant back in. That is the same
+  // "acted on state that was not durable" shape the whole SQLite move was supposed to end, surviving
+  // in the one place where there were two observations rather than one.
+  //
+  // So this returns the sample. `wall` is the raw reading, for the one decision that legitimately
+  // wants unfloored time (see grant). `floor` is that same reading raised to the durable high-water
+  // mark, for every expiry decision. Nothing downstream may call the clock again.
   #observeClock() {
-    this.#touchLease(); // every operation reaches here, so this is where the claim stays fresh
     const t = this.now();
     const mark = this.#mark();
     if (mark == null || t > mark) {
       this.#stmt.raiseMark.run(String(t));
-      return;
+      return { wall: t, floor: t };
     }
     if (t < mark && this.#regression() == null) {
       this.#stmt.setMeta.run("clockRegressed", JSON.stringify({ observed: t, mark, at: t }));
     }
-  }
-
-  // The time every expiry decision is made against: the wall clock, floored at the highest value ever
-  // observed. This is the resolution of two opposing review findings. Treating a regression as
-  // "revoke everything" meant a routine one-second correction destroyed every member's access, and
-  // combined with a sticky flag it bricked the adapter permanently. Ignoring a regression meant a
-  // rolled-back clock revived grants that had already expired. Flooring at the mark does neither:
-  // time never moves backwards for expiry purposes, so nothing revives and nothing is mass-revoked.
-  // A forward jump that is later corrected leaves the mark high, which expires grants early, the
-  // conservative direction, and `resetClock` is the way back from one.
-  #effective() {
-    const t = this.now();
-    const mark = this.#mark();
-    return mark == null ? t : Math.max(t, mark);
+    // The mark is the durable floor and it is at least t here, so this is the persisted value.
+    // Expiry is judged against the wall clock floored at the highest value ever observed. This is the
+    // resolution of two opposing review findings. Treating a regression as "revoke everything" meant a
+    // routine one-second correction destroyed every member's access, and combined with a sticky flag
+    // it bricked the adapter permanently. Ignoring a regression meant a rolled-back clock revived
+    // grants that had already expired. Flooring at the mark does neither: time never moves backwards
+    // for expiry purposes, so nothing revives and nothing is mass-revoked. A forward jump that is
+    // later corrected leaves the mark high, which expires grants early, the conservative direction,
+    // and `resetClock` is the way back from one.
+    return { wall: t, floor: Math.max(t, mark) };
   }
 
   // ---- per-member serialization ------------------------------------------------------------------
@@ -420,8 +388,7 @@ export class GrantLedger {
     // Judge against the floored clock, so a rolled-back wall clock neither hides work that is due nor
     // manufactures work that is not. Revoking everything on any regression was an earlier cut, and it
     // turned a one-second correction into a mass revocation.
-    this.#observeClock();
-    const due = this.#stmt.due.all(this.#effective()).map((r) => r.user_id);
+    const due = this.#stmt.due.all(this.#observeClock().floor).map((r) => r.user_id);
     const revoked = [];
     for (const userId of due) {
       // The record is re-read and re-judged INSIDE the member's own lock. That, not the order things
@@ -431,7 +398,9 @@ export class GrantLedger {
       await this.#run(userId, async () => {
         const seen = this.#rowWithRev(userId);
         if (!seen) return;
-        if (this.#effective() < seen.record.expiresAt) return; // re-verified meanwhile, leave it alone
+        // Observe again inside the lock, and judge on THAT sample. Time may have moved since the due
+        // list was collected, and a decision must never rest on a reading that was not persisted.
+        if (this.#observeClock().floor < seen.record.expiresAt) return; // re-verified meanwhile, leave it
         try {
           await this.revoke(userId, seen.record);
         } catch (e) {
@@ -466,9 +435,8 @@ export class GrantLedger {
   // for one chat or room cannot authorize admission to another.
   async admitIfLive(userId, admit, matches = () => true) {
     return this.#run(userId, async () => {
-      this.#observeClock(); // durable at the point of call, so admitting on it is safe
+      const t = this.#observeClock().floor; // the persisted sample, and the only one this decides on
       const record = this.#row(userId);
-      const t = this.#effective();
       if (!record || t >= record.expiresAt) return false;
       if (!matches(record)) return false;
       await admit(record);
@@ -491,9 +459,9 @@ export class GrantLedger {
   // Whether a grant exists and has not lapsed. A read-only report: callers that ADMIT on the strength
   // of it must use admitIfLive, which does the same check inside the member's lock.
   live(userId) {
-    this.#observeClock();
+    const t = this.#observeClock().floor;
     const r = this.#row(userId);
-    return Boolean(r) && this.#effective() < r.expiresAt;
+    return Boolean(r) && t < r.expiresAt;
   }
 
   // Whether any record matches. Used by the startup reconciliation gate, which must ask "does this
@@ -524,7 +492,6 @@ export class GrantLedger {
   // making the operator wait out the staleness window.
   close() {
     try {
-      if (this.#leaseEnabled && this.#readLease()?.token === this.#leaseToken) this.#stmt.delMeta.run("owner");
     } catch {
       // A ledger that is already unusable is not worth failing a shutdown over.
     }
@@ -561,7 +528,13 @@ export class GrantLedger {
               `then start again to migrate.`,
           );
         }
-        this.#stmt.put.run(String(userId), Number(record.expiresAt), JSON.stringify(record), Date.now());
+        this.#stmt.put.run(
+          String(userId),
+          Number(record.expiresAt),
+          JSON.stringify(record),
+          Date.now(),
+          this.#stmt.nextRev.get().rev,
+        );
       }
       if (Number.isFinite(mark)) this.#stmt.raiseMark.run(String(mark));
       if (regressed) this.#stmt.setMeta.run("clockRegressed", JSON.stringify(regressed));
