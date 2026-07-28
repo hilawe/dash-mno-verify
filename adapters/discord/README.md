@@ -7,8 +7,8 @@ and the access grant, and delegates every decision to the gateway.
 
 A verified member is granted access in one of two ways, set by `DISCORD_GRANT_MODE`.
 
-- `channel` (recommended for privacy). The bot adds the member to the private channel(s) in `DISCORD_GRANT_CHANNEL_IDS` with a per-user permission overwrite, which is the automated form of adding someone by hand. It shows nothing on the member's public profile, so an ordinary server member outside the channel cannot tell who holds a masternode. The people who can already see that channel's access (server admins who inspect the overwrites or the audit log, the bot operator, and the other members inside the private channel) still can, and the proof hides which node in every case. The members of the private channel see each other, exactly as they would if added manually.
-- `role` (default, simpler). The bot assigns `DISCORD_MNO_ROLE_ID`. This is easier to set up, but a Discord role is visible on the member's profile card to anyone in the server, so it reveals who holds a masternode. Do not use this where that exposure matters.
+- `channel` (**the default**). The bot adds the member to the private channel(s) in `DISCORD_GRANT_CHANNEL_IDS` with a per-user permission overwrite, which is the automated form of adding someone by hand. It shows nothing on the member's public profile, so an ordinary server member outside the channel cannot tell who holds a masternode. The people who can already see that channel's access (server admins who inspect the overwrites or the audit log, the bot operator, and the other members inside the private channel) still can, and the proof hides which node in every case. The members of the private channel see each other, exactly as they would if added manually.
+- `role` (opt in, and it warns at startup). The bot assigns `DISCORD_MNO_ROLE_ID`. Easier to set up, but a Discord role is visible on the member's profile card to anyone in the server, so it announces who holds a masternode. That is the fact the proof exists to keep private, which is why it is no longer the default. Use it only where your community has decided that exposure does not matter.
 
 The verification conversation itself is always private, since `/verify` and `/submit` use ephemeral replies that only the member sees. The grant is the only step that can be public, which is why `channel` mode exists.
 
@@ -87,7 +87,8 @@ export DISCORD_GRANT_MODE=channel
 export DISCORD_GRANT_CHANNEL_IDS=111111111111111111,222222222222222222
 export DISCORD_CONTEXT_ID=mn-members     # stable context the proof is scoped to (optional)
 
-# Role mode (default): assign a server role (visible on the profile card)
+# Role mode (opt in): assign a server role, VISIBLE on the profile card, so it discloses
+# who holds a masternode. The bot warns at startup if you use it.
 # export DISCORD_GRANT_MODE=role
 # export DISCORD_MNO_ROLE_ID=...
 
