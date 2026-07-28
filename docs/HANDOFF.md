@@ -5,6 +5,54 @@ counts and supersedes everything below it. Historical sections are append-only a
 only marked superseded. Read this first when picking the project back up, then `TODO.md` for the full
 prioritized punch list.
 
+## CURRENT STATE, 2026-07-26 (after the third review round)
+
+277 tests green, nothing skipped. `main` is pushed.
+
+### What the round found, and what it cost to check
+
+Two plain defects of mine, both fixed and both pinned by tests that fail against the code they were
+written for. `grant()` was the fourth clock decision site and the one missed when the other three were
+fixed, so it could refuse a renewal on a reading it never persisted. And the revision counter restarted
+at 1 on any database lacking it, which is exactly the shape of a database written by the previous
+commit, so the backstop failed on precisely the databases needing it.
+
+### The episode worth remembering
+
+Rewriting the exclusion test properly (the reviewer correctly said two ledgers in one process prove
+nothing) appeared to show the exclusive lock leaking about one run in six under concurrency. It does
+not. The holder child ended with `await new Promise(() => {})`, which does NOT keep Node's event loop
+alive, so it printed its ready signal and exited with code 13, releasing the lock. The diagnostic said
+the holder was "alive" because `kill(pid, 0)` succeeds on an unreaped zombie.
+
+With a holder that stays alive, and the parent asserting liveness before concluding anything, a second
+opener is refused 90 out of 90 under six-way concurrency, and a reviewer had independently confirmed
+refusal including with the holder suspended. A false blocker was committed and then withdrawn in the
+next commit; both are in the history deliberately.
+
+The lesson is the one the reviews keep teaching from the other side. A test that does not do what its
+name says will mislead in whichever direction it happens to fail. Eight such tests were found by
+reviewers across three rounds; this one I wrote myself and it produced a false alarm rather than a
+false pass. Assert the precondition before trusting the conclusion.
+
+### Where single-writer actually stands
+
+Enforced by the database on local storage, with two limits that are real and now stated everywhere
+rather than implied:
+
+- **Local storage only.** The exclusion is the filesystem's, and SQLite documents that locking is
+  unreliable on network filesystems, where two hosts can both believe they hold it.
+- **Process life only.** A process terminated between a platform request being accepted and taking
+  effect releases the lock with that request still in flight. A replacement can expire the grant,
+  remove it, and forget the member, after which the request lands. No local lock closes this. The real
+  mitigation is startup reconciliation against platform state, which Matrix has and Discord does not.
+
+### Next
+
+1. The three `_r3` review packets are still outstanding and predate today's fixes.
+2. Discord startup reconciliation, the only real mitigation for the terminated-mid-request gap.
+3. The oracle read-buffer check against a real node.
+
 ## CURRENT STATE, 2026-07-26 (third attempt at one property)
 
 273 tests green. The adapter grant ledger is a SQLite database. Read the section below for what that

@@ -503,54 +503,46 @@ test("a sweep overtaken by a fresh grant deletes nothing (the revision guard its
 });
 
 // The layer that stops the situation above arising at all.
-// SKIPPED, and the skip is the finding. This property does NOT hold reliably. Running six copies of
-// this file concurrently admits a second opener roughly one run in six, with the holder still alive
-// and both pragmas confirmed applied (locking_mode=exclusive, journal_mode=wal). So the exclusive
-// locking mode refuses a second process in the common case but is not the guarantee the third attempt
-// claimed it was. Un-skip this only when it passes under sustained concurrency; do not weaken it.
-// Tracked as the open blocker in TODO.md.
-test.skip("a second process is refused while the first holds the ledger", async () => {
+// A REAL second process, because two constructions inside one process prove nothing about what the
+// kernel does between processes.
+//
+// The first version of this test had the holder end with `await new Promise(() => {})`, which does NOT
+// keep Node's event loop alive: the child printed "held" and exited with code 13, so the lock was
+// released and the parent was admitted. Under load that produced an intermittent failure that looked
+// like the lock leaking, and the diagnostic said the holder was "alive" because `kill(pid, 0)`
+// succeeds on an unreaped zombie. It was a test that did not test what its name claimed, which is the
+// same defect the reviews kept finding elsewhere. Hence the explicit liveness assertion below: never
+// conclude anything from this test without first proving the holder still exists.
+test("a second process is refused while the first holds the ledger", async () => {
   const dir = mkdtempSync(join(tmpdir(), "mno-grant-"));
   const file = join(dir, "grants.db");
+  const url = new URL("../adapters/common/grant_ledger.js", import.meta.url).href;
+  const holder = `
+    const { GrantLedger } = await import(${JSON.stringify(url)});
+    const l = new GrantLedger({ file: ${JSON.stringify(file)}, apply: async () => {}, revoke: async () => {}, now: () => 1000 });
+    await l.grant("u1", { expiresAt: 9000 });
+    setInterval(() => {}, 1000);   // this, not a pending promise, is what keeps the process alive
+    console.log("held");
+  `;
+  const child = spawn(process.execPath, ["--input-type=module", "-e", holder], { stdio: ["ignore", "pipe", "ignore"] });
   try {
-    const url = new URL("../adapters/common/grant_ledger.js", import.meta.url).href;
-    // A REAL other process, because two constructions inside one process share a SQLite connection
-    // cache and prove nothing about what the kernel does between processes. It holds the ledger open
-    // and tells us when it has it.
-    const holder = `
-      const { GrantLedger } = await import(${JSON.stringify(url)});
-      const l = new GrantLedger({ file: ${JSON.stringify(file)}, apply: async () => {}, revoke: async () => {}, now: () => 1000 });
-      await l.grant("u1", { expiresAt: 9000 });
-      console.log("held");
-      await new Promise(() => {});
-    `;
-    const child = spawn(process.execPath, ["--input-type=module", "-e", holder], { stdio: ["ignore", "pipe", "ignore"] });
     await new Promise((resolve, reject) => {
       child.stdout.on("data", (d) => String(d).includes("held") && resolve());
-      child.on("exit", () => reject(new Error("the holder exited before taking the ledger")));
+      child.on("exit", (code) => reject(new Error(`the holder exited (code ${code}) before taking the ledger`)));
     });
+    assert.equal(child.exitCode, null, "the holder must still be running, or this proves nothing");
 
     const opts = { file, apply: async () => {}, revoke: async () => {}, now: () => 1000 };
-    let opened = null;
-    try {
-      opened = new GrantLedger(opts);
-    } catch (e) {
-      opened = e;
-    }
-    if (!(opened instanceof Error)) {
-      const alive = (() => { try { process.kill(child.pid, 0); return true; } catch { return false; } })();
-      opened.close?.();
-      assert.fail(`second opener was ADMITTED while the holder was ${alive ? "alive" : "DEAD"} (pid ${child.pid})`);
-    }
-    assert.match(opened.message, /locked|busy|in use/i, "two adapters on one ledger");
+    assert.throws(() => new GrantLedger(opts), /locked|busy|in use/i, "two adapters on one ledger");
 
-    // And once that process is gone the ledger is immediately available, with its contents intact.
+    // And the moment that process is gone the ledger is available again, with its contents intact.
     child.kill("SIGKILL");
     await new Promise((r) => child.on("exit", r));
     const second = new GrantLedger(opts);
     assert.equal(second.has("u1"), true, "the ledger is intact for the process that takes over");
     second.close();
   } finally {
+    child.kill("SIGKILL");
     rmSync(dir, { recursive: true, force: true });
   }
 });

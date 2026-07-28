@@ -285,22 +285,19 @@ built from the post-migration code rather than from any earlier packet.
   match the fresh row anyway. Two reviewers reproduced that independently.
   Shared state itself does work as described: the clock floor is read from the database on every
   observation and raised with a `MAX`. (`adapters/common/grant_ledger.js`)
-- [ ] BLOCKER, the exclusive lock does not reliably exclude. The third attempt at single-writer
-  enforcement opens the database with `PRAGMA locking_mode=EXCLUSIVE` and claims a second process is
-  refused. It usually is: a focused probe spawning a holder and a second opener refused 12 times out of
-  12. Under concurrency it does not hold. Running six copies of `test/adapter_grant_expiry.test.js` at
-  once admits a second opener roughly one run in six, with the holder confirmed still alive and both
-  pragmas confirmed applied on the holder's connection (`locking_mode=exclusive`, `journal_mode=wal`).
-  The cause is not yet identified. What is ruled out: the pragmas silently failing, the holder having
-  died, and the test signalling readiness before the holder's write completes (it signals after an
-  awaited grant). The test is committed as `test.skip` with the reproduction in its comment, because a
-  test that fails one run in six is the property telling the truth and must not be weakened to green.
-  Until this is understood, single-writer is an OPERATOR REQUIREMENT that the code hardens but does not
-  guarantee, which is how the README, the module comment, and the handoff now describe it. The
-  revision-conditional delete matters more under that framing, since it is what makes the overtaken
-  case recoverable rather than silent. Options if it cannot be made reliable: an OS-level lock file
-  outside SQLite (an advisory lock held for process life), or accept operator enforcement and drop the
-  claim entirely. (`adapters/common/grant_ledger.js`, `test/adapter_grant_expiry.test.js`)
+- [x] The exclusive lock was reported as leaking, and it does not. WITHDRAWN, recorded because the
+  episode is instructive. A test written to check that a second process is refused had its holder end
+  with `await new Promise(() => {})`, which does not keep Node's event loop alive; the holder printed
+  its ready signal and exited with code 13, releasing the lock, and the parent was then admitted. Under
+  concurrency that surfaced as an intermittent failure that read as the lock leaking, and the
+  diagnostic reported the holder "alive" because `kill(pid, 0)` succeeds on an unreaped zombie. With a
+  holder that actually stays alive, and the parent asserting liveness before concluding anything, a
+  second opener was refused 90 times out of 90 under six-way concurrency; an independent reviewer had
+  already confirmed refusal separately, including with the holder suspended. So the mechanism holds on
+  a local filesystem, subject to the two limits below. The lesson is the one the reviews keep teaching
+  from the other direction: a test that does not do what its name says will mislead in whichever
+  direction it happens to fail, and this one briefly produced a false blocker rather than a false pass.
+  (`test/adapter_grant_expiry.test.js`)
 - [ ] Access can outlive its record when a process is terminated mid-request (2026-07-26 third round,
   blocker as reported). A process persists a grant, sends the platform request, the platform ACCEPTS
   it, and the process is terminated before the effect lands. The exclusive lock dies with it, a

@@ -26,12 +26,19 @@ export TELEGRAM_GRANT_LEDGER_DB=data/telegram-grants.db  # where granted access 
 # An older JSON ledger at TELEGRAM_GRANT_LEDGER (default data/telegram-grants.json) is migrated
 # into it on first start, then renamed with a .migrated suffix.
 
-**Run exactly one adapter process against a given ledger.** This is an operator requirement. The
-database is opened in an exclusive locking mode, which refuses a second process in the common case and
-releases whenever the process ends, so a restart is always immediate with nothing to wait out. It is
-not a guarantee: under sustained concurrency a second opener is admitted roughly one attempt in six,
-which is an open blocker rather than settled behaviour. Do not rely on it to catch a misconfigured
-supervisor.
+Only one adapter process may run against a given ledger at a time, and the database enforces it: it is
+opened in an exclusive locking mode, so the operating system holds it for the life of the process and a
+second one is refused. The lock is released whenever the process ends, however it ends, so a restart is
+always immediate with nothing to wait out and nothing to clean up by hand.
+
+Two limits on that, both real. **Keep the ledger on local storage.** The exclusion is the filesystem's,
+and SQLite's own documentation warns that locking is unreliable on network filesystems such as NFS,
+where two hosts can both believe they hold it, costing both the guarantee and possibly the file. **A
+process terminated mid-request is not covered.** If the bot records a grant, sends the platform the
+request, the platform accepts it, and the bot is terminated before the effect lands, a replacement can
+start, see the grant expire, remove it, and forget the member, after which the original request still
+takes effect. That leaves access the ledger does not know about. No local lock prevents it, because the
+process holding the lock is gone and the side effect is on the platform's servers.
 
 Two limits on that, both real. **Keep the ledger on local storage.** SQLite's exclusion is the
 filesystem's, and its own documentation warns that locking is unreliable on network filesystems such

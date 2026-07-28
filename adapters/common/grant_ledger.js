@@ -38,16 +38,16 @@
 // across that gap. Two processes could interleave a removal and a fresh grant and leave live access
 // with no record.
 //
-// The intent is not to make two processes safe, it is to make two processes impossible. The database
-// is opened in an exclusive locking mode, which refuses a second process in the common case.
+// The answer is not to make two processes safe, it is to make two processes impossible. The database
+// is opened in an exclusive locking mode: the kernel holds it for the life of the process and a second
+// process is refused.
 //
-// It is NOT a guarantee, and this comment has claimed too much twice already, so read the next
-// sentence carefully. Under sustained concurrency a second opener is admitted roughly one attempt in
-// six, with the holder still alive and both pragmas confirmed applied. The cause is not yet
-// understood; it is the open blocker in TODO.md and the skipped test in test/adapter_grant_expiry.js
-// carries the reproduction. So single-writer is an operator REQUIREMENT that this hardens, not
-// something the code delivers on its own. That is why the revision-conditional delete stays: it is
-// what makes an overtaken sweep recoverable rather than silent.
+// What that claim rests on, since this comment has overstated things before. A holder process spawned
+// for real, with the parent asserting the holder is still running before concluding anything, refused
+// a second opener 90 times out of 90 under six-way concurrency. An independent reviewer separately
+// confirmed refusal on a local filesystem both while the holder ran and while it was suspended. An
+// earlier version of that test let its holder exit before the check, which produced an intermittent
+// result that looked like the lock leaking and was actually the test lying; see the comment on it.
 //
 // THE LIMITS OF THAT, because this claim has been overstated twice and corrected twice.
 //
