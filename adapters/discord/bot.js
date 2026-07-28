@@ -38,8 +38,14 @@ const GATEWAY = process.env.MNO_GATEWAY_URL ?? "http://127.0.0.1:8787";
 const ADAPTER_SECRET = process.env.MNO_ADAPTER_SECRET;
 const authHeaders = ADAPTER_SECRET ? { authorization: `Bearer ${ADAPTER_SECRET}` } : {};
 
-// Default "role" for back-compatibility; a privacy-sensitive community should set "channel".
-const GRANT_MODE = process.env.DISCORD_GRANT_MODE ?? "role";
+// Channel mode is the default, because the alternative discloses the very thing the proof protects.
+// A Discord ROLE is visible on the member's profile card to everyone in the server, so granting one
+// announces who holds a masternode (never which one, but that they hold one at all). The whole point
+// of the zero-knowledge construction upstream is that this fact stays private, and a default that
+// leaks it means anyone who does not read the documentation gets the disclosing behaviour for free.
+// Channel mode adds a per-user permission overwrite on the private channel instead, which is the
+// automated form of adding someone by hand and shows nothing publicly.
+const GRANT_MODE = process.env.DISCORD_GRANT_MODE ?? "channel";
 const GRANT_CHANNEL_IDS = (process.env.DISCORD_GRANT_CHANNEL_IDS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
 // The context the proof is scoped to (platform, community, and this id). The nullifier and the
 // two-tier members set are scoped to it, so keep it stable. In channel mode it defaults to the first
@@ -59,8 +65,27 @@ if (GRANT_MODE !== "channel" && GRANT_MODE !== "role") {
   process.exit(1);
 }
 if (GRANT_MODE === "channel" && GRANT_CHANNEL_IDS.length === 0) {
-  console.error("[discord] DISCORD_GRANT_MODE=channel needs DISCORD_GRANT_CHANNEL_IDS (comma-separated channel ids)");
+  // An existing role-mode deployment that never set DISCORD_GRANT_MODE lands here after the default
+  // changed. Say so, rather than leaving an operator to work out why a working bot stopped booting.
+  const looksLikeOldRoleDeployment = !process.env.DISCORD_GRANT_MODE && ROLE_ID;
+  console.error(
+    looksLikeOldRoleDeployment
+      ? "[discord] the default grant mode is now 'channel', because a role is visible on the member's " +
+          "profile card and so discloses who holds a masternode. This bot has DISCORD_MNO_ROLE_ID set " +
+          "and no DISCORD_GRANT_MODE, so it was relying on the old 'role' default. Either move to " +
+          "channel mode (set DISCORD_GRANT_CHANNEL_IDS), or set DISCORD_GRANT_MODE=role explicitly to " +
+          "keep the disclosing behaviour."
+      : "[discord] DISCORD_GRANT_MODE=channel needs DISCORD_GRANT_CHANNEL_IDS (comma-separated channel ids)",
+  );
   process.exit(1);
+}
+if (GRANT_MODE === "role") {
+  console.warn(
+    "[discord] WARNING: role mode grants a Discord role, which is visible on the member's profile card " +
+      "to everyone in the server. It therefore discloses who holds a masternode, which is the fact the " +
+      "proof exists to keep private. Use channel mode unless your community has decided it does not " +
+      "care about that disclosure.",
+  );
 }
 if (GRANT_MODE === "role" && !ROLE_ID) {
   console.error("[discord] DISCORD_GRANT_MODE=role needs DISCORD_MNO_ROLE_ID");

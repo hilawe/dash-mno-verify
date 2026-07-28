@@ -99,7 +99,8 @@ export MNO_GATEWAY_URL=http://127.0.0.1:8787
 export MNO_ADAPTER_SECRET=<the same value the gateway uses>
 # Channel mode (recommended): add verified members to the private channel(s), no public role.
 export DISCORD_GRANT_MODE=channel DISCORD_GRANT_CHANNEL_IDS=<channel id,...>
-# Role mode (simpler, but the role is visible on the profile card):
+# Role mode (simpler, but the role is visible on the profile card, so it discloses who holds a
+# masternode; channel mode is the default for that reason):
 # export DISCORD_GRANT_MODE=role DISCORD_MNO_ROLE_ID=...
 npm run bot
 ```
