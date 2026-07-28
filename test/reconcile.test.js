@@ -1,9 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { markReconciled, reconciliationDone, requireReconciled } from "../adapters/common/reconcile.js";
+import { markReconciled, reconciliationDone, requireReconciled, readMarker } from "../adapters/common/reconcile.js";
 
 // The startup gate for adapters that used to admit members and never remove them. It had no direct
 // tests, and both of its defects were the kind a direct test catches immediately: the recovery
@@ -93,4 +93,36 @@ test("a half-written marker refuses to start rather than reading as unreconciled
     writeFileSync(marker, '{"reconciled": tr');
     await assert.rejects(reconciliationDone(marker, GROUP), /cannot read the reconciliation marker/);
   });
+});
+
+// The marker is the only record of cleanup a bot still owes. An earlier version checked
+// `reconciled === true` and nothing else, so a corrupted pending list read as "nothing pending" and
+// the bot recorded a successful pass while access it should have cleaned stayed live. Anything
+// unreadable has to be a startup failure, never an empty result.
+test("readMarker schema-checks rather than failing open", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mno-recon-"));
+  const p = join(dir, "m.json");
+  try {
+    assert.equal(await readMarker(join(dir, "absent.json")), null, "a missing marker is simply absent");
+
+    writeFileSync(p, JSON.stringify({ reconciled: true, pending: ["role:r1"], target: "channel:c1" }));
+    assert.deepEqual((await readMarker(p)).pending, ["role:r1"], "a well-formed marker reads back");
+
+    writeFileSync(p, JSON.stringify({ reconciled: false, pending: ["role:r1"] }));
+    assert.equal(await readMarker(p), null, "an unfinished marker is not a marker");
+
+    for (const [bad, why] of [
+      [JSON.stringify({ reconciled: true, pending: "role:r1" }), "a non-array pending"],
+      [JSON.stringify({ reconciled: true, pending: [""] }), "an empty pending entry"],
+      [JSON.stringify({ reconciled: true, pending: [{ role: "r1" }] }), "a non-string pending entry"],
+      [JSON.stringify({ reconciled: true, target: 7 }), "a non-string target"],
+      [JSON.stringify(["not", "an", "object"]), "an array instead of an object"],
+      ["{ half written", "a truncated document"],
+    ]) {
+      writeFileSync(p, bad);
+      await assert.rejects(readMarker(p), /marker/i, `should refuse ${why}`);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

@@ -67,37 +67,65 @@ export class GrantLedger extends BaseGrantLedger {
 
 // A target is a mode plus its ids, written as a stable string so it can be compared and stored. Ids
 // are deduplicated and sorted, because the set is what matters: `c1,c2` and `c2,c1` are the same
-// target, and treating them as different triggers a second destructive reconciliation pass over
-// nothing, which can turn an unrelated permission problem into a refusal to start.
+// target, and treating them as different triggers a second destructive pass over nothing.
 export function targetKey(mode, ids) {
   return `${mode}:${[...new Set(ids.filter(Boolean))].sort().join(",")}`;
 }
 
+// STRICT. An earlier version returned null for anything it did not recognise and the caller silently
+// dropped it, so a corrupted history entry meant a target was never swept while the pass still
+// recorded itself successful, and members holding access there kept it invisibly. A malformed target
+// is now a startup failure naming the offending value, because the alternative is losing track of
+// access without anyone being told.
 export function parseTargetKey(key) {
   const [mode, rest = ""] = String(key).split(":");
   const ids = rest.split(",").filter(Boolean);
-  return mode === "channel" || mode === "role" ? { mode, ids } : null;
+  if ((mode !== "channel" && mode !== "role") || ids.length === 0) {
+    throw new Error(
+      `malformed reconciliation target ${JSON.stringify(key)}. Expected "role:<id>" or ` +
+        `"channel:<id>[,<id>...]". Fix or remove it; ignoring it would silently leave access unswept.`,
+    );
+  }
+  return { mode, ids };
 }
 
-// Every role and channel this bot may have granted access through, across the target it is configured
-// for now and every target it is known to have used before. A pass that enumerates only the current
-// target cannot see a member left holding a role the operator moved away from, and that member is
-// invisible to the sweep too, because the ledger never had a record for them.
+// What this startup has to look at, split into two very different jobs.
 //
-// `history` is target keys from the previous marker; `fromRecords` is the targets the ledger's own
-// records name, which covers members this bot did grant under an older configuration.
-export function targetsToSweep({ current, history = [], records = [] }) {
-  const roles = new Set();
-  const channels = new Set();
-  const take = (parsed) => {
-    if (!parsed) return;
-    for (const id of parsed.ids) (parsed.mode === "role" ? roles : channels).add(id);
+//   `current` is the target the bot grants through now. It is scanned on EVERY startup, and a member
+//   is left alone only if they hold a live grant matching it. This is what finds access left live by a
+//   process terminated between Discord accepting a request and acting on it, which is the whole reason
+//   the pass exists and is invisible to the ledger by definition.
+//
+//   `retire` is every target the bot USED to grant through and has not finished cleaning. There is no
+//   authorization to check, because the bot no longer grants there at all, so every member overwrite
+//   or role holder it finds is cleared. Once a target has been cleaned it is dropped from the pending
+//   set and never touched again: continuing to treat a retired channel as bot-owned would strip access
+//   an operator later granted there by hand, and would grow the set without bound.
+export function planSweep({ current, pending = [], records = [] }) {
+  const cur = parseTargetKey(current);
+  const currentRoles = new Set(cur.mode === "role" ? cur.ids : []);
+  const currentChannels = new Set(cur.mode === "channel" ? cur.ids : []);
+  const retireRoles = new Set();
+  const retireChannels = new Set();
+
+  const owe = (key) => {
+    const { mode, ids } = parseTargetKey(key);
+    for (const id of ids) {
+      if (mode === "role" ? currentRoles.has(id) : currentChannels.has(id)) continue; // still current
+      (mode === "role" ? retireRoles : retireChannels).add(id);
+    }
   };
-  take(parseTargetKey(current));
-  for (const k of history) take(parseTargetKey(k));
+  for (const key of pending) owe(key);
+  // The ledger's own records name targets this bot granted through under an older configuration, which
+  // is how a repoint is noticed even when no marker recorded it.
   for (const r of records) {
-    if (r?.mode === "role" && r.roleId) roles.add(String(r.roleId));
-    for (const c of r?.mode === "channel" ? r.channels ?? [] : []) channels.add(String(c));
+    if (r?.mode === "role" && r.roleId && !currentRoles.has(String(r.roleId))) retireRoles.add(String(r.roleId));
+    for (const c of r?.mode === "channel" ? r.channels ?? [] : []) {
+      if (!currentChannels.has(String(c))) retireChannels.add(String(c));
+    }
   }
-  return { roles: [...roles].sort(), channels: [...channels].sort() };
+  return {
+    current: { roles: [...currentRoles].sort(), channels: [...currentChannels].sort() },
+    retire: { roles: [...retireRoles].sort(), channels: [...retireChannels].sort() },
+  };
 }

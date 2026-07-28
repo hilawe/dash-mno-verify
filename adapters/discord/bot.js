@@ -23,8 +23,9 @@ import {
   OverwriteType,
 } from "discord.js";
 import process from "node:process";
+import { readFileSync } from "node:fs";
 import { proveInstructions } from "../../common/prover_instructions.js";
-import { GrantLedger, authorizesTarget, targetKey, targetsToSweep } from "./grant_ledger.js";
+import { GrantLedger, authorizesTarget, targetKey, planSweep } from "./grant_ledger.js";
 import { markReconciled, readMarker } from "../common/reconcile.js";
 
 const TOKEN = process.env.DISCORD_TOKEN;
@@ -156,16 +157,6 @@ async function registerCommands() {
   console.log("[discord] slash commands registered");
 }
 
-// GuildMembers is a PRIVILEGED intent and must be enabled for the application in Discord's developer
-// portal. Role mode needs it, because reconciliation has to enumerate who currently holds the role.
-// Channel mode does not: per-user channel overwrites arrive with the Guilds intent. The startup
-// reconciliation below fails closed with an explicit message if role mode cannot read the member list,
-// rather than recording a pass it did not actually make.
-const client = new Client({
-  intents:
-    GRANT_MODE === "role" ? [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers] : [GatewayIntentBits.Guilds],
-});
-
 // Members who were given access before this lifecycle existed, or by a previous deployment pointed at
 // a different target, hold access the ledger knows nothing about, and the sweep only ever looks at the
 // ledger. Discord can read its own state, so the closed starting state is reachable automatically the
@@ -186,6 +177,35 @@ const RECONCILE_TARGET =
 // as the marker, comma-separated: "role:oldRoleId" or "channel:c1,c2".
 const RECONCILE_ALSO = (process.env.DISCORD_RECONCILE_ALSO ?? "").split(/\s+/).filter(Boolean);
 
+// GuildMembers is a PRIVILEGED intent and must be enabled for the application in Discord's developer
+// portal. Role mode needs it, because reconciliation has to enumerate who currently holds the role.
+// Channel mode does not: per-user channel overwrites arrive with the Guilds intent. The startup
+// reconciliation below fails closed with an explicit message if role mode cannot read the member list,
+// rather than recording a pass it did not actually make.
+// The privileged member intent has to be requested at construction, before anything async has run, so
+// the marker is read synchronously here. Role mode always needs it. Channel mode needs it too when a
+// PREVIOUS role is still owed cleanup, because removing a role means enumerating who holds it.
+//
+// An earlier version refused to start in that case and told the operator to run role mode once. That
+// did not work: the run it told them to do skipped itself, so channel mode refused forever with no way
+// out. Asking for the intent when it is actually needed removes the dead end entirely.
+function pendingAtStartup() {
+  try {
+    const raw = JSON.parse(readFileSync(RECONCILE_MARKER, "utf8"));
+    return raw?.reconciled === true && Array.isArray(raw.pending) ? raw.pending.filter((v) => typeof v === "string") : [];
+  } catch {
+    return []; // a missing or unreadable marker is diagnosed properly by readMarker during the pass
+  }
+}
+const NEEDS_MEMBER_LIST =
+  GRANT_MODE === "role" ||
+  [...pendingAtStartup(), ...RECONCILE_ALSO].some((k) => String(k).startsWith("role:"));
+
+const client = new Client({
+  intents: NEEDS_MEMBER_LIST ? [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers] : [GatewayIntentBits.Guilds],
+});
+
+
 const authorizedNow = (userId) =>
   authorizesTarget(ledger.get(userId), ledger.live(userId), {
     mode: GRANT_MODE,
@@ -200,26 +220,18 @@ const authorizedNow = (userId) =>
 // sweep then leaves alone because the record looks fine.
 let reconciled = false;
 
+// Runs on EVERY startup, never skipped.
+//
+// An earlier version returned immediately when the marker's target matched the configured one, which
+// meant it only ever ran after a repoint. That disabled the single case it was built for: a bot
+// terminated between Discord ACCEPTING a request and acting on it leaves access live with no ledger
+// record, and that always presents as an ordinary restart with an unchanged target. The marker no
+// longer says "this target is done". It says which OLD targets still owe cleanup.
 async function reconcileGuild() {
   const prior = await readMarker(RECONCILE_MARKER);
-  if (prior && String(prior.target ?? "") === RECONCILE_TARGET) {
-    reconciled = true;
-    return;
-  }
   const guild = await getGuild();
   const removed = [];
   const failed = [];
-
-  // Everything this bot may have granted through: the current target, whatever the last marker
-  // recorded, the targets the ledger's own records name, and anything the operator supplied. A pass
-  // over only the current target leaves a member holding a role the operator moved away from, and the
-  // sweep cannot see them either, because the ledger never had a record for them.
-  const { roles, channels } = targetsToSweep({
-    current: RECONCILE_TARGET,
-    history: [...(prior?.covered ?? []), ...(prior?.target ? [prior.target] : []), ...RECONCILE_ALSO],
-    records: ledger.all(),
-  });
-
   const clear = async (userId, undo) => {
     try {
       await undo();
@@ -230,16 +242,24 @@ async function reconcileGuild() {
     }
   };
 
-  if (roles.length) {
-    // Reading the member list needs the privileged intent, which is only requested in role mode. A
-    // channel-mode bot that has an old ROLE to clean cannot get it, so say exactly what to do rather
-    // than skipping the role silently and recording a pass that did not cover it.
-    if (GRANT_MODE !== "role") {
+  // A malformed entry anywhere throws, naming the value. Silently dropping one leaves access unswept
+  // while the pass records itself successful, which is the worst of both.
+  const plan = planSweep({
+    current: RECONCILE_TARGET,
+    pending: [...(prior?.pending ?? []), ...(prior?.target && prior.target !== RECONCILE_TARGET ? [prior.target] : []), ...RECONCILE_ALSO],
+    records: ledger.all(),
+  });
+
+  // Track what actually got cleaned, so a target is retired only after a pass that covered it.
+  const retiredRoles = new Set();
+  const retiredChannels = new Set();
+
+  const allRoles = [...plan.current.roles, ...plan.retire.roles];
+  if (allRoles.length) {
+    if (!NEEDS_MEMBER_LIST) {
       throw new Error(
-        `refusing to start: a previous configuration granted the role(s) ${roles.join(", ")}, and ` +
-          `clearing them needs the member list, which only role mode requests. Start once with ` +
-          `DISCORD_GRANT_MODE=role and DISCORD_MNO_ROLE_ID set to the old role to clean it up, or remove ` +
-          `the role from its remaining holders by hand, then start again.`,
+        `refusing to start: role(s) ${allRoles.join(", ")} need cleaning and that needs the member list. ` +
+          `This start did not request it because the marker did not name them. Restart once and it will.`,
       );
     }
     let members;
@@ -247,56 +267,76 @@ async function reconcileGuild() {
       members = await guild.members.fetch();
     } catch (e) {
       throw new Error(
-        `refusing to start: role mode cannot reconcile without reading the member list (${e.message}). ` +
-          `Enable the SERVER MEMBERS INTENT for this application in Discord's developer portal.`,
+        `refusing to start: cannot read the member list to reconcile role(s) ${allRoles.join(", ")} ` +
+          `(${e.message}). Enable the SERVER MEMBERS INTENT for this application in Discord's developer ` +
+          `portal. Once the old role is cleaned it is retired and the intent is no longer requested.`,
       );
     }
+    const before = failed.length;
     for (const [id, m] of members) {
       if (id === client.user.id) continue; // never strip the bot
-      for (const roleId of roles) {
+      for (const roleId of allRoles) {
         if (!m.roles.cache.has(roleId)) continue;
-        // Only the CURRENT target can be authorized. A live record never justifies keeping a role the
-        // bot no longer grants through.
-        if (roleId === ROLE_ID && authorizedNow(id)) continue;
+        // Only the CURRENT role can be authorized. A retiring role is one the bot no longer grants
+        // through, so a live record is no reason to leave it.
+        if (plan.current.roles.includes(roleId) && authorizedNow(id)) continue;
         await clear(id, () => m.roles.remove(roleId));
       }
     }
+    if (failed.length === before) for (const r of plan.retire.roles) retiredRoles.add(r);
   }
 
-  for (const chId of channels) {
+  for (const chId of [...plan.current.channels, ...plan.retire.channels]) {
+    const retiring = plan.retire.channels.includes(chId);
     let ch;
     try {
       ch = await guild.channels.fetch(chId);
     } catch (e) {
-      if (isGone(e)) continue; // a deleted channel holds no access
+      if (isGone(e)) {
+        if (retiring) retiredChannels.add(chId); // a deleted channel holds no access; stop tracking it
+        continue;
+      }
       throw e;
     }
+    const before = failed.length;
     for (const [id, ow] of ch.permissionOverwrites.cache) {
       if (ow.type !== OverwriteType.Member) continue; // role overwrites are the operator's business
       if (id === client.user.id) continue;
-      if (GRANT_CHANNEL_IDS.includes(chId) && authorizedNow(id)) continue;
+      if (!retiring && authorizedNow(id)) continue;
       await clear(id, () => ch.permissionOverwrites.edit(id, ACCESS_CLEARED, { type: OverwriteType.Member }));
     }
+    if (retiring && failed.length === before) retiredChannels.add(chId);
   }
 
-  // Only a CLEAN pass may be recorded. Marking a partial one done would skip reconciliation on every
-  // later start, leaving the members it could not clear holding access the sweep can never see, which
-  // is the exact hole this gate exists to close.
+  // Only a CLEAN pass may retire anything. Recording a partial one would drop a target from the
+  // pending set while members it could not clear still hold access there.
   if (failed.length) {
     throw new Error(
-      `refusing to start: could not take access back from ${failed.length} member(s) with no live grant ` +
-        `during reconciliation (${failed.join(", ")}). Give the bot the permission it needs, or clear ` +
-        `them by hand, then start again.`,
+      `refusing to start: could not take access back from ${failed.length} member(s) during ` +
+        `reconciliation (${failed.join(", ")}). Give the bot the permission it needs, or clear them by ` +
+        `hand, then start again.`,
     );
   }
-  // Carry the history forward, so a later repoint still knows about every target used before it.
-  const covered = [...new Set([...(prior?.covered ?? []), ...(prior?.target ? [prior.target] : []), ...RECONCILE_ALSO])];
-  await markReconciled(RECONCILE_MARKER, { removed: removed.length, target: RECONCILE_TARGET, covered });
+
+  // Whatever is still owed. A cleaned target is dropped entirely rather than kept as history: keeping
+  // it would strip access an operator later granted there by hand, and would grow without bound.
+  const stillPending = [
+    ...plan.retire.roles.filter((r) => !retiredRoles.has(r)).map((r) => targetKey("role", [r])),
+    ...(plan.retire.channels.filter((c) => !retiredChannels.has(c)).length
+      ? [targetKey("channel", plan.retire.channels.filter((c) => !retiredChannels.has(c)))]
+      : []),
+  ];
+  await markReconciled(RECONCILE_MARKER, {
+    target: RECONCILE_TARGET,
+    pending: stillPending,
+    removed: removed.length,
+  });
   reconciled = true;
+  const retired = [...retiredRoles, ...retiredChannels];
   console.log(
-    `[discord] reconciled ${RECONCILE_TARGET}` +
-      `${covered.length ? ` (also swept ${covered.join(", ")})` : ""}, ` +
-      `took access back from ${removed.length} member(s)`,
+    `[discord] reconciled ${RECONCILE_TARGET}, took access back from ${removed.length} member(s)` +
+      `${retired.length ? `, retired ${retired.join(", ")}` : ""}` +
+      `${stillPending.length ? `, still owed: ${stillPending.join(", ")}` : ""}`,
   );
 }
 

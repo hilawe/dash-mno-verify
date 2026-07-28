@@ -310,18 +310,18 @@ built from the post-migration code rather than from any earlier packet.
   Discord now does too (`reconcileGuild` in `adapters/discord/bot.js`): before its first sweep it finds
   every member holding the configured role, or a per-user overwrite on the configured channels, that it
   has no live matching grant for, and takes that access back, refusing to start rather than recording a
-  partial pass, and it sweeps the current target plus every target in the marker history and in the
-  ledger's own records, so repointing the bot does not strand the previous role or channel set. The
-  first upgrade is the one case it cannot derive, since nothing recorded the old target; the
-  operator supplies it with `DISCORD_RECONCILE_ALSO`. Interactions are refused until the pass
-  finishes, because it calls Discord outside the ledger's per-member queue. Role mode needs the
-  privileged SERVER MEMBERS intent and says so explicitly if it is missing; channel mode needs none,
-  but refuses to start if it finds an old role it cannot read the member list to clean. The decision itself is the pure `authorizesTarget` in
-  `adapters/discord/grant_ledger.js`, unit-tested, because getting it wrong strips a member who just
-  re-verified or leaves a previous target's access in place. REMAINING: Telegram cannot do the general
-  form, since its Bot API exposes no member roster, which is why it keeps the operator-attested gate;
-  so for Telegram this gap stays open and is documented rather than closed.
-  (`adapters/discord/bot.js`, `adapters/discord/grant_ledger.js`)
+  partial pass. REDESIGNED after a second REJECT (2026-07-27), because the first version modelled
+  itself on Matrix's ONE-TIME upgrade gate and returned early whenever the marker's target matched the
+  configured one. That disabled the single case the pass exists for, since a bot terminated between
+  Discord accepting a request and acting on it always presents as an ordinary restart with an unchanged
+  target. It also wedged a role-to-channel switch permanently: channel mode refused because an old role
+  was outstanding, and the role-mode run its own error message prescribed skipped itself.
+  Now: the current target is scanned on EVERY startup; the marker records which OLD targets still owe
+  cleanup rather than which one is done; a cleaned target is RETIRED and dropped, so a channel the bot
+  has finished with is the operator's again and later manual grants there are not stripped; the
+  privileged member intent is requested when a role is outstanding, so nothing can wedge; and a
+  malformed marker entry or config value refuses startup instead of being silently skipped, which
+  previously lost a target while reporting success. (`adapters/discord/bot.js`, `adapters/discord/grant_ledger.js`)
 - [ ] Warn when the ledger is on a filesystem whose locking cannot be trusted. The exclusive lock is
   only as good as the filesystem's, and an operator can point `*_GRANTS_DB` at anything. A startup
   check that the path is not a network mount, or at minimum a logged warning, would turn a silent loss

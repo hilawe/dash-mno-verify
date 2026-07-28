@@ -17,17 +17,43 @@
 import { readFile, writeFile, mkdir, rename, open } from "node:fs/promises";
 import { dirname } from "node:path";
 
-// The raw marker, or null when there is none. Callers that need more than "is it done" read this:
-// the Discord pass uses the recorded target history to find access left behind by a PREVIOUS role or
-// channel set, which is invisible to a pass that only enumerates the current one.
+// The raw marker, or null when there is none. Callers that need more than "is it done" read this.
+//
+// Schema-checked, because a marker is the only record of cleanup a bot still owes. An earlier version
+// checked `reconciled === true` and nothing else, so a corrupted `pending` list read as "nothing
+// pending" and the bot recorded a successful pass while access it should have cleaned stayed live.
+// Anything unreadable is a startup failure, never an empty result.
 export async function readMarker(markerPath) {
+  let raw;
   try {
-    const raw = JSON.parse(await readFile(markerPath, "utf8"));
-    return raw?.reconciled === true ? raw : null;
+    raw = JSON.parse(await readFile(markerPath, "utf8"));
   } catch (e) {
     if (e.code === "ENOENT") return null;
     throw new Error(`cannot read the reconciliation marker at ${markerPath} (${e.message}). Fix or remove it.`);
   }
+  // Array.isArray matters: `typeof [] === "object"`, so an array would otherwise slip through, read as
+  // "not reconciled", and lose the pending cleanup list without anyone being told.
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error(`the reconciliation marker at ${markerPath} is not a marker object. Fix or remove it.`);
+  }
+  if (raw.reconciled !== true) return null;
+  for (const field of ["pending"]) {
+    if (raw[field] !== undefined && !Array.isArray(raw[field])) {
+      throw new Error(`the reconciliation marker at ${markerPath} has a non-array ${field}. Fix or remove it.`);
+    }
+    for (const v of raw[field] ?? []) {
+      if (typeof v !== "string" || !v) {
+        throw new Error(
+          `the reconciliation marker at ${markerPath} has a bad ${field} entry ${JSON.stringify(v)}. ` +
+            `Fix or remove it; dropping it would leave access unswept.`,
+        );
+      }
+    }
+  }
+  if (raw.target !== undefined && typeof raw.target !== "string") {
+    throw new Error(`the reconciliation marker at ${markerPath} has a non-string target. Fix or remove it.`);
+  }
+  return raw;
 }
 
 export async function reconciliationDone(markerPath, target = null) {

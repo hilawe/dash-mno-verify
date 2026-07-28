@@ -4,7 +4,7 @@ import { mkdtempSync, existsSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { GrantLedger, extraTargets, authorizesTarget, targetKey, targetsToSweep } from "../adapters/discord/grant_ledger.js";
+import { GrantLedger, extraTargets, authorizesTarget, targetKey, parseTargetKey, planSweep } from "../adapters/discord/grant_ledger.js";
 
 // The grant ledger is what makes Discord-side access durable and correctly revoked. These pin the
 // behaviors the review flagged: survive a restart, revoke on expiry, leave a fresh re-verification
@@ -347,8 +347,7 @@ test("authorizesTarget accepts only a live record for the configured target", ()
 
 // A reconciliation that enumerates only the CURRENT target cannot see a member left holding a role or
 // channel the operator moved away from, and the sweep cannot see them either, because the ledger never
-// had a record for them. That was the round-5 blocker: the pass claimed to cover repointing and did
-// not. These pin the target arithmetic that fixes it.
+// had a record for them. These pin the target arithmetic that fixes it.
 test("targetKey treats channel ids as a set, so reordering is not a new target", () => {
   assert.equal(targetKey("channel", ["c2", "c1"]), targetKey("channel", ["c1", "c2"]));
   assert.equal(targetKey("channel", ["c1", "c1", "c2"]), targetKey("channel", ["c1", "c2"]));
@@ -356,38 +355,61 @@ test("targetKey treats channel ids as a set, so reordering is not a new target",
   assert.notEqual(targetKey("role", ["r1"]), targetKey("channel", ["r1"]));
 });
 
-test("targetsToSweep covers the current target, recorded history, and what the ledger's records name", () => {
-  // A repoint from one role to another: the old role must still be swept.
-  assert.deepEqual(
-    targetsToSweep({ current: targetKey("role", ["new"]), history: [targetKey("role", ["old"])] }),
-    { roles: ["new", "old"], channels: [] },
-  );
+// A previous version of this returned null for anything it did not recognise and the caller dropped it
+// silently, so one corrupted history entry meant a target was never swept while the pass still recorded
+// itself successful. The earlier test asserted that garbage was ignored, which locked the defect in.
+// Losing track of access has to be loud.
+test("parseTargetKey refuses a malformed target rather than dropping it", () => {
+  assert.deepEqual(parseTargetKey("role:r1"), { mode: "role", ids: ["r1"] });
+  assert.deepEqual(parseTargetKey("channel:c1,c2"), { mode: "channel", ids: ["c1", "c2"] });
+  for (const bad of ["", "nonsense", "bogus:x", "role:", "channel:", ":c1"]) {
+    assert.throws(() => parseTargetKey(bad), /malformed reconciliation target/, `should refuse ${JSON.stringify(bad)}`);
+  }
+});
 
-  // A channel set that shrank: the dropped channel is still swept.
-  assert.deepEqual(
-    targetsToSweep({ current: targetKey("channel", ["c1"]), history: [targetKey("channel", ["c1", "c2"])] }),
-    { roles: [], channels: ["c1", "c2"] },
-  );
-
-  // Records name targets no marker knows about, which covers members this bot granted under an older
-  // configuration before any marker existed.
-  assert.deepEqual(
-    targetsToSweep({
-      current: targetKey("channel", ["c1"]),
-      records: [{ mode: "channel", channels: ["c9"] }, { mode: "role", roleId: "r9" }],
-    }),
-    { roles: ["r9"], channels: ["c1", "c9"] },
-  );
-
-  // A mode switch leaves both kinds to sweep.
-  assert.deepEqual(
-    targetsToSweep({ current: targetKey("channel", ["c1"]), history: [targetKey("role", ["r1"])] }),
-    { roles: ["r1"], channels: ["c1"] },
-  );
-
-  // Garbage in the history is ignored rather than throwing at startup.
-  assert.deepEqual(targetsToSweep({ current: targetKey("role", ["r1"]), history: ["", "nonsense", "bogus:x"] }), {
-    roles: ["r1"],
-    channels: [],
+// The split that matters: the CURRENT target is scanned every startup and authorization is consulted,
+// while a RETIRING target is one the bot no longer grants through, so everything there is cleared and
+// the target is then dropped for good.
+test("planSweep separates the current target from the ones still owed cleanup", () => {
+  // Nothing owed: just the current target, every startup.
+  assert.deepEqual(planSweep({ current: targetKey("channel", ["c1"]) }), {
+    current: { roles: [], channels: ["c1"] },
+    retire: { roles: [], channels: [] },
   });
+
+  // A repoint: the old target is owed cleanup, the new one is current.
+  assert.deepEqual(planSweep({ current: targetKey("role", ["new"]), pending: [targetKey("role", ["old"])] }), {
+    current: { roles: ["new"], channels: [] },
+    retire: { roles: ["old"], channels: [] },
+  });
+
+  // A channel that is still current must never be treated as retiring, even if it appears in pending,
+  // or the pass would strip members who hold a perfectly good live grant.
+  assert.deepEqual(
+    planSweep({ current: targetKey("channel", ["c1"]), pending: [targetKey("channel", ["c1", "c2"])] }),
+    { current: { roles: [], channels: ["c1"] }, retire: { roles: [], channels: ["c2"] } },
+  );
+
+  // Records name targets no marker knows about, which is how a repoint is noticed when nothing recorded it.
+  assert.deepEqual(
+    planSweep({
+      current: targetKey("channel", ["c1"]),
+      records: [{ mode: "channel", channels: ["c1", "c9"] }, { mode: "role", roleId: "r9" }],
+    }),
+    { current: { roles: [], channels: ["c1"] }, retire: { roles: ["r9"], channels: ["c9"] } },
+  );
+
+  // A mode switch leaves the old kind owed.
+  assert.deepEqual(planSweep({ current: targetKey("channel", ["c1"]), pending: [targetKey("role", ["r1"])] }), {
+    current: { roles: [], channels: ["c1"] },
+    retire: { roles: ["r1"], channels: [] },
+  });
+});
+
+test("planSweep refuses corrupt history instead of quietly skipping a target", () => {
+  assert.throws(
+    () => planSweep({ current: targetKey("role", ["r1"]), pending: ["bogus:c-lost"] }),
+    /malformed reconciliation target "bogus:c-lost"/,
+  );
+  assert.throws(() => planSweep({ current: "" }), /malformed reconciliation target/);
 });
