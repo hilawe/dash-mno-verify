@@ -62,7 +62,8 @@
 //   flight. A replacement can start, find the grant expired, remove it, delete the row, and then the
 //   dead process's request takes effect. Live access with no record. No local lock closes this, because
 //   the holder is gone and the side effect is on someone else's server. The mitigation is reconciling
-//   against real platform state at startup, which Matrix does and the others do not (tracked in TODO).
+//   against real platform state at startup, which Matrix and Discord both do; Telegram cannot do the
+//   general form, because its API exposes no member roster, so for Telegram this stays open.
 //   Do not describe the non-interleaving property as holding across a process death.
 import { DatabaseSync } from "node:sqlite";
 import { chmodSync, mkdirSync, readFileSync, renameSync, existsSync } from "node:fs";
@@ -78,7 +79,7 @@ const SCHEMA = `
     user_id    TEXT PRIMARY KEY,
     expires_at INTEGER NOT NULL,
     record     TEXT    NOT NULL,
-    updated_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,   -- the injected clock, recorded for operators; never read for a decision
     rev        INTEGER NOT NULL DEFAULT 1
   );
   CREATE INDEX IF NOT EXISTS grants_expires_at ON grants (expires_at);
@@ -110,6 +111,10 @@ export class GrantLedger {
     log = () => {},
     importFrom = null,
     putFn = null,
+    // TEST SEAM. `exclusive: false` disables the single-writer lock, and exists only so tests can open
+    // a second connection while a ledger is live. No adapter spreads operator configuration into these
+    // options (each constructs a literal), and nothing must ever start: a config key reaching this
+    // would silently restore the cross-process interleaving three rounds were spent closing.
     exclusive = true,
   } = {}) {
     this.file = file;
@@ -302,7 +307,7 @@ export class GrantLedger {
         String(userId),
         Number(record.expiresAt),
         JSON.stringify(record),
-        Date.now(),
+        this.now(), // the injected clock, so no wall-clock read exists outside #observeClock
         this.#stmt.nextRev.get().rev,
       );
     return this.putFn ? this.putFn(write, userId, record) : write();
@@ -611,7 +616,7 @@ export class GrantLedger {
           String(userId),
           Number(record.expiresAt),
           JSON.stringify(record),
-          Date.now(),
+          this.now(),
           this.#stmt.nextRev.get().rev,
         );
       }
@@ -630,8 +635,9 @@ export class GrantLedger {
     // A missing source here means another process migrated the same file and renamed it first. Both
     // transactions were serialized and idempotent, so the database is correct either way, and the only
     // question is whether this process refuses to start over a rename it did not need to do. It should
-    // not. The startup lease normally prevents two processes reaching this at all, but a stale lease
-    // leaves the window open, so treat it as done rather than as a failure.
+    // not. The exclusive lock normally prevents two processes reaching this at all, and on a filesystem
+    // where that lock cannot be trusted it is exactly this path that would be reached twice, so treat a
+    // missing source as done rather than as a failure.
     const kept = `${importFrom}.migrated`;
     try {
       renameSync(importFrom, kept);

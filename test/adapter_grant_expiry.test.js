@@ -405,19 +405,19 @@ test("a slow platform call for one member does not hold up another", async () =>
   }
 });
 
-// Shared state between two instances. `lease: false` on both, because the startup lease normally
+// Shared state between two instances. `exclusive: false` on both, because the lock normally
 // refuses the second one outright; what is under test here is what the state does when two of them
-// DO coexist, which is the window a stale lease leaves open after a process dies without releasing.
+// DO coexist, which is what the revision guard exists to survive if the lock is ever lost.
 test("two ledgers on one database share the grants and the clock floor", async () => {
   const dir = mkdtempSync(join(tmpdir(), "mno-grant-"));
   const file = join(dir, "grants.db");
   try {
     const aClock = { t: 1000 };
-    const a = new GrantLedger({ exclusive: false, file, lease: false, apply: async () => {}, revoke: async () => {}, now: () => aClock.t });
+    const a = new GrantLedger({ exclusive: false, file, apply: async () => {}, revoke: async () => {}, now: () => aClock.t });
     await a.grant("u1", { expiresAt: 2000 });
 
     // A second process, still back at its own start time.
-    const b = new GrantLedger({ exclusive: false, file, lease: false, apply: async () => {}, revoke: async () => {}, now: () => 1000 });
+    const b = new GrantLedger({ exclusive: false, file, apply: async () => {}, revoke: async () => {}, now: () => 1000 });
     assert.equal(b.has("u1"), true, "the grant one process wrote is visible to the other");
     assert.equal(b.live("u1"), true);
 
@@ -448,8 +448,8 @@ test("two ledgers on one database share the grants and the clock floor", async (
 // unconditional delete that left the member holding live access with NO record, which no later sweep
 // can find, and which is exactly the outcome the whole lifecycle exists to prevent.
 //
-// The startup lease normally stops two processes coexisting at all. This is the backstop for the
-// window a stale lease leaves open, so both instances here run with the lease off.
+// The exclusive lock normally stops two processes coexisting at all. This is the backstop for the
+// case the revision guard exists for, so both instances here run with the lock off.
 test("a sweep overtaken by a fresh grant deletes nothing (the revision guard itself)", async () => {
   const dir = mkdtempSync(join(tmpdir(), "mno-grant-"));
   const file = join(dir, "grants.db");
@@ -461,7 +461,6 @@ test("a sweep overtaken by a fresh grant deletes nothing (the revision guard its
 
     const a = new GrantLedger({ exclusive: false,
       file,
-      lease: false,
       apply: async () => {},
       revoke: async () => {
         await revokeGate; // A is inside the platform call, holding only ITS OWN in-memory lock
@@ -471,7 +470,6 @@ test("a sweep overtaken by a fresh grant deletes nothing (the revision guard its
     });
     const b = new GrantLedger({ exclusive: false,
       file,
-      lease: false,
       apply: async () => {
         applied = true;
       },

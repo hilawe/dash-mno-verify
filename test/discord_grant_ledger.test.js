@@ -106,10 +106,11 @@ test("a failed first grant keeps a record and best-effort revokes", async () => 
   assert.equal("u1" in onDisk(file), true);
 });
 
-// A failed renewal must not touch the member's existing valid access, and must keep tracking it under
-// the prior grant's expiry, not the failed new one.
-// Same target, so there is no orphan to migrate and the still-live access is what the record describes.
-// A failed apply keeps that record (never strands), and nothing is revoked.
+// A failed renewal keeps the NEW record, not the prior one, and that is deliberate. Same target, so
+// there is no orphan to migrate: the record describes access that may now be partly applied, and
+// keeping it is what guarantees the sweep can find and clear it. Reverting to the prior expiry would
+// leave any newly applied part of the grant untracked past that earlier deadline. So the assertion
+// below expects the new expiry, and nothing is revoked, because the prior access is still live.
 test("a failed same-target renewal keeps the new grant and strands nothing", async () => {
   const file = tmpFile();
   let fail = false;
