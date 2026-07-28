@@ -38,10 +38,32 @@
 // across that gap. Two processes could interleave a removal and a fresh grant and leave live access
 // with no record.
 //
-// The answer is not to make two processes safe, it is to make two processes impossible. The database
-// is opened in an exclusive locking mode, so the kernel holds it for the life of the process and a
-// second one is refused. Everything above then rests on there being exactly one writer, which is what
-// the deployment has always assumed and what nothing previously enforced.
+// The intent is not to make two processes safe, it is to make two processes impossible. The database
+// is opened in an exclusive locking mode, which refuses a second process in the common case.
+//
+// It is NOT a guarantee, and this comment has claimed too much twice already, so read the next
+// sentence carefully. Under sustained concurrency a second opener is admitted roughly one attempt in
+// six, with the holder still alive and both pragmas confirmed applied. The cause is not yet
+// understood; it is the open blocker in TODO.md and the skipped test in test/adapter_grant_expiry.js
+// carries the reproduction. So single-writer is an operator REQUIREMENT that this hardens, not
+// something the code delivers on its own. That is why the revision-conditional delete stays: it is
+// what makes an overtaken sweep recoverable rather than silent.
+//
+// THE LIMITS OF THAT, because this claim has been overstated twice and corrected twice.
+//
+//   Local storage only. SQLite's exclusion is the filesystem's, and SQLite's own documentation says
+//   locking is unreliable on network filesystems. On an NFS mount two hosts can both believe they hold
+//   the lock, which brings back the interleaving above and can corrupt the file. Nothing here can
+//   detect that, so it is a deployment requirement, stated in the adapter READMEs.
+//
+//   Process life only. The lock dies with the process, which is what makes it safe, and it is also the
+//   edge it cannot cover: a process that persisted a grant, sent the platform request, had it ACCEPTED,
+//   and was then terminated before the effect landed releases the lock while that request is still in
+//   flight. A replacement can start, find the grant expired, remove it, delete the row, and then the
+//   dead process's request takes effect. Live access with no record. No local lock closes this, because
+//   the holder is gone and the side effect is on someone else's server. The mitigation is reconciling
+//   against real platform state at startup, which Matrix does and the others do not (tracked in TODO).
+//   Do not describe the non-interleaving property as holding across a process death.
 import { DatabaseSync } from "node:sqlite";
 import { chmodSync, mkdirSync, readFileSync, renameSync, existsSync } from "node:fs";
 import { dirname } from "node:path";
@@ -182,6 +204,8 @@ export class GrantLedger {
       nextRev: this.#db.prepare(
         "INSERT INTO meta (k, v) VALUES ('revSeq', '1') " +
           "ON CONFLICT(k) DO UPDATE SET v = CAST(meta.v AS INTEGER) + 1 RETURNING CAST(v AS INTEGER) AS rev",
+        // The row is seeded above every existing revision at open (see #seedRevSeq), so the literal 1
+        // here is only ever reached on a database with no counter AND no rows.
       ),
       // Conditional on the revision the caller read. See the sweep for why.
       del: this.#db.prepare("DELETE FROM grants WHERE user_id=? AND rev=?"),
@@ -197,6 +221,7 @@ export class GrantLedger {
       delMeta: this.#db.prepare("DELETE FROM meta WHERE k=?"),
     };
 
+    this.#seedRevSeq();
     this.#importLegacy(importFrom);
     this.#validateAll();
 
@@ -350,10 +375,12 @@ export class GrantLedger {
   async grant(userId, record) {
     if (!this.validate(record)) throw new Error(`refusing to grant a malformed record for ${userId}`);
     return this.#run(userId, async () => {
-      // Issuing a grant is an observation of the clock, and it is durable before anything below acts
-      // on it. The old version enqueued this write behind the very operation doing the observing, so
-      // the refusal below could reach the caller while the advance was still only in memory.
-      this.#observeClock();
+      // ONE sample, used by the check below. An earlier version observed here, threw the sample away,
+      // and called the clock again for the check, so the refusal could rest on a reading that was
+      // never persisted. A restart at a lower clock then found a floor one tick short of what this
+      // process had already acted on and let the expired grant back in. The other three decision
+      // sites were fixed for this and this one was missed.
+      const seen = this.#observeClock();
       // Refuse a deadline that has already passed. Near an epoch boundary a slow queue or a slow
       // platform call could otherwise apply access that is expired the moment it is granted, and it
       // would then sit live until the next sweep, up to a full sweep interval later.
@@ -363,7 +390,7 @@ export class GrantLedger {
       // until wall time caught up to the inflated mark, which is an outage lasting as long as the
       // jump. A grant accepted under a rolled-back clock is not a hole either: sweep and admitIfLive
       // judge it against the floor and remove it.
-      if (this.now() >= record.expiresAt) {
+      if (seen.wall >= record.expiresAt) {
         throw new Error(`refusing to grant ${userId} access that has already expired`);
       }
       const prev = this.#row(userId);
@@ -513,6 +540,41 @@ export class GrantLedger {
       // A ledger that is already unusable is not worth failing a shutdown over.
     }
     this.#db.close();
+  }
+
+  // The revision counter must start ABOVE every revision already in the table, and must be an integer.
+  //
+  // It used to be created at 1 whenever its row was absent, which is exactly the state of a database
+  // written by the previous version, where the revision was derived from the row and started at 1 on
+  // every insert. So on upgrade the counter handed out 1 again, collided with the rows already holding
+  // 1, and a stale conditional delete matched a fresh row. The counter is the backstop for a lost
+  // exclusive lock, and it failed on precisely the databases that would need it.
+  //
+  // Malformed text did the same thing by a different route, because CAST turns it into zero. Fail
+  // closed on that rather than silently restarting the sequence.
+  #seedRevSeq() {
+    this.#db.exec("BEGIN IMMEDIATE");
+    try {
+      const row = this.#stmt.readMeta.get("revSeq");
+      const highest = Number(this.#db.prepare("SELECT IFNULL(MAX(rev), 0) AS m FROM grants").get().m);
+      if (row === undefined) {
+        this.#stmt.setMeta.run("revSeq", String(highest));
+      } else {
+        const stored = Number(row.v);
+        if (!Number.isSafeInteger(stored) || stored < 0) {
+          throw new Error(
+            `grant ledger ${this.file} has a malformed revision counter (${JSON.stringify(row.v)}). ` +
+              `Fix or remove it; a reset counter can let a stale delete remove a fresh grant.`,
+          );
+        }
+        // Never move it down, and never leave it below a revision already issued.
+        if (stored < highest) this.#stmt.setMeta.run("revSeq", String(highest));
+      }
+      this.#db.exec("COMMIT");
+    } catch (e) {
+      this.#db.exec("ROLLBACK");
+      throw e;
+    }
   }
 
   // ---- adopting the file this replaces -----------------------------------------------------------

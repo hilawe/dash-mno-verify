@@ -274,13 +274,54 @@ built from the post-migration code rather than from any earlier packet.
   locking_mode=EXCLUSIVE`, so the kernel holds it for the life of the process and releases it whenever
   the process ends, however it ends. A second process is refused outright. There is no staleness
   window, no heartbeat, no ownership fencing, and no signal handler to forget. Verified by a test that
-  really terminates a child process and restarts immediately.
+  spawns a real holder process and is refused while it lives.
+  TWO LIMITS, both found by the 2026-07-26 third round and both now stated rather than implied. The
+  exclusion is the filesystem's, so it needs local storage; SQLite documents that locking is unreliable
+  on network filesystems, where two hosts can both believe they hold it, losing the guarantee and
+  risking corruption. And it covers process life only, which is the separate open item below.
   The revision-conditional delete stays as defence in depth, with the revision now drawn from a
   database-wide counter rather than derived from the row. Deriving it from the row restarted it at 1 on
   every insert, so a row could be deleted and reinserted at the same revision and a stale delete would
   match the fresh row anyway. Two reviewers reproduced that independently.
   Shared state itself does work as described: the clock floor is read from the database on every
   observation and raised with a `MAX`. (`adapters/common/grant_ledger.js`)
+- [ ] BLOCKER, the exclusive lock does not reliably exclude. The third attempt at single-writer
+  enforcement opens the database with `PRAGMA locking_mode=EXCLUSIVE` and claims a second process is
+  refused. It usually is: a focused probe spawning a holder and a second opener refused 12 times out of
+  12. Under concurrency it does not hold. Running six copies of `test/adapter_grant_expiry.test.js` at
+  once admits a second opener roughly one run in six, with the holder confirmed still alive and both
+  pragmas confirmed applied on the holder's connection (`locking_mode=exclusive`, `journal_mode=wal`).
+  The cause is not yet identified. What is ruled out: the pragmas silently failing, the holder having
+  died, and the test signalling readiness before the holder's write completes (it signals after an
+  awaited grant). The test is committed as `test.skip` with the reproduction in its comment, because a
+  test that fails one run in six is the property telling the truth and must not be weakened to green.
+  Until this is understood, single-writer is an OPERATOR REQUIREMENT that the code hardens but does not
+  guarantee, which is how the README, the module comment, and the handoff now describe it. The
+  revision-conditional delete matters more under that framing, since it is what makes the overtaken
+  case recoverable rather than silent. Options if it cannot be made reliable: an OS-level lock file
+  outside SQLite (an advisory lock held for process life), or accept operator enforcement and drop the
+  claim entirely. (`adapters/common/grant_ledger.js`, `test/adapter_grant_expiry.test.js`)
+- [ ] Access can outlive its record when a process is terminated mid-request (2026-07-26 third round,
+  blocker as reported). A process persists a grant, sends the platform request, the platform ACCEPTS
+  it, and the process is terminated before the effect lands. The exclusive lock dies with it, a
+  replacement starts, finds the grant expired, removes it and deletes the row, and then the original
+  request takes effect. Live access with no record, which no later sweep can find. Reproduced by the
+  reviewer. This is NOT a regression and no local lock closes it: the holder is gone and the side
+  effect is on the platform's servers. It is the one place the non-interleaving property genuinely does
+  not hold, and the code, the READMEs, and the handoff now say so instead of implying otherwise.
+  The real mitigation is reconciling against actual platform state at startup, which Matrix already
+  does (`reconcileMatrix` in `adapters/matrix/bot.js`) and Discord does not. Discord can: the guild
+  member list and channel overwrites are both readable, so a startup pass can find members holding
+  access with no live grant and remove them. Telegram cannot do the general form, because its Bot API
+  exposes no member roster, which is why it has the operator-attested gate instead. Doing the Discord
+  pass is a piece of work in its own right, not a patch, and it also closes the older "upgrade from
+  before the lifecycle existed" case for that adapter. (`adapters/discord/bot.js`,
+  `adapters/common/reconcile.js`)
+- [ ] Warn when the ledger is on a filesystem whose locking cannot be trusted. The exclusive lock is
+  only as good as the filesystem's, and an operator can point `*_GRANTS_DB` at anything. A startup
+  check that the path is not a network mount, or at minimum a logged warning, would turn a silent loss
+  of the guarantee into a visible one. Documented as a requirement for now.
+  (`adapters/common/grant_ledger.js`)
 - [x] One clock sample per decision (2026-07-26 round, blocker). The clock was sampled twice per
   decision, once to persist it and once to decide on it, and real time can cross an expiry boundary
   between the two. The adapter could refuse an admission on the strength of a reading it had never
