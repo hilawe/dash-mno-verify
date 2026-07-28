@@ -13,9 +13,13 @@
 // So the bot now reports what it can see and does nothing about it, and this runs when you decide.
 // It takes one target, tells you exactly what it will do, does it, and exits.
 //
-//   npm run discord:decommission -- channel:111,222
-//   npm run discord:decommission -- role:333
-//   npm run discord:decommission -- role:333 --dry-run
+//   npm run discord:decommission -- channel:111,222            # shows what it WOULD remove
+//   npm run discord:decommission -- channel:111,222 --apply    # actually removes it
+//
+// Preview is the default and removal requires --apply. The first version had it the other way round,
+// with a --dry-run flag matched by an exact string, so `--dryrun` silently performed the real deletion.
+// For a command whose whole purpose is removing access in bulk, the destructive path is the one that
+// has to be asked for explicitly.
 //
 // It reads the same environment as the bot. It never touches the ledger, because the ledger is the
 // record of what was granted and a decommission is not a reason to forget that history.
@@ -26,19 +30,36 @@ import { parseTargetKey } from "../adapters/discord/grant_ledger.js";
 const TOKEN = process.env.DISCORD_TOKEN;
 const GUILD_ID = process.env.DISCORD_GUILD_ID;
 const args = process.argv.slice(2);
-const dryRun = args.includes("--dry-run");
-const targetArg = args.find((a) => !a.startsWith("--"));
+// Reject anything unrecognised rather than ignoring it. Silently dropping an option the operator
+// believed in is how a mistyped safety flag becomes a live deletion, and silently dropping an extra
+// positional target is how half a decommission reports success.
+const KNOWN_FLAGS = new Set(["--apply", "--dry-run"]);
+const flags = args.filter((a) => a.startsWith("-"));
+const positionals = args.filter((a) => !a.startsWith("-"));
+const unknown = flags.filter((f) => !KNOWN_FLAGS.has(f));
+const apply = flags.includes("--apply");
+const dryRun = !apply; // --dry-run is accepted for explicitness; it is already the default
+const targetArg = positionals[0];
 
 if (!TOKEN || !GUILD_ID) {
   console.error("[decommission] DISCORD_TOKEN and DISCORD_GUILD_ID must be set, the same as for the bot.");
   process.exit(1);
 }
-if (!targetArg) {
+if (unknown.length) {
   console.error(
-    "[decommission] name the target to clear, for example:\n" +
-      "  npm run discord:decommission -- channel:111,222\n" +
-      "  npm run discord:decommission -- role:333\n" +
-      "Add --dry-run to list what would be removed without removing it.\n" +
+    `[decommission] unrecognised option(s): ${unknown.join(", ")}. Known options are --apply and ` +
+      `--dry-run. Refusing rather than guessing, because a mistyped flag on this command deletes access.`,
+  );
+  process.exit(1);
+}
+if (positionals.length !== 1) {
+  console.error(
+    (positionals.length === 0
+      ? "[decommission] name exactly one target to clear."
+      : `[decommission] name exactly ONE target, got ${positionals.length}: ${positionals.join(", ")}. ` +
+        "Run it once per target so each result is reported separately.") +
+      "\n  npm run discord:decommission -- channel:111,222          # preview\n" +
+      "  npm run discord:decommission -- channel:111,222 --apply   # remove\n" +
       "The bot names the targets it can see are outstanding when it starts.",
   );
   process.exit(1);
@@ -70,9 +91,22 @@ client.once("ready", async () => {
   const failed = [];
   try {
     const guild = await client.guilds.fetch(GUILD_ID);
+    // Name the guild before touching anything. A command that removes access in bulk should say which
+    // server it is about to act on, so a wrong DISCORD_GUILD_ID is obvious in the output.
+    console.log(`[decommission] guild ${guild.name} (${guild.id}), target ${targetArg}${dryRun ? ", PREVIEW ONLY" : ""}`);
 
     if (target.mode === "role") {
       const roleId = target.ids[0];
+      // Confirm the role belongs to THIS guild. Role ids are globally unique, so naming a role from
+      // another server simply matched nobody, reported zero holders, and exited zero as if it had
+      // succeeded, while every real holder kept the role.
+      const role = await guild.roles.fetch(roleId).catch(() => null);
+      if (!role) {
+        throw new Error(
+          `role ${roleId} does not exist in ${guild.name} (${guild.id}). Check DISCORD_GUILD_ID and the ` +
+            `role id; nothing was changed.`,
+        );
+      }
       let members;
       try {
         members = await guild.members.fetch();
@@ -83,7 +117,7 @@ client.once("ready", async () => {
         );
       }
       const holders = [...members.values()].filter((m) => m.roles.cache.has(roleId) && m.id !== client.user.id);
-      console.log(`[decommission] role ${roleId}: ${holders.length} member(s) hold it`);
+      console.log(`[decommission] role ${role.name} (${roleId}): ${holders.length} member(s) hold it`);
       for (const m of holders) {
         if (dryRun) {
           removed.push(m.id);
@@ -121,13 +155,15 @@ client.once("ready", async () => {
       }
     }
 
-    // EVERY member overwrite on a decommissioned channel is cleared, including any an operator added by
-    // hand, because a stored overwrite carries no record of who created it. That is the right trade
-    // HERE, at the moment you deliberately decommission a target, and it is exactly the wrong trade for
-    // a bot to make on its own at every restart, which is what the previous design did.
+    // The three bits this bot grants are reset to inherit on every per-member overwrite found,
+    // including overwrites an operator added by hand, because a stored overwrite carries no record of
+    // who created it. Any OTHER permission on that overwrite is left alone, so this is narrower than
+    // "clear the overwrite". That trade is right HERE, at the moment you deliberately decommission a
+    // target, and wrong for a bot to make on its own at every restart, which an earlier design did.
     console.log(
       `[decommission] ${dryRun ? "would take" : "took"} access back from ${removed.length} member(s) on ${targetArg}` +
-        `${failed.length ? `, ${failed.length} failed` : ""}`,
+        `${failed.length ? `, ${failed.length} failed` : ""}` +
+        `${dryRun && removed.length ? ". Nothing was changed; re-run with --apply to do it." : ""}`,
     );
     if (failed.length) {
       console.error(

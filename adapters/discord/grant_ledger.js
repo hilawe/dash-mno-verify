@@ -42,19 +42,20 @@ export function isValidRecord(r) {
 // re-exported already carrying those, so the bot and the existing tests use it unchanged.
 import { GrantLedger as BaseGrantLedger } from "../common/grant_ledger.js";
 
-// Whether a record authorizes access to the target this bot is CURRENTLY configured for. Liveness
-// alone is not enough: a record written for a previous role or channel set can still be live, and
-// treating that as a reason to leave someone's access in place would let them keep access to a target
-// they never proved for. Used by the startup reconciliation, which has to decide about members it has
-// no record of as well as ones it does.
+// Whether a record authorizes access to ONE SPECIFIC place the bot grants: a single channel, or the
+// configured role. Liveness alone is not enough, because a record written for a previous role or
+// channel set can still be live.
 //
-// Channel mode requires the record to cover EVERY currently configured channel. A record covering only
-// some of them is not authorization for the rest, and the renewal path revokes what it does not carry
-// forward, so a partial record here means the member's access is genuinely stale.
-export function authorizesTarget(record, isLive, { mode, channels = [], roleId } = {}) {
+// This takes ONE channel, not the whole configured set, and that is the fix for a real access loss.
+// It used to require the record to cover EVERY configured channel while the caller inspected channels
+// one at a time. So adding a second channel to the configuration made every existing member's record
+// fail the check on the channel they legitimately held, and the startup pass cleared it. The ledger row
+// survived, so the sweep never repaired it, and on a Platform-backed store the member could not
+// re-grant until the next epoch. Judge each channel on whether the record covers THAT channel.
+export function authorizesTarget(record, isLive, { mode, channel = null, roleId } = {}) {
   if (!record || !isLive || record.mode !== mode) return false;
   return mode === "channel"
-    ? channels.length > 0 && channels.every((c) => (record.channels ?? []).includes(c))
+    ? Boolean(channel) && (record.channels ?? []).includes(String(channel))
     : Boolean(roleId) && String(record.roleId) === String(roleId);
 }
 

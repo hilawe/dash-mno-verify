@@ -58,23 +58,31 @@ const SWEEP_SECONDS = Number(process.env.DISCORD_SWEEP_SECONDS ?? 300);
 const GRANTS_DB = process.env.DISCORD_GRANTS_DB ?? "adapters/discord/grants.db";
 const LEGACY_GRANTS_FILE = process.env.DISCORD_GRANTS_FILE ?? "adapters/discord/grants.json";
 
+// The default changed from role to channel, so a deployment that never set DISCORD_GRANT_MODE gets a
+// different mode than it used to. Require the mode explicitly whenever a role id is present, rather
+// than guessing which one was meant.
+//
+// This check deliberately sits OUTSIDE the "no channel ids" branch. An earlier version put it inside,
+// so a deployment carrying an unused DISCORD_GRANT_CHANNEL_IDS alongside its role id flipped silently
+// from role mode to channel mode, taking the default proof context with it from the role id to the
+// channel id. The condition is about the mode being unstated, not about which ids happen to be set.
+if (!process.env.DISCORD_GRANT_MODE && ROLE_ID) {
+  console.error(
+    "[discord] set DISCORD_GRANT_MODE explicitly. The default is now 'channel', because a Discord role " +
+      "is visible on the member's profile card and so discloses who holds a masternode, which is the " +
+      "fact the proof exists to keep private. This bot has DISCORD_MNO_ROLE_ID set and no explicit " +
+      "mode, so it may have been relying on the old 'role' default.\n" +
+      "  DISCORD_GRANT_MODE=channel  with DISCORD_GRANT_CHANNEL_IDS set (recommended)\n" +
+      "  DISCORD_GRANT_MODE=role     to keep the disclosing behaviour",
+  );
+  process.exit(1);
+}
 if (GRANT_MODE !== "channel" && GRANT_MODE !== "role") {
   console.error(`[discord] DISCORD_GRANT_MODE must be 'channel' or 'role', got '${GRANT_MODE}'`);
   process.exit(1);
 }
 if (GRANT_MODE === "channel" && GRANT_CHANNEL_IDS.length === 0) {
-  // An existing role-mode deployment that never set DISCORD_GRANT_MODE lands here after the default
-  // changed. Say so, rather than leaving an operator to work out why a working bot stopped booting.
-  const looksLikeOldRoleDeployment = !process.env.DISCORD_GRANT_MODE && ROLE_ID;
-  console.error(
-    looksLikeOldRoleDeployment
-      ? "[discord] the default grant mode is now 'channel', because a role is visible on the member's " +
-          "profile card and so discloses who holds a masternode. This bot has DISCORD_MNO_ROLE_ID set " +
-          "and no DISCORD_GRANT_MODE, so it was relying on the old 'role' default. Either move to " +
-          "channel mode (set DISCORD_GRANT_CHANNEL_IDS), or set DISCORD_GRANT_MODE=role explicitly to " +
-          "keep the disclosing behaviour."
-      : "[discord] DISCORD_GRANT_MODE=channel needs DISCORD_GRANT_CHANNEL_IDS (comma-separated channel ids)",
-  );
+  console.error("[discord] DISCORD_GRANT_MODE=channel needs DISCORD_GRANT_CHANNEL_IDS (comma-separated channel ids)");
   process.exit(1);
 }
 if (GRANT_MODE === "role") {
@@ -197,10 +205,12 @@ const client = new Client({
 });
 
 
-const authorizedNow = (userId) =>
+// `channelId` names the ONE channel being judged, so a member keeps the channel their record covers
+// even when the configuration has since grown to include others.
+const authorizedNow = (userId, channelId = null) =>
   authorizesTarget(ledger.get(userId), ledger.live(userId), {
     mode: GRANT_MODE,
-    channels: GRANT_CHANNEL_IDS,
+    channel: channelId,
     roleId: ROLE_ID,
   });
 
@@ -268,7 +278,7 @@ async function reconcileGuild() {
       for (const [id, ow] of ch.permissionOverwrites.cache) {
         if (ow.type !== OverwriteType.Member) continue; // role overwrites are the operator's business
         if (id === client.user.id) continue;
-        if (authorizedNow(id)) continue;
+        if (authorizedNow(id, chId)) continue;
         await clear(id, () => ch.permissionOverwrites.edit(id, ACCESS_CLEARED, { type: OverwriteType.Member }));
       }
     }

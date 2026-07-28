@@ -327,22 +327,33 @@ test("extraTargets returns only targets the prior grant did not cover", () => {
 // leaves access from a previous target in place, which is the whole thing reconciliation exists to
 // find. Liveness alone is not the answer, because a record for an old target can still be live.
 test("authorizesTarget accepts only a live record for the configured target", () => {
-  const role = { mode: "role", channels: [], roleId: "r1" };
+  const role = { mode: "role", channel: null, roleId: "r1" };
   assert.equal(authorizesTarget({ mode: "role", roleId: "r1" }, true, role), true);
   assert.equal(authorizesTarget({ mode: "role", roleId: "r1" }, false, role), false, "expired");
   assert.equal(authorizesTarget({ mode: "role", roleId: "OLD" }, true, role), false, "a previous role");
   assert.equal(authorizesTarget({ mode: "channel", channels: ["c1"] }, true, role), false, "a mode switch");
   assert.equal(authorizesTarget(null, true, role), false, "no record at all");
 
-  const chan = { mode: "channel", channels: ["c1", "c2"], roleId: null };
-  assert.equal(authorizesTarget({ mode: "channel", channels: ["c1", "c2"] }, true, chan), true);
-  assert.equal(authorizesTarget({ mode: "channel", channels: ["c1", "c2", "c3"] }, true, chan), true, "a superset covers it");
+  // ONE channel at a time. This used to take the whole configured set and require the record to cover
+  // all of it, so adding a second channel made every existing member fail the check on the channel they
+  // legitimately held, and the startup pass cleared it. The ledger row survived, so the sweep never put
+  // it back.
+  const onC1 = { mode: "channel", channel: "c1", roleId: null };
+  const onC2 = { mode: "channel", channel: "c2", roleId: null };
+  assert.equal(authorizesTarget({ mode: "channel", channels: ["c1"] }, true, onC1), true);
   assert.equal(
-    authorizesTarget({ mode: "channel", channels: ["c1"] }, true, chan),
+    authorizesTarget({ mode: "channel", channels: ["c1"] }, true, onC2),
     false,
-    "a record covering only some configured channels does not authorize the rest",
+    "a record for c1 does not authorize an overwrite on c2",
   );
-  assert.equal(authorizesTarget({ mode: "channel", channels: [] }, true, chan), false);
+  assert.equal(
+    authorizesTarget({ mode: "channel", channels: ["c1"] }, true, onC1),
+    true,
+    "and c1 is kept even once the configuration has grown to include c2",
+  );
+  assert.equal(authorizesTarget({ mode: "channel", channels: ["c1", "c2"] }, true, onC2), true);
+  assert.equal(authorizesTarget({ mode: "channel", channels: [] }, true, onC1), false);
+  assert.equal(authorizesTarget({ mode: "channel", channels: ["c1"] }, false, onC1), false, "expired");
 });
 
 test("targetKey treats channel ids as a set, so reordering is not a new target", () => {
@@ -382,6 +393,11 @@ test("parseTargetKey validates the whole string, not just the front of it", () =
 // deliberate operator act, which is the whole point of the split: three rounds of trying to make it
 // automatic produced a blocker every time, the last one stripping access an operator had granted by
 // hand on a channel the bot had finished with.
+//
+// This is BEST EFFORT and the tests must not imply otherwise. It can only see targets that surviving
+// ledger rows still name, so an old channel whose rows have expired and been swept, or that held
+// access predating the ledger entirely, is invisible to it. That is why the README tells operators to
+// decommission on every repoint rather than to wait for a warning.
 test("staleTargets names what an old configuration left behind, and nothing current", () => {
   const chanNow = { mode: "channel", channels: ["c1"], roleId: null };
 
@@ -408,5 +424,10 @@ test("staleTargets names what an old configuration left behind, and nothing curr
   const roleNow = { mode: "role", channels: [], roleId: "r1" };
   assert.deepEqual(staleTargets([{ mode: "role", roleId: "r1" }], roleNow), [], "the current role is not stale");
   assert.deepEqual(staleTargets([{ mode: "role", roleId: "old" }], roleNow), [targetKey("role", ["old"])]);
-  assert.deepEqual(staleTargets([], chanNow), [], "no records, nothing owed");
+  assert.deepEqual(
+    staleTargets([], chanNow),
+    [],
+    "an empty ledger means nothing DISCOVERABLE, not nothing owed: access on a target with no surviving " +
+      "rows is real and this cannot see it",
+  );
 });

@@ -22,19 +22,25 @@ refused with a "try again in a moment" reply until it finishes, since it calls D
 than through the ledger's per-member queue.
 
 **It never cleans up after a repoint by itself.** If you point the bot at a different channel or role,
-the old one still holds whatever it held. The bot tells you so at startup, naming the target and the
-command, and does nothing about it. Clearing it is one command:
+the old one still holds whatever it held. **Decommission the old target deliberately, every time you
+repoint.** Treat that as part of the repoint, not as something to wait for a prompt about:
 
 ```
-npm run discord:decommission -- channel:111,222
-npm run discord:decommission -- role:333
-npm run discord:decommission -- channel:111 --dry-run
+npm run discord:decommission -- channel:111,222            # preview, changes nothing
+npm run discord:decommission -- channel:111,222 --apply    # actually removes
 ```
 
-That removal is deliberate on purpose. Every per-member overwrite on a decommissioned channel is
-cleared, including any you added by hand, because a stored overwrite carries no record of who created
-it. That is a reasonable trade at the moment you decide to decommission a channel, and an unreasonable
-one for a bot to make on its own at every restart, which is what an earlier version did.
+The bot does print a warning naming an outstanding target when it starts, but **that warning is best
+effort and its absence proves nothing.** It can only see targets that surviving ledger rows still name,
+so an old channel holding access that predates the ledger, or whose rows have since expired and been
+swept, produces no warning at all while the access is still there.
+
+The removal is deliberate on purpose. On a decommissioned channel it resets the three bits this bot
+grants (`ViewChannel`, `SendMessages`, `ReadMessageHistory`) on every per-member overwrite it finds,
+including overwrites you added by hand, because a stored overwrite carries no record of who created it.
+Any other permission on that overwrite is left alone. That trade is reasonable at the moment you decide
+to decommission a channel, and unreasonable for a bot to make on its own at every restart, which is
+what an earlier version did.
 
 A startup pass that cannot clear someone refuses to start rather than reporting success.
 

@@ -323,9 +323,21 @@ built from the post-migration code rather than from any earlier packet.
   before the client exists, and no path that can wedge. `parseTargetKey` validates the whole string
   (an earlier version read only the front of it and silently forgot the rest). `readMarker` was deleted
   rather than left as dead code.
-  Also from that round: Discord's default grant mode is now `channel`, because a role is visible on the
-  profile card and so discloses who holds a masternode, which is the fact the proof protects. Role mode
-  warns at startup, and an old deployment relying on the previous default gets an explicit message. (`adapters/discord/bot.js`, `adapters/discord/grant_ledger.js`)
+  Also: Discord's default grant mode is now `channel`, because a role is visible on the profile card
+  and so discloses who holds a masternode, which is the fact the proof protects. Role mode warns at
+  startup. Any deployment with a role id and no explicit `DISCORD_GRANT_MODE` is refused until it
+  states the mode, and that check deliberately does NOT depend on whether channel ids happen to be
+  set; a first version put it inside the no-channel-ids branch, so a deployment carrying an unused
+  channel id flipped silently from role to channel mode, taking the proof context with it. (`adapters/discord/bot.js`, `adapters/discord/grant_ledger.js`)
+- [ ] The stale-target warning is best effort and cannot be made complete (2026-07-27 fourth round,
+  recorded rather than fixed). `staleTargets` reads `ledger.all()`, so it names only targets that
+  surviving rows still mention. An old channel holding access that predates the ledger, or whose rows
+  have since expired and been swept, produces no warning while the access is still there. Reporting
+  only is the right policy, so the fix is honesty rather than more machinery: the README now tells
+  operators to decommission on every repoint and says the warning's absence proves nothing, and the
+  test says "nothing discoverable" rather than "nothing owed". Revisit only if the ledger ever grows a
+  durable record of targets it has ever granted through, which is the same history the rejected designs
+  kept getting wrong. (`adapters/discord/grant_ledger.js`)
 - [ ] A startup check cannot catch a platform effect that lands after it (2026-07-27 third round,
   major, reproduced). The bot records a grant, Discord ACCEPTS the request, the bot is terminated
   before the effect appears, the replacement's startup check sees no access, its sweep deletes the
