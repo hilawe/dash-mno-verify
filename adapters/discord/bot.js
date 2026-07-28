@@ -23,10 +23,8 @@ import {
   OverwriteType,
 } from "discord.js";
 import process from "node:process";
-import { readFileSync } from "node:fs";
 import { proveInstructions } from "../../common/prover_instructions.js";
-import { GrantLedger, authorizesTarget, targetKey, planSweep } from "./grant_ledger.js";
-import { markReconciled, readMarker } from "../common/reconcile.js";
+import { GrantLedger, authorizesTarget, staleTargets } from "./grant_ledger.js";
 
 const TOKEN = process.env.DISCORD_TOKEN;
 const APP_ID = process.env.DISCORD_APP_ID;
@@ -152,7 +150,7 @@ const ledger = new GrantLedger({
 });
 
 // Revoke lapsed grants, then DM the affected members. The ledger does the revoking and persistence;
-// the DM is a Discord concern, so it stays here. Runs once at startup too, so a grant that lapsed
+// the DM is a Discord concern, so it stays here. Runs at startup as well as on the timer, so a grant that lapsed
 // while the bot was down is cleared promptly.
 async function sweepAndNotify() {
   const revoked = await ledger.sweep();
@@ -182,52 +180,20 @@ async function registerCommands() {
   console.log("[discord] slash commands registered");
 }
 
-// Members who were given access before this lifecycle existed, or by a previous deployment pointed at
-// a different target, hold access the ledger knows nothing about, and the sweep only ever looks at the
-// ledger. Discord can read its own state, so the closed starting state is reachable automatically the
-// way Matrix does it: find everyone currently holding access this bot has no live, matching grant for,
-// and take it back. Runs once, then records that it happened.
-//
-// This is also the only mitigation available for the case no lock can cover: a bot terminated between
-// a platform request being accepted and taking effect leaves access with no record, and nothing but a
-// pass over real platform state will ever find it.
-const RECONCILE_MARKER = process.env.DISCORD_RECONCILED_MARKER ?? "data/discord-reconciled.json";
-// The marker is bound to the target, so a marker earned for one role or channel set does not satisfy
-// the gate after the operator repoints the bot, which is exactly when unknown members appear. Ids are
-// sorted and deduplicated, so merely reordering DISCORD_GRANT_CHANNEL_IDS does not look like a new
-// target and trigger a second destructive pass over nothing.
-const RECONCILE_TARGET =
-  GRANT_MODE === "channel" ? targetKey("channel", GRANT_CHANNEL_IDS) : targetKey("role", [ROLE_ID]);
-// Prior targets the operator knows about but nothing recorded, for the first upgrade only. Same form
-// as the marker, comma-separated: "role:oldRoleId" or "channel:c1,c2".
-const RECONCILE_ALSO = (process.env.DISCORD_RECONCILE_ALSO ?? "").split(/\s+/).filter(Boolean);
 
 // GuildMembers is a PRIVILEGED intent and must be enabled for the application in Discord's developer
 // portal. Role mode needs it, because reconciliation has to enumerate who currently holds the role.
 // Channel mode does not: per-user channel overwrites arrive with the Guilds intent. The startup
 // reconciliation below fails closed with an explicit message if role mode cannot read the member list,
 // rather than recording a pass it did not actually make.
-// The privileged member intent has to be requested at construction, before anything async has run, so
-// the marker is read synchronously here. Role mode always needs it. Channel mode needs it too when a
-// PREVIOUS role is still owed cleanup, because removing a role means enumerating who holds it.
-//
-// An earlier version refused to start in that case and told the operator to run role mode once. That
-// did not work: the run it told them to do skipped itself, so channel mode refused forever with no way
-// out. Asking for the intent when it is actually needed removes the dead end entirely.
-function pendingAtStartup() {
-  try {
-    const raw = JSON.parse(readFileSync(RECONCILE_MARKER, "utf8"));
-    return raw?.reconciled === true && Array.isArray(raw.pending) ? raw.pending.filter((v) => typeof v === "string") : [];
-  } catch {
-    return []; // a missing or unreadable marker is diagnosed properly by readMarker during the pass
-  }
-}
-const NEEDS_MEMBER_LIST =
-  GRANT_MODE === "role" ||
-  [...pendingAtStartup(), ...RECONCILE_ALSO].some((k) => String(k).startsWith("role:"));
-
+// Role mode needs the privileged member intent, because deciding who should keep a role means
+// enumerating who holds it. Channel mode does not: per-user channel overwrites arrive with the
+// ordinary Guilds intent. This depends on the configured mode and nothing else, so there is no state
+// to read before the client exists. An earlier version read the marker synchronously here to decide,
+// which produced a startup that could refuse forever with no way out.
 const client = new Client({
-  intents: NEEDS_MEMBER_LIST ? [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers] : [GatewayIntentBits.Guilds],
+  intents:
+    GRANT_MODE === "role" ? [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers] : [GatewayIntentBits.Guilds],
 });
 
 
@@ -245,15 +211,21 @@ const authorizedNow = (userId) =>
 // sweep then leaves alone because the record looks fine.
 let reconciled = false;
 
-// Runs on EVERY startup, never skipped.
+// Runs on EVERY startup, over the target this bot grants through NOW and nothing else.
 //
-// An earlier version returned immediately when the marker's target matched the configured one, which
-// meant it only ever ran after a repoint. That disabled the single case it was built for: a bot
-// terminated between Discord ACCEPTING a request and acting on it leaves access live with no ledger
-// record, and that always presents as an ordinary restart with an unchanged target. The marker no
-// longer says "this target is done". It says which OLD targets still owe cleanup.
+// It exists because the ledger only knows access IT issued, and three things leave access it cannot
+// know about: members admitted before this lifecycle existed, and above all a bot terminated between
+// Discord ACCEPTING a request and acting on it, which leaves access live with no record. That last
+// case always looks like an ordinary restart, which is why this must never be skipped. An earlier
+// version returned early when a marker matched the configured target, and so never did the one job it
+// was written for.
+//
+// It does NOT clean up after a repoint. Removing access in bulk from a role or channel the bot no
+// longer manages is a deliberate act, not something a restart should decide to do: three review rounds
+// of trying to make that automatic produced a blocker every time, including stripping access an
+// operator had granted by hand on a channel the bot had finished with. Stale targets are REPORTED
+// here and cleared by `npm run discord:decommission`.
 async function reconcileGuild() {
-  const prior = await readMarker(RECONCILE_MARKER);
   const guild = await getGuild();
   const removed = [];
   const failed = [];
@@ -267,102 +239,61 @@ async function reconcileGuild() {
     }
   };
 
-  // A malformed entry anywhere throws, naming the value. Silently dropping one leaves access unswept
-  // while the pass records itself successful, which is the worst of both.
-  const plan = planSweep({
-    current: RECONCILE_TARGET,
-    pending: [...(prior?.pending ?? []), ...(prior?.target && prior.target !== RECONCILE_TARGET ? [prior.target] : []), ...RECONCILE_ALSO],
-    records: ledger.all(),
-  });
-
-  // Track what actually got cleaned, so a target is retired only after a pass that covered it.
-  const retiredRoles = new Set();
-  const retiredChannels = new Set();
-
-  const allRoles = [...plan.current.roles, ...plan.retire.roles];
-  if (allRoles.length) {
-    if (!NEEDS_MEMBER_LIST) {
-      throw new Error(
-        `refusing to start: role(s) ${allRoles.join(", ")} need cleaning and that needs the member list. ` +
-          `This start did not request it because the marker did not name them. Restart once and it will.`,
-      );
-    }
+  if (GRANT_MODE === "role") {
     let members;
     try {
       members = await guild.members.fetch();
     } catch (e) {
       throw new Error(
-        `refusing to start: cannot read the member list to reconcile role(s) ${allRoles.join(", ")} ` +
-          `(${e.message}). Enable the SERVER MEMBERS INTENT for this application in Discord's developer ` +
-          `portal. Once the old role is cleaned it is retired and the intent is no longer requested.`,
+        `cannot read the member list to reconcile role ${ROLE_ID} (${e.message}). Enable the SERVER ` +
+          `MEMBERS INTENT for this application in Discord's developer portal, or use channel mode, ` +
+          `which needs no privileged intent and does not disclose who holds a masternode.`,
       );
     }
-    const before = failed.length;
     for (const [id, m] of members) {
       if (id === client.user.id) continue; // never strip the bot
-      for (const roleId of allRoles) {
-        if (!m.roles.cache.has(roleId)) continue;
-        // Only the CURRENT role can be authorized. A retiring role is one the bot no longer grants
-        // through, so a live record is no reason to leave it.
-        if (plan.current.roles.includes(roleId) && authorizedNow(id)) continue;
-        await clear(id, () => m.roles.remove(roleId));
+      if (!m.roles.cache.has(ROLE_ID)) continue;
+      if (authorizedNow(id)) continue;
+      await clear(id, () => m.roles.remove(ROLE_ID));
+    }
+  } else {
+    for (const chId of GRANT_CHANNEL_IDS) {
+      let ch;
+      try {
+        ch = await guild.channels.fetch(chId);
+      } catch (e) {
+        if (isGone(e)) continue; // a deleted channel holds no access
+        throw e;
+      }
+      for (const [id, ow] of ch.permissionOverwrites.cache) {
+        if (ow.type !== OverwriteType.Member) continue; // role overwrites are the operator's business
+        if (id === client.user.id) continue;
+        if (authorizedNow(id)) continue;
+        await clear(id, () => ch.permissionOverwrites.edit(id, ACCESS_CLEARED, { type: OverwriteType.Member }));
       }
     }
-    if (failed.length === before) for (const r of plan.retire.roles) retiredRoles.add(r);
   }
 
-  for (const chId of [...plan.current.channels, ...plan.retire.channels]) {
-    const retiring = plan.retire.channels.includes(chId);
-    let ch;
-    try {
-      ch = await guild.channels.fetch(chId);
-    } catch (e) {
-      if (isGone(e)) {
-        if (retiring) retiredChannels.add(chId); // a deleted channel holds no access; stop tracking it
-        continue;
-      }
-      throw e;
-    }
-    const before = failed.length;
-    for (const [id, ow] of ch.permissionOverwrites.cache) {
-      if (ow.type !== OverwriteType.Member) continue; // role overwrites are the operator's business
-      if (id === client.user.id) continue;
-      if (!retiring && authorizedNow(id)) continue;
-      await clear(id, () => ch.permissionOverwrites.edit(id, ACCESS_CLEARED, { type: OverwriteType.Member }));
-    }
-    if (retiring && failed.length === before) retiredChannels.add(chId);
-  }
-
-  // Only a CLEAN pass may retire anything. Recording a partial one would drop a target from the
-  // pending set while members it could not clear still hold access there.
   if (failed.length) {
     throw new Error(
-      `refusing to start: could not take access back from ${failed.length} member(s) during ` +
-        `reconciliation (${failed.join(", ")}). Give the bot the permission it needs, or clear them by ` +
-        `hand, then start again.`,
+      `could not take access back from ${failed.length} member(s) with no live grant ` +
+        `(${failed.join(", ")}). Give the bot the permission it needs, or clear them by hand.`,
     );
   }
 
-  // Whatever is still owed. A cleaned target is dropped entirely rather than kept as history: keeping
-  // it would strip access an operator later granted there by hand, and would grow without bound.
-  const stillPending = [
-    ...plan.retire.roles.filter((r) => !retiredRoles.has(r)).map((r) => targetKey("role", [r])),
-    ...(plan.retire.channels.filter((c) => !retiredChannels.has(c)).length
-      ? [targetKey("channel", plan.retire.channels.filter((c) => !retiredChannels.has(c)))]
-      : []),
-  ];
-  await markReconciled(RECONCILE_MARKER, {
-    target: RECONCILE_TARGET,
-    pending: stillPending,
-    removed: removed.length,
-  });
+  // Report, never act. A record naming a target this bot no longer grants through means an earlier
+  // configuration handed out access that is still out there.
+  const stale = staleTargets(ledger.all(), { mode: GRANT_MODE, channels: GRANT_CHANNEL_IDS, roleId: ROLE_ID });
+  for (const t of stale) {
+    console.warn(
+      `[discord] WARNING: the ledger holds grants for ${t}, which this bot no longer manages. Members ` +
+        `may still hold access there and no sweep will ever find it. Clear it with: ` +
+        `npm run discord:decommission -- ${t}`,
+    );
+  }
+
   reconciled = true;
-  const retired = [...retiredRoles, ...retiredChannels];
-  console.log(
-    `[discord] reconciled ${RECONCILE_TARGET}, took access back from ${removed.length} member(s)` +
-      `${retired.length ? `, retired ${retired.join(", ")}` : ""}` +
-      `${stillPending.length ? `, still owed: ${stillPending.join(", ")}` : ""}`,
-  );
+  console.log(`[discord] reconciled ${GRANT_MODE} target, took access back from ${removed.length} member(s)`);
 }
 
 // Every failure inside the handler has to be caught here. discord.js does not look at the promise an
@@ -481,4 +412,16 @@ client.once("ready", async () => {
 });
 
 await registerCommands();
-await client.login(TOKEN);
+await client.login(TOKEN).catch((e) => {
+  // Discord rejects a disallowed privileged intent at the gateway handshake, before `ready`, so any
+  // explanation inside the startup pass is never reached. Say the useful thing here instead.
+  console.error(
+    `[discord] could not log in: ${e.message}` +
+      (/disallowed intents/i.test(e.message)
+        ? "\nRole mode needs the SERVER MEMBERS INTENT enabled for this application in Discord's " +
+          "developer portal. Channel mode needs no privileged intent, and does not disclose who holds " +
+          "a masternode, so prefer it."
+        : ""),
+  );
+  process.exit(1);
+});

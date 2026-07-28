@@ -310,18 +310,32 @@ built from the post-migration code rather than from any earlier packet.
   Discord now does too (`reconcileGuild` in `adapters/discord/bot.js`): before its first sweep it finds
   every member holding the configured role, or a per-user overwrite on the configured channels, that it
   has no live matching grant for, and takes that access back, refusing to start rather than recording a
-  partial pass. REDESIGNED after a second REJECT (2026-07-27), because the first version modelled
-  itself on Matrix's ONE-TIME upgrade gate and returned early whenever the marker's target matched the
-  configured one. That disabled the single case the pass exists for, since a bot terminated between
-  Discord accepting a request and acting on it always presents as an ordinary restart with an unchanged
-  target. It also wedged a role-to-channel switch permanently: channel mode refused because an old role
-  was outstanding, and the role-mode run its own error message prescribed skipped itself.
-  Now: the current target is scanned on EVERY startup; the marker records which OLD targets still owe
-  cleanup rather than which one is done; a cleaned target is RETIRED and dropped, so a channel the bot
-  has finished with is the operator's again and later manual grants there are not stripped; the
-  privileged member intent is requested when a role is outstanding, so nothing can wedge; and a
-  malformed marker entry or config value refuses startup instead of being silently skipped, which
-  previously lost a target while reporting success. (`adapters/discord/bot.js`, `adapters/discord/grant_ledger.js`)
+  partial pass. SCOPE REDUCED after a THIRD REJECT (2026-07-27), and the reduction is the fix. Every
+  blocker across three rounds came from one thing: the bot deciding on its own to delete access in bulk
+  on a role or channel it no longer manages, based on a reconstruction of what an earlier configuration
+  had been. That produced a pass that skipped itself on ordinary restarts, a role-to-channel switch
+  that wedged permanently, and a retired channel that stayed bot-owned so later manual grants were
+  stripped. The simple half, checking the CURRENT target, was correct in every round.
+  So they are separated. Startup checks the current target every time and never acts on anything else;
+  it REPORTS stale targets found in the ledger's records, naming the command. Bulk removal moved to
+  `npm run discord:decommission -- <target>`, one target, explicit, with `--dry-run`, run when the
+  operator repoints the bot. No marker, no history, no retirement bookkeeping, no intent decision
+  before the client exists, and no path that can wedge. `parseTargetKey` validates the whole string
+  (an earlier version read only the front of it and silently forgot the rest). `readMarker` was deleted
+  rather than left as dead code.
+  Also from that round: Discord's default grant mode is now `channel`, because a role is visible on the
+  profile card and so discloses who holds a masternode, which is the fact the proof protects. Role mode
+  warns at startup, and an old deployment relying on the previous default gets an explicit message. (`adapters/discord/bot.js`, `adapters/discord/grant_ledger.js`)
+- [ ] A startup check cannot catch a platform effect that lands after it (2026-07-27 third round,
+  major, reproduced). The bot records a grant, Discord ACCEPTS the request, the bot is terminated
+  before the effect appears, the replacement's startup check sees no access, its sweep deletes the
+  expired row, and the effect then lands. That member holds access nothing tracks. The startup pass
+  narrows this window but cannot close it, because it is a snapshot. The README now says so rather than
+  implying the pass covers the case fully. Options: re-run the current-target check periodically rather
+  than only at startup (cheap in channel mode, a full member enumeration in role mode), or keep a
+  tombstone for a revoked grant and re-check it after a convergence window. The periodic re-check is
+  the simpler of the two and would also catch access an admin adds by hand.
+  (`adapters/discord/bot.js`)
 - [ ] Warn when the ledger is on a filesystem whose locking cannot be trusted. The exclusive lock is
   only as good as the filesystem's, and an operator can point `*_GRANTS_DB` at anything. A startup
   check that the path is not a network mount, or at minimum a logged warning, would turn a silent loss

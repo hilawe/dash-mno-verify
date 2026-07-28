@@ -18,7 +18,8 @@
     "prove": "node prover/prover.js",
     "register": "node prover/two_tier.js register",
     "prove-epoch": "node prover/two_tier.js prove",
-    "test": "node --test $(find test -name '*.test.js')"
+    "test": "node --test $(find test -name '*.test.js')",
+    "discord:decommission": "node scripts/discord_decommission.mjs"
   },
   "dependencies": {
     "@noble/curves": "^1.4.0",

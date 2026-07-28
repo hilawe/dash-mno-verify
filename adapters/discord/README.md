@@ -14,34 +14,39 @@ The verification conversation itself is always private, since `/verify` and `/su
 
 Either way, the bot runs a sweep (`DISCORD_SWEEP_SECONDS`, default 300) that removes a member's access once their epoch grant lapses and they have not re-verified, so access tracks current masternode control rather than being permanent once granted. It persists its grant ledger to a SQLite database (`DISCORD_GRANTS_DB`, default `adapters/discord/grants.db`, which holds user ids, is mode 0600, and is gitignored), so access is still revoked after a restart, and it sweeps once at startup. An existing JSON ledger at `DISCORD_GRANTS_FILE` is migrated into it on first start and then renamed with a `.migrated` suffix.
 
-**Every startup, before its first sweep, the bot reconciles against real Discord state.** It finds
-everyone holding access it has no live matching grant for and takes that access back. This is not a
-one-time upgrade gate: it runs every time, because the case it exists for is a bot terminated between
-Discord accepting a request and acting on it, which always looks like an ordinary restart. Interactions
-are refused with a "try again in a moment" reply until the pass finishes, since it calls Discord
-directly rather than through the ledger's per-member queue.
+**Every startup, before its first sweep, the bot checks the target it manages now.** It finds everyone
+holding access there with no live matching grant and takes that access back. This is not a one-time
+upgrade step: it runs every time, because the case it exists for is a bot stopped between Discord
+accepting a request and acting on it, which always looks like an ordinary restart. Interactions are
+refused with a "try again in a moment" reply until it finishes, since it calls Discord directly rather
+than through the ledger's per-member queue.
 
-It also cleans up after a repoint. The marker records which OLD targets still owe cleanup, not which
-target is finished. An old role or channel is scanned, cleared completely (there is nothing to
-authorize, because the bot no longer grants there), and then RETIRED, meaning it is dropped from the
-marker and never touched again. That last part matters: a channel the bot has finished with belongs to
-the operator again, and continuing to treat it as bot-owned would strip access granted there by hand
-later.
+**It never cleans up after a repoint by itself.** If you point the bot at a different channel or role,
+the old one still holds whatever it held. The bot tells you so at startup, naming the target and the
+command, and does nothing about it. Clearing it is one command:
 
-**The first upgrade is the one case it cannot work out for itself.** If the bot has never written a
-marker and holds no records naming the old target, nothing knows what that target was. Supply it with
-`DISCORD_RECONCILE_ALSO`, space-separated, same form as the marker, for example
-`DISCORD_RECONCILE_ALSO="role:123456789"` or `"channel:111,222"`. Without it, access granted under a
-configuration this bot has no memory of stays where it is.
+```
+npm run discord:decommission -- channel:111,222
+npm run discord:decommission -- role:333
+npm run discord:decommission -- channel:111 --dry-run
+```
 
-A pass that cannot clear someone refuses to start rather than retiring a target it did not finish, and
-a malformed marker entry or `DISCORD_RECONCILE_ALSO` value refuses to start rather than being skipped,
-because skipping one silently leaves access unswept while the pass reports success.
+That removal is deliberate on purpose. Every per-member overwrite on a decommissioned channel is
+cleared, including any you added by hand, because a stored overwrite carries no record of who created
+it. That is a reasonable trade at the moment you decide to decommission a channel, and an unreasonable
+one for a bot to make on its own at every restart, which is what an earlier version did.
 
-Role cleanup needs the SERVER MEMBERS INTENT enabled for the application in Discord's developer portal,
-because removing a role means enumerating who holds it. The bot requests that intent when role mode is
-configured, and also when the marker says an old role still owes cleanup, so a channel-mode bot can
-finish retiring a role it used to grant. Once that role is retired the intent is no longer requested.
+A startup pass that cannot clear someone refuses to start rather than reporting success.
+
+**What it cannot catch.** A startup check is a snapshot. If Discord accepts a request and applies it
+after the check has run, that access exists and nothing will find it until the next restart. The
+window is small but real, and it is the reason to restart the bot after any incident where it was
+stopped abruptly.
+
+Role mode needs the SERVER MEMBERS INTENT enabled for the application in Discord's developer portal,
+because deciding who should keep a role means enumerating who holds it. Channel mode needs no
+privileged intent. `npm run discord:decommission` asks for the intent only when the target you name is
+a role, so you can enable it, run the command once, and turn it off again.
 
 Only one adapter process may run against a given ledger at a time, and the database enforces it: it is
 opened in an exclusive locking mode, so the operating system holds it for the life of the process and a
@@ -56,16 +61,6 @@ request, the platform accepts it, and the bot is terminated before the effect la
 start, see the grant expire, remove it, and forget the member, after which the original request still
 takes effect. That leaves access the ledger does not know about. No local lock prevents it, because the
 process holding the lock is gone and the side effect is on the platform's servers.
-
-Two limits on that, both real. **Keep the ledger on local storage.** SQLite's exclusion is the
-filesystem's, and its own documentation warns that locking is unreliable on network filesystems such
-as NFS, where two hosts can both believe they hold it. Nothing detects this, and the consequence is
-both a lost guarantee and possible file corruption. **A process terminated mid-request is not
-covered.** If the bot persists a grant, sends the platform the request, the platform accepts it, and
-the bot is then terminated before the effect lands, a replacement can start, see the grant expire,
-remove it, and forget the member, after which the original request still takes effect. That leaves
-access the ledger does not know about. No local lock can prevent it, because the process holding the
-lock is gone and the side effect is on the platform's servers.
 
 
 In `channel` mode, treat the configured channels as bot-managed. The bot cannot tell a member it added from one added by hand, so when a grant lapses its sweep resets the access bits it manages on that channel for that member. Do not also add members to a bot-managed channel manually.

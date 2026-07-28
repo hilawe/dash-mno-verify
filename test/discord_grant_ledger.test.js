@@ -4,7 +4,7 @@ import { mkdtempSync, existsSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { GrantLedger, extraTargets, authorizesTarget, targetKey, parseTargetKey, planSweep } from "../adapters/discord/grant_ledger.js";
+import { GrantLedger, extraTargets, authorizesTarget, targetKey, parseTargetKey, staleTargets } from "../adapters/discord/grant_ledger.js";
 
 // The grant ledger is what makes Discord-side access durable and correctly revoked. These pin the
 // behaviors the review flagged: survive a restart, revoke on expiry, leave a fresh re-verification
@@ -345,9 +345,6 @@ test("authorizesTarget accepts only a live record for the configured target", ()
   assert.equal(authorizesTarget({ mode: "channel", channels: [] }, true, chan), false);
 });
 
-// A reconciliation that enumerates only the CURRENT target cannot see a member left holding a role or
-// channel the operator moved away from, and the sweep cannot see them either, because the ledger never
-// had a record for them. These pin the target arithmetic that fixes it.
 test("targetKey treats channel ids as a set, so reordering is not a new target", () => {
   assert.equal(targetKey("channel", ["c2", "c1"]), targetKey("channel", ["c1", "c2"]));
   assert.equal(targetKey("channel", ["c1", "c1", "c2"]), targetKey("channel", ["c1", "c2"]));
@@ -355,61 +352,61 @@ test("targetKey treats channel ids as a set, so reordering is not a new target",
   assert.notEqual(targetKey("role", ["r1"]), targetKey("channel", ["r1"]));
 });
 
-// A previous version of this returned null for anything it did not recognise and the caller dropped it
-// silently, so one corrupted history entry meant a target was never swept while the pass still recorded
-// itself successful. The earlier test asserted that garbage was ignored, which locked the defect in.
-// Losing track of access has to be loud.
-test("parseTargetKey refuses a malformed target rather than dropping it", () => {
+// This has been wrong twice, in both possible directions. First it returned null for anything it did
+// not recognise and the caller dropped it silently. Then it threw on obvious rubbish but destructured
+// only the first two colon-separated parts, so `role:a:role:b` quietly became `role:a` and the rest was
+// forgotten. Either way a target could go unswept while the operation reported success, so the whole
+// string is validated now.
+test("parseTargetKey validates the whole string, not just the front of it", () => {
   assert.deepEqual(parseTargetKey("role:r1"), { mode: "role", ids: ["r1"] });
   assert.deepEqual(parseTargetKey("channel:c1,c2"), { mode: "channel", ids: ["c1", "c2"] });
-  for (const bad of ["", "nonsense", "bogus:x", "role:", "channel:", ":c1"]) {
-    assert.throws(() => parseTargetKey(bad), /malformed reconciliation target/, `should refuse ${JSON.stringify(bad)}`);
+
+  for (const [bad, why] of [
+    ["", "empty"],
+    ["nonsense", "no separator"],
+    ["bogus:x", "unknown mode"],
+    ["role:", "no id"],
+    ["channel:", "no id"],
+    [":c1", "no mode"],
+    ["role:a:role:b", "a second target hidden behind an extra colon"],
+    ["channel:c1:channel:c9", "likewise"],
+    ["channel:,c1", "an empty id"],
+    ["channel:c1,", "a trailing empty id"],
+    ["role:r1,r2", "two roles in a role target"],
+  ]) {
+    assert.throws(() => parseTargetKey(bad), /malformed target/, `should refuse ${JSON.stringify(bad)} (${why})`);
   }
 });
 
-// The split that matters: the CURRENT target is scanned every startup and authorization is consulted,
-// while a RETIRING target is one the bot no longer grants through, so everything there is cleared and
-// the target is then dropped for good.
-test("planSweep separates the current target from the ones still owed cleanup", () => {
-  // Nothing owed: just the current target, every startup.
-  assert.deepEqual(planSweep({ current: targetKey("channel", ["c1"]) }), {
-    current: { roles: [], channels: ["c1"] },
-    retire: { roles: [], channels: [] },
-  });
+// Startup REPORTS targets the bot no longer manages and never acts on them. Bulk removal is a
+// deliberate operator act, which is the whole point of the split: three rounds of trying to make it
+// automatic produced a blocker every time, the last one stripping access an operator had granted by
+// hand on a channel the bot had finished with.
+test("staleTargets names what an old configuration left behind, and nothing current", () => {
+  const chanNow = { mode: "channel", channels: ["c1"], roleId: null };
 
-  // A repoint: the old target is owed cleanup, the new one is current.
-  assert.deepEqual(planSweep({ current: targetKey("role", ["new"]), pending: [targetKey("role", ["old"])] }), {
-    current: { roles: ["new"], channels: [] },
-    retire: { roles: ["old"], channels: [] },
-  });
+  assert.deepEqual(staleTargets([{ mode: "channel", channels: ["c1"] }], chanNow), [], "the current target is not stale");
 
-  // A channel that is still current must never be treated as retiring, even if it appears in pending,
-  // or the pass would strip members who hold a perfectly good live grant.
   assert.deepEqual(
-    planSweep({ current: targetKey("channel", ["c1"]), pending: [targetKey("channel", ["c1", "c2"])] }),
-    { current: { roles: [], channels: ["c1"] }, retire: { roles: [], channels: ["c2"] } },
+    staleTargets([{ mode: "channel", channels: ["c1", "c9"] }], chanNow),
+    [targetKey("channel", ["c9"])],
+    "a channel dropped from the configuration is stale, the kept one is not",
   );
 
-  // Records name targets no marker knows about, which is how a repoint is noticed when nothing recorded it.
   assert.deepEqual(
-    planSweep({
-      current: targetKey("channel", ["c1"]),
-      records: [{ mode: "channel", channels: ["c1", "c9"] }, { mode: "role", roleId: "r9" }],
-    }),
-    { current: { roles: [], channels: ["c1"] }, retire: { roles: ["r9"], channels: ["c9"] } },
+    staleTargets([{ mode: "role", roleId: "r9" }], chanNow),
+    [targetKey("role", ["r9"])],
+    "a record from before a mode switch is stale",
   );
 
-  // A mode switch leaves the old kind owed.
-  assert.deepEqual(planSweep({ current: targetKey("channel", ["c1"]), pending: [targetKey("role", ["r1"])] }), {
-    current: { roles: [], channels: ["c1"] },
-    retire: { roles: ["r1"], channels: [] },
-  });
-});
-
-test("planSweep refuses corrupt history instead of quietly skipping a target", () => {
-  assert.throws(
-    () => planSweep({ current: targetKey("role", ["r1"]), pending: ["bogus:c-lost"] }),
-    /malformed reconciliation target "bogus:c-lost"/,
+  // Several records naming the same old channel report once, not once each.
+  assert.deepEqual(
+    staleTargets([{ mode: "channel", channels: ["c9"] }, { mode: "channel", channels: ["c9"] }], chanNow),
+    [targetKey("channel", ["c9"])],
   );
-  assert.throws(() => planSweep({ current: "" }), /malformed reconciliation target/);
+
+  const roleNow = { mode: "role", channels: [], roleId: "r1" };
+  assert.deepEqual(staleTargets([{ mode: "role", roleId: "r1" }], roleNow), [], "the current role is not stale");
+  assert.deepEqual(staleTargets([{ mode: "role", roleId: "old" }], roleNow), [targetKey("role", ["old"])]);
+  assert.deepEqual(staleTargets([], chanNow), [], "no records, nothing owed");
 });
