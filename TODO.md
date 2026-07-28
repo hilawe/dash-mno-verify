@@ -310,8 +310,13 @@ built from the post-migration code rather than from any earlier packet.
   Discord now does too (`reconcileGuild` in `adapters/discord/bot.js`): before its first sweep it finds
   every member holding the configured role, or a per-user overwrite on the configured channels, that it
   has no live matching grant for, and takes that access back, refusing to start rather than recording a
-  partial pass. Role mode needs the privileged SERVER MEMBERS intent and says so explicitly if it is
-  missing; channel mode needs none. The decision itself is the pure `authorizesTarget` in
+  partial pass, and it sweeps the current target plus every target in the marker history and in the
+  ledger's own records, so repointing the bot does not strand the previous role or channel set. The
+  first upgrade is the one case it cannot derive, since nothing recorded the old target; the
+  operator supplies it with `DISCORD_RECONCILE_ALSO`. Interactions are refused until the pass
+  finishes, because it calls Discord outside the ledger's per-member queue. Role mode needs the
+  privileged SERVER MEMBERS intent and says so explicitly if it is missing; channel mode needs none,
+  but refuses to start if it finds an old role it cannot read the member list to clean. The decision itself is the pure `authorizesTarget` in
   `adapters/discord/grant_ledger.js`, unit-tested, because getting it wrong strips a member who just
   re-verified or leaves a previous target's access in place. REMAINING: Telegram cannot do the general
   form, since its Bot API exposes no member roster, which is why it keeps the operator-attested gate;

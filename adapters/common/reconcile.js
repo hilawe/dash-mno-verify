@@ -17,6 +17,19 @@
 import { readFile, writeFile, mkdir, rename, open } from "node:fs/promises";
 import { dirname } from "node:path";
 
+// The raw marker, or null when there is none. Callers that need more than "is it done" read this:
+// the Discord pass uses the recorded target history to find access left behind by a PREVIOUS role or
+// channel set, which is invisible to a pass that only enumerates the current one.
+export async function readMarker(markerPath) {
+  try {
+    const raw = JSON.parse(await readFile(markerPath, "utf8"));
+    return raw?.reconciled === true ? raw : null;
+  } catch (e) {
+    if (e.code === "ENOENT") return null;
+    throw new Error(`cannot read the reconciliation marker at ${markerPath} (${e.message}). Fix or remove it.`);
+  }
+}
+
 export async function reconciliationDone(markerPath, target = null) {
   try {
     const raw = JSON.parse(await readFile(markerPath, "utf8"));

@@ -64,3 +64,40 @@ export class GrantLedger extends BaseGrantLedger {
     super({ ...opts, validate: isValidRecord, orphaned: extraTargets });
   }
 }
+
+// A target is a mode plus its ids, written as a stable string so it can be compared and stored. Ids
+// are deduplicated and sorted, because the set is what matters: `c1,c2` and `c2,c1` are the same
+// target, and treating them as different triggers a second destructive reconciliation pass over
+// nothing, which can turn an unrelated permission problem into a refusal to start.
+export function targetKey(mode, ids) {
+  return `${mode}:${[...new Set(ids.filter(Boolean))].sort().join(",")}`;
+}
+
+export function parseTargetKey(key) {
+  const [mode, rest = ""] = String(key).split(":");
+  const ids = rest.split(",").filter(Boolean);
+  return mode === "channel" || mode === "role" ? { mode, ids } : null;
+}
+
+// Every role and channel this bot may have granted access through, across the target it is configured
+// for now and every target it is known to have used before. A pass that enumerates only the current
+// target cannot see a member left holding a role the operator moved away from, and that member is
+// invisible to the sweep too, because the ledger never had a record for them.
+//
+// `history` is target keys from the previous marker; `fromRecords` is the targets the ledger's own
+// records name, which covers members this bot did grant under an older configuration.
+export function targetsToSweep({ current, history = [], records = [] }) {
+  const roles = new Set();
+  const channels = new Set();
+  const take = (parsed) => {
+    if (!parsed) return;
+    for (const id of parsed.ids) (parsed.mode === "role" ? roles : channels).add(id);
+  };
+  take(parseTargetKey(current));
+  for (const k of history) take(parseTargetKey(k));
+  for (const r of records) {
+    if (r?.mode === "role" && r.roleId) roles.add(String(r.roleId));
+    for (const c of r?.mode === "channel" ? r.channels ?? [] : []) channels.add(String(c));
+  }
+  return { roles: [...roles].sort(), channels: [...channels].sort() };
+}

@@ -4,7 +4,7 @@ import { mkdtempSync, existsSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { GrantLedger, extraTargets, authorizesTarget } from "../adapters/discord/grant_ledger.js";
+import { GrantLedger, extraTargets, authorizesTarget, targetKey, targetsToSweep } from "../adapters/discord/grant_ledger.js";
 
 // The grant ledger is what makes Discord-side access durable and correctly revoked. These pin the
 // behaviors the review flagged: survive a restart, revoke on expiry, leave a fresh re-verification
@@ -343,4 +343,51 @@ test("authorizesTarget accepts only a live record for the configured target", ()
     "a record covering only some configured channels does not authorize the rest",
   );
   assert.equal(authorizesTarget({ mode: "channel", channels: [] }, true, chan), false);
+});
+
+// A reconciliation that enumerates only the CURRENT target cannot see a member left holding a role or
+// channel the operator moved away from, and the sweep cannot see them either, because the ledger never
+// had a record for them. That was the round-5 blocker: the pass claimed to cover repointing and did
+// not. These pin the target arithmetic that fixes it.
+test("targetKey treats channel ids as a set, so reordering is not a new target", () => {
+  assert.equal(targetKey("channel", ["c2", "c1"]), targetKey("channel", ["c1", "c2"]));
+  assert.equal(targetKey("channel", ["c1", "c1", "c2"]), targetKey("channel", ["c1", "c2"]));
+  assert.notEqual(targetKey("channel", ["c1"]), targetKey("channel", ["c1", "c2"]));
+  assert.notEqual(targetKey("role", ["r1"]), targetKey("channel", ["r1"]));
+});
+
+test("targetsToSweep covers the current target, recorded history, and what the ledger's records name", () => {
+  // A repoint from one role to another: the old role must still be swept.
+  assert.deepEqual(
+    targetsToSweep({ current: targetKey("role", ["new"]), history: [targetKey("role", ["old"])] }),
+    { roles: ["new", "old"], channels: [] },
+  );
+
+  // A channel set that shrank: the dropped channel is still swept.
+  assert.deepEqual(
+    targetsToSweep({ current: targetKey("channel", ["c1"]), history: [targetKey("channel", ["c1", "c2"])] }),
+    { roles: [], channels: ["c1", "c2"] },
+  );
+
+  // Records name targets no marker knows about, which covers members this bot granted under an older
+  // configuration before any marker existed.
+  assert.deepEqual(
+    targetsToSweep({
+      current: targetKey("channel", ["c1"]),
+      records: [{ mode: "channel", channels: ["c9"] }, { mode: "role", roleId: "r9" }],
+    }),
+    { roles: ["r9"], channels: ["c1", "c9"] },
+  );
+
+  // A mode switch leaves both kinds to sweep.
+  assert.deepEqual(
+    targetsToSweep({ current: targetKey("channel", ["c1"]), history: [targetKey("role", ["r1"])] }),
+    { roles: ["r1"], channels: ["c1"] },
+  );
+
+  // Garbage in the history is ignored rather than throwing at startup.
+  assert.deepEqual(targetsToSweep({ current: targetKey("role", ["r1"]), history: ["", "nonsense", "bogus:x"] }), {
+    roles: ["r1"],
+    channels: [],
+  });
 });

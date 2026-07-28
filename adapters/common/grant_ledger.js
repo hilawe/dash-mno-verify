@@ -523,6 +523,12 @@ export class GrantLedger {
     return false;
   }
 
+  // Every record. The Discord reconciliation reads these to learn which roles and channels this bot
+  // has granted through before, which a pass over the current target alone cannot see.
+  all() {
+    return this.#stmt.all.all().map((row) => this.#parse(row.user_id, row.record));
+  }
+
   size() {
     return this.#stmt.count.get().n;
   }

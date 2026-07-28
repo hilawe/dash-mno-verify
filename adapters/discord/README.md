@@ -14,17 +14,30 @@ The verification conversation itself is always private, since `/verify` and `/su
 
 Either way, the bot runs a sweep (`DISCORD_SWEEP_SECONDS`, default 300) that removes a member's access once their epoch grant lapses and they have not re-verified, so access tracks current masternode control rather than being permanent once granted. It persists its grant ledger to a SQLite database (`DISCORD_GRANTS_DB`, default `adapters/discord/grants.db`, which holds user ids, is mode 0600, and is gitignored), so access is still revoked after a restart, and it sweeps once at startup. An existing JSON ledger at `DISCORD_GRANTS_FILE` is migrated into it on first start and then renamed with a `.migrated` suffix.
 
-At startup the bot reconciles against real Discord state before its first sweep: it finds every member
-currently holding the configured role, or holding a per-user overwrite on the configured channels, that
-it has no live matching grant for, and takes that access back. This is what covers members admitted
-before the expiry lifecycle existed, members left over from a previous role or channel set, and the one
-case no lock can catch, where a bot is terminated between Discord accepting a request and acting on it.
-A pass that cannot clear someone refuses to start rather than recording a partial reconciliation.
+At startup, before its first sweep, the bot reconciles against real Discord state: it finds everyone
+holding access it has no live matching grant for, and takes that access back. Interactions are refused
+with a "try again in a moment" reply until the pass finishes, because it calls Discord directly rather
+than through the ledger's per-member queue, and a grant landing mid-pass could otherwise end up
+recorded as live with the access already removed.
+
+It sweeps more than the current target. A pass that looked only at the role or channels configured
+right now could not see someone left holding access from a previous configuration, and the ledger
+cannot see them either, because it never had a record for them. So the pass covers the current target,
+every target recorded in the marker's history, and every target named by the ledger's own records.
+
+**The one case it cannot cover by itself is the first upgrade.** If the bot has never written a marker
+and holds no records naming the old target, nothing knows what that target was. Supply it with
+`DISCORD_RECONCILE_ALSO`, space-separated, in the same form as the marker, for example
+`DISCORD_RECONCILE_ALSO="role:123456789"` or `"channel:111,222"`. Without it, access granted under a
+configuration this bot has no memory of stays where it is.
+
+A pass that cannot clear someone refuses to start rather than recording a partial reconciliation, which
+would skip the gate on every later start and leave exactly those members holding permanent access.
 
 Role mode needs the SERVER MEMBERS INTENT enabled for the application in Discord's developer portal,
-because reconciliation has to enumerate who holds the role. Channel mode needs no privileged intent.
-The marker is bound to the target (`DISCORD_RECONCILED_MARKER`), so repointing the bot at a different
-role or channel set makes it reconcile again, which is exactly when unknown members appear.
+because the pass has to enumerate who holds a role. Channel mode needs no privileged intent, but if a
+channel-mode bot discovers an old ROLE to clean it will refuse to start and tell you to run role mode
+once, since it cannot read the member list without that intent.
 
 Only one adapter process may run against a given ledger at a time, and the database enforces it: it is
 opened in an exclusive locking mode, so the operating system holds it for the life of the process and a

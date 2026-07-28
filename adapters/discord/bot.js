@@ -24,8 +24,8 @@ import {
 } from "discord.js";
 import process from "node:process";
 import { proveInstructions } from "../../common/prover_instructions.js";
-import { GrantLedger, authorizesTarget } from "./grant_ledger.js";
-import { markReconciled, reconciliationDone } from "../common/reconcile.js";
+import { GrantLedger, authorizesTarget, targetKey, targetsToSweep } from "./grant_ledger.js";
+import { markReconciled, readMarker } from "../common/reconcile.js";
 
 const TOKEN = process.env.DISCORD_TOKEN;
 const APP_ID = process.env.DISCORD_APP_ID;
@@ -177,8 +177,14 @@ const client = new Client({
 // pass over real platform state will ever find it.
 const RECONCILE_MARKER = process.env.DISCORD_RECONCILED_MARKER ?? "data/discord-reconciled.json";
 // The marker is bound to the target, so a marker earned for one role or channel set does not satisfy
-// the gate after the operator repoints the bot, which is exactly when unknown members appear.
-const RECONCILE_TARGET = GRANT_MODE === "channel" ? `channel:${GRANT_CHANNEL_IDS.join(",")}` : `role:${ROLE_ID}`;
+// the gate after the operator repoints the bot, which is exactly when unknown members appear. Ids are
+// sorted and deduplicated, so merely reordering DISCORD_GRANT_CHANNEL_IDS does not look like a new
+// target and trigger a second destructive pass over nothing.
+const RECONCILE_TARGET =
+  GRANT_MODE === "channel" ? targetKey("channel", GRANT_CHANNEL_IDS) : targetKey("role", [ROLE_ID]);
+// Prior targets the operator knows about but nothing recorded, for the first upgrade only. Same form
+// as the marker, comma-separated: "role:oldRoleId" or "channel:c1,c2".
+const RECONCILE_ALSO = (process.env.DISCORD_RECONCILE_ALSO ?? "").split(/\s+/).filter(Boolean);
 
 const authorizedNow = (userId) =>
   authorizesTarget(ledger.get(userId), ledger.live(userId), {
@@ -187,11 +193,32 @@ const authorizedNow = (userId) =>
     roleId: ROLE_ID,
   });
 
+// Interactions arrive as soon as the gateway is ready, and the ready handler awaits this pass, so a
+// member can run /submit while it is running. Reconciliation touches Discord directly rather than
+// through the ledger's per-member queue, so without this gate its removal and a concurrent grant's
+// addition could overlap and land in the wrong order, leaving a live record and no access, which the
+// sweep then leaves alone because the record looks fine.
+let reconciled = false;
+
 async function reconcileGuild() {
-  if (await reconciliationDone(RECONCILE_MARKER, RECONCILE_TARGET)) return;
+  const prior = await readMarker(RECONCILE_MARKER);
+  if (prior && String(prior.target ?? "") === RECONCILE_TARGET) {
+    reconciled = true;
+    return;
+  }
   const guild = await getGuild();
   const removed = [];
   const failed = [];
+
+  // Everything this bot may have granted through: the current target, whatever the last marker
+  // recorded, the targets the ledger's own records name, and anything the operator supplied. A pass
+  // over only the current target leaves a member holding a role the operator moved away from, and the
+  // sweep cannot see them either, because the ledger never had a record for them.
+  const { roles, channels } = targetsToSweep({
+    current: RECONCILE_TARGET,
+    history: [...(prior?.covered ?? []), ...(prior?.target ? [prior.target] : []), ...RECONCILE_ALSO],
+    records: ledger.all(),
+  });
 
   const clear = async (userId, undo) => {
     try {
@@ -203,32 +230,52 @@ async function reconcileGuild() {
     }
   };
 
-  if (GRANT_MODE === "role") {
+  if (roles.length) {
+    // Reading the member list needs the privileged intent, which is only requested in role mode. A
+    // channel-mode bot that has an old ROLE to clean cannot get it, so say exactly what to do rather
+    // than skipping the role silently and recording a pass that did not cover it.
+    if (GRANT_MODE !== "role") {
+      throw new Error(
+        `refusing to start: a previous configuration granted the role(s) ${roles.join(", ")}, and ` +
+          `clearing them needs the member list, which only role mode requests. Start once with ` +
+          `DISCORD_GRANT_MODE=role and DISCORD_MNO_ROLE_ID set to the old role to clean it up, or remove ` +
+          `the role from its remaining holders by hand, then start again.`,
+      );
+    }
     let members;
     try {
       members = await guild.members.fetch();
     } catch (e) {
       throw new Error(
         `refusing to start: role mode cannot reconcile without reading the member list (${e.message}). ` +
-          `Enable the SERVER MEMBERS INTENT for this application in Discord's developer portal, or run ` +
-          `channel mode, which needs no privileged intent.`,
+          `Enable the SERVER MEMBERS INTENT for this application in Discord's developer portal.`,
       );
     }
     for (const [id, m] of members) {
       if (id === client.user.id) continue; // never strip the bot
-      if (!m.roles.cache.has(ROLE_ID)) continue;
-      if (authorizedNow(id)) continue;
-      await clear(id, () => m.roles.remove(ROLE_ID));
-    }
-  } else {
-    for (const chId of GRANT_CHANNEL_IDS) {
-      const ch = await guild.channels.fetch(chId);
-      for (const [id, ow] of ch.permissionOverwrites.cache) {
-        if (ow.type !== OverwriteType.Member) continue; // role overwrites are the operator's business
-        if (id === client.user.id) continue;
-        if (authorizedNow(id)) continue;
-        await clear(id, () => ch.permissionOverwrites.edit(id, ACCESS_CLEARED, { type: OverwriteType.Member }));
+      for (const roleId of roles) {
+        if (!m.roles.cache.has(roleId)) continue;
+        // Only the CURRENT target can be authorized. A live record never justifies keeping a role the
+        // bot no longer grants through.
+        if (roleId === ROLE_ID && authorizedNow(id)) continue;
+        await clear(id, () => m.roles.remove(roleId));
       }
+    }
+  }
+
+  for (const chId of channels) {
+    let ch;
+    try {
+      ch = await guild.channels.fetch(chId);
+    } catch (e) {
+      if (isGone(e)) continue; // a deleted channel holds no access
+      throw e;
+    }
+    for (const [id, ow] of ch.permissionOverwrites.cache) {
+      if (ow.type !== OverwriteType.Member) continue; // role overwrites are the operator's business
+      if (id === client.user.id) continue;
+      if (GRANT_CHANNEL_IDS.includes(chId) && authorizedNow(id)) continue;
+      await clear(id, () => ch.permissionOverwrites.edit(id, ACCESS_CLEARED, { type: OverwriteType.Member }));
     }
   }
 
@@ -242,8 +289,15 @@ async function reconcileGuild() {
         `them by hand, then start again.`,
     );
   }
-  await markReconciled(RECONCILE_MARKER, { removed: removed.length, target: RECONCILE_TARGET });
-  console.log(`[discord] reconciled ${RECONCILE_TARGET}, took access back from ${removed.length} member(s)`);
+  // Carry the history forward, so a later repoint still knows about every target used before it.
+  const covered = [...new Set([...(prior?.covered ?? []), ...(prior?.target ? [prior.target] : []), ...RECONCILE_ALSO])];
+  await markReconciled(RECONCILE_MARKER, { removed: removed.length, target: RECONCILE_TARGET, covered });
+  reconciled = true;
+  console.log(
+    `[discord] reconciled ${RECONCILE_TARGET}` +
+      `${covered.length ? ` (also swept ${covered.join(", ")})` : ""}, ` +
+      `took access back from ${removed.length} member(s)`,
+  );
 }
 
 // Every failure inside the handler has to be caught here. discord.js does not look at the promise an
@@ -252,6 +306,16 @@ async function reconcileGuild() {
 // default. One transient blip on a dependency therefore locked every member out until a supervisor
 // restarted the bot. Report it to the member instead and stay up.
 client.on("interactionCreate", (i) => {
+  // Refuse until reconciliation has finished. It removes access by calling Discord directly rather
+  // than through the ledger's per-member queue, so a grant landing mid-pass could have its addition
+  // and the pass's removal apply in either order, leaving a live record and no access that the sweep
+  // then leaves alone because the record looks fine. A few seconds of "try again" beats that.
+  if (!reconciled) {
+    if (i.isChatInputCommand?.()) {
+      i.reply({ content: "Starting up and checking existing access. Try again in a moment.", flags: MessageFlags.Ephemeral }).catch(() => {});
+    }
+    return;
+  }
   handleInteraction(i).catch(async (e) => {
     console.error("[discord] interaction failed:", e.message);
     // Best effort: the interaction may already have been answered, or its token may have expired.
