@@ -14,6 +14,18 @@ The verification conversation itself is always private, since `/verify` and `/su
 
 Either way, the bot runs a sweep (`DISCORD_SWEEP_SECONDS`, default 300) that removes a member's access once their epoch grant lapses and they have not re-verified, so access tracks current masternode control rather than being permanent once granted. It persists its grant ledger to a SQLite database (`DISCORD_GRANTS_DB`, default `adapters/discord/grants.db`, which holds user ids, is mode 0600, and is gitignored), so access is still revoked after a restart, and it sweeps once at startup. An existing JSON ledger at `DISCORD_GRANTS_FILE` is migrated into it on first start and then renamed with a `.migrated` suffix.
 
+At startup the bot reconciles against real Discord state before its first sweep: it finds every member
+currently holding the configured role, or holding a per-user overwrite on the configured channels, that
+it has no live matching grant for, and takes that access back. This is what covers members admitted
+before the expiry lifecycle existed, members left over from a previous role or channel set, and the one
+case no lock can catch, where a bot is terminated between Discord accepting a request and acting on it.
+A pass that cannot clear someone refuses to start rather than recording a partial reconciliation.
+
+Role mode needs the SERVER MEMBERS INTENT enabled for the application in Discord's developer portal,
+because reconciliation has to enumerate who holds the role. Channel mode needs no privileged intent.
+The marker is bound to the target (`DISCORD_RECONCILED_MARKER`), so repointing the bot at a different
+role or channel set makes it reconcile again, which is exactly when unknown members appear.
+
 Only one adapter process may run against a given ledger at a time, and the database enforces it: it is
 opened in an exclusive locking mode, so the operating system holds it for the life of the process and a
 second one is refused. The lock is released whenever the process ends, however it ends, so a restart is

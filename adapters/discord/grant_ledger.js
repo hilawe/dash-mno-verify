@@ -42,6 +42,23 @@ export function isValidRecord(r) {
 // re-exported already carrying those, so the bot and the existing tests use it unchanged.
 import { GrantLedger as BaseGrantLedger } from "../common/grant_ledger.js";
 
+// Whether a record authorizes access to the target this bot is CURRENTLY configured for. Liveness
+// alone is not enough: a record written for a previous role or channel set can still be live, and
+// treating that as a reason to leave someone's access in place would let them keep access to a target
+// they never proved for. Used by the startup reconciliation, which has to decide about members it has
+// no record of as well as ones it does.
+//
+// Channel mode requires the record to cover EVERY currently configured channel. A record covering only
+// some of them is not authorization for the rest, and the renewal path revokes what it does not carry
+// forward, so a partial record here means the member's access is genuinely stale.
+export function authorizesTarget(record, isLive, { mode, channels = [], roleId } = {}) {
+  if (!record || !isLive || record.mode !== mode) return false;
+  return mode === "channel"
+    ? channels.length > 0 && channels.every((c) => (record.channels ?? []).includes(c))
+    : Boolean(roleId) && String(record.roleId) === String(roleId);
+}
+
+
 export class GrantLedger extends BaseGrantLedger {
   constructor(opts = {}) {
     super({ ...opts, validate: isValidRecord, orphaned: extraTargets });

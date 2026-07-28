@@ -4,7 +4,7 @@ import { mkdtempSync, existsSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { GrantLedger, extraTargets } from "../adapters/discord/grant_ledger.js";
+import { GrantLedger, extraTargets, authorizesTarget } from "../adapters/discord/grant_ledger.js";
 
 // The grant ledger is what makes Discord-side access durable and correctly revoked. These pin the
 // behaviors the review flagged: survive a restart, revoke on expiry, leave a fresh re-verification
@@ -319,4 +319,27 @@ test("extraTargets returns only targets the prior grant did not cover", () => {
   assert.equal(extraTargets({ mode: "role", roleId: "r1" }, { mode: "role", roleId: "r1" }), null);
   // a mode switch carries nothing over, so the whole new target is extra
   assert.deepEqual(extraTargets({ mode: "channel", channels: ["c1"] }, { mode: "role", roleId: "r1" }), { mode: "channel", channels: ["c1"] });
+});
+
+// The startup reconciliation decides, for every member currently holding access, whether to leave it
+// alone. Getting this wrong in one direction strips a member who just re-verified; in the other it
+// leaves access from a previous target in place, which is the whole thing reconciliation exists to
+// find. Liveness alone is not the answer, because a record for an old target can still be live.
+test("authorizesTarget accepts only a live record for the configured target", () => {
+  const role = { mode: "role", channels: [], roleId: "r1" };
+  assert.equal(authorizesTarget({ mode: "role", roleId: "r1" }, true, role), true);
+  assert.equal(authorizesTarget({ mode: "role", roleId: "r1" }, false, role), false, "expired");
+  assert.equal(authorizesTarget({ mode: "role", roleId: "OLD" }, true, role), false, "a previous role");
+  assert.equal(authorizesTarget({ mode: "channel", channels: ["c1"] }, true, role), false, "a mode switch");
+  assert.equal(authorizesTarget(null, true, role), false, "no record at all");
+
+  const chan = { mode: "channel", channels: ["c1", "c2"], roleId: null };
+  assert.equal(authorizesTarget({ mode: "channel", channels: ["c1", "c2"] }, true, chan), true);
+  assert.equal(authorizesTarget({ mode: "channel", channels: ["c1", "c2", "c3"] }, true, chan), true, "a superset covers it");
+  assert.equal(
+    authorizesTarget({ mode: "channel", channels: ["c1"] }, true, chan),
+    false,
+    "a record covering only some configured channels does not authorize the rest",
+  );
+  assert.equal(authorizesTarget({ mode: "channel", channels: [] }, true, chan), false);
 });

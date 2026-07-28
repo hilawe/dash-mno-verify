@@ -306,14 +306,17 @@ built from the post-migration code rather than from any earlier packet.
   reviewer. This is NOT a regression and no local lock closes it: the holder is gone and the side
   effect is on the platform's servers. It is the one place the non-interleaving property genuinely does
   not hold, and the code, the READMEs, and the handoff now say so instead of implying otherwise.
-  The real mitigation is reconciling against actual platform state at startup, which Matrix already
-  does (`reconcileMatrix` in `adapters/matrix/bot.js`) and Discord does not. Discord can: the guild
-  member list and channel overwrites are both readable, so a startup pass can find members holding
-  access with no live grant and remove them. Telegram cannot do the general form, because its Bot API
-  exposes no member roster, which is why it has the operator-attested gate instead. Doing the Discord
-  pass is a piece of work in its own right, not a patch, and it also closes the older "upgrade from
-  before the lifecycle existed" case for that adapter. (`adapters/discord/bot.js`,
-  `adapters/common/reconcile.js`)
+  The real mitigation is reconciling against actual platform state at startup. Matrix had one and
+  Discord now does too (`reconcileGuild` in `adapters/discord/bot.js`): before its first sweep it finds
+  every member holding the configured role, or a per-user overwrite on the configured channels, that it
+  has no live matching grant for, and takes that access back, refusing to start rather than recording a
+  partial pass. Role mode needs the privileged SERVER MEMBERS intent and says so explicitly if it is
+  missing; channel mode needs none. The decision itself is the pure `authorizesTarget` in
+  `adapters/discord/grant_ledger.js`, unit-tested, because getting it wrong strips a member who just
+  re-verified or leaves a previous target's access in place. REMAINING: Telegram cannot do the general
+  form, since its Bot API exposes no member roster, which is why it keeps the operator-attested gate;
+  so for Telegram this gap stays open and is documented rather than closed.
+  (`adapters/discord/bot.js`, `adapters/discord/grant_ledger.js`)
 - [ ] Warn when the ledger is on a filesystem whose locking cannot be trusted. The exclusive lock is
   only as good as the filesystem's, and an operator can point `*_GRANTS_DB` at anything. A startup
   check that the path is not a network mount, or at minimum a logged warning, would turn a silent loss

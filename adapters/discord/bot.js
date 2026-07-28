@@ -24,7 +24,8 @@ import {
 } from "discord.js";
 import process from "node:process";
 import { proveInstructions } from "../../common/prover_instructions.js";
-import { GrantLedger } from "./grant_ledger.js";
+import { GrantLedger, authorizesTarget } from "./grant_ledger.js";
+import { markReconciled, reconciliationDone } from "../common/reconcile.js";
 
 const TOKEN = process.env.DISCORD_TOKEN;
 const APP_ID = process.env.DISCORD_APP_ID;
@@ -155,7 +156,95 @@ async function registerCommands() {
   console.log("[discord] slash commands registered");
 }
 
-const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+// GuildMembers is a PRIVILEGED intent and must be enabled for the application in Discord's developer
+// portal. Role mode needs it, because reconciliation has to enumerate who currently holds the role.
+// Channel mode does not: per-user channel overwrites arrive with the Guilds intent. The startup
+// reconciliation below fails closed with an explicit message if role mode cannot read the member list,
+// rather than recording a pass it did not actually make.
+const client = new Client({
+  intents:
+    GRANT_MODE === "role" ? [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers] : [GatewayIntentBits.Guilds],
+});
+
+// Members who were given access before this lifecycle existed, or by a previous deployment pointed at
+// a different target, hold access the ledger knows nothing about, and the sweep only ever looks at the
+// ledger. Discord can read its own state, so the closed starting state is reachable automatically the
+// way Matrix does it: find everyone currently holding access this bot has no live, matching grant for,
+// and take it back. Runs once, then records that it happened.
+//
+// This is also the only mitigation available for the case no lock can cover: a bot terminated between
+// a platform request being accepted and taking effect leaves access with no record, and nothing but a
+// pass over real platform state will ever find it.
+const RECONCILE_MARKER = process.env.DISCORD_RECONCILED_MARKER ?? "data/discord-reconciled.json";
+// The marker is bound to the target, so a marker earned for one role or channel set does not satisfy
+// the gate after the operator repoints the bot, which is exactly when unknown members appear.
+const RECONCILE_TARGET = GRANT_MODE === "channel" ? `channel:${GRANT_CHANNEL_IDS.join(",")}` : `role:${ROLE_ID}`;
+
+const authorizedNow = (userId) =>
+  authorizesTarget(ledger.get(userId), ledger.live(userId), {
+    mode: GRANT_MODE,
+    channels: GRANT_CHANNEL_IDS,
+    roleId: ROLE_ID,
+  });
+
+async function reconcileGuild() {
+  if (await reconciliationDone(RECONCILE_MARKER, RECONCILE_TARGET)) return;
+  const guild = await getGuild();
+  const removed = [];
+  const failed = [];
+
+  const clear = async (userId, undo) => {
+    try {
+      await undo();
+      removed.push(userId);
+    } catch (e) {
+      failed.push(userId);
+      console.error(`[discord] could not take access back from ${userId} during reconciliation: ${e.message}`);
+    }
+  };
+
+  if (GRANT_MODE === "role") {
+    let members;
+    try {
+      members = await guild.members.fetch();
+    } catch (e) {
+      throw new Error(
+        `refusing to start: role mode cannot reconcile without reading the member list (${e.message}). ` +
+          `Enable the SERVER MEMBERS INTENT for this application in Discord's developer portal, or run ` +
+          `channel mode, which needs no privileged intent.`,
+      );
+    }
+    for (const [id, m] of members) {
+      if (id === client.user.id) continue; // never strip the bot
+      if (!m.roles.cache.has(ROLE_ID)) continue;
+      if (authorizedNow(id)) continue;
+      await clear(id, () => m.roles.remove(ROLE_ID));
+    }
+  } else {
+    for (const chId of GRANT_CHANNEL_IDS) {
+      const ch = await guild.channels.fetch(chId);
+      for (const [id, ow] of ch.permissionOverwrites.cache) {
+        if (ow.type !== OverwriteType.Member) continue; // role overwrites are the operator's business
+        if (id === client.user.id) continue;
+        if (authorizedNow(id)) continue;
+        await clear(id, () => ch.permissionOverwrites.edit(id, ACCESS_CLEARED, { type: OverwriteType.Member }));
+      }
+    }
+  }
+
+  // Only a CLEAN pass may be recorded. Marking a partial one done would skip reconciliation on every
+  // later start, leaving the members it could not clear holding access the sweep can never see, which
+  // is the exact hole this gate exists to close.
+  if (failed.length) {
+    throw new Error(
+      `refusing to start: could not take access back from ${failed.length} member(s) with no live grant ` +
+        `during reconciliation (${failed.join(", ")}). Give the bot the permission it needs, or clear ` +
+        `them by hand, then start again.`,
+    );
+  }
+  await markReconciled(RECONCILE_MARKER, { removed: removed.length, target: RECONCILE_TARGET });
+  console.log(`[discord] reconciled ${RECONCILE_TARGET}, took access back from ${removed.length} member(s)`);
+}
 
 // Every failure inside the handler has to be caught here. discord.js does not look at the promise an
 // async listener returns, so anything that rejects below (an unreachable gateway, a 502 that is not
@@ -250,6 +339,14 @@ client.once("ready", async () => {
   console.log(`[discord] logged in as ${client.user.tag}, grant mode ${GRANT_MODE}`);
   // Sweep once now (clearing grants that lapsed while the bot was down), then on a timer, so a member
   // who does not re-verify loses access after the epoch.
+  // Reconcile BEFORE the first sweep. The sweep only knows the ledger, so running it first would
+  // report a tidy result while untracked access sat there unseen.
+  try {
+    await reconcileGuild();
+  } catch (e) {
+    console.error(`[discord] ${e.message}`);
+    process.exit(1);
+  }
   await sweepAndNotify().catch((e) => console.error("[discord] startup sweep failed:", e.message));
   setInterval(() => sweepAndNotify().catch((e) => console.error("[discord] sweep failed:", e.message)), SWEEP_SECONDS * 1000);
 });
