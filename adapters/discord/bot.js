@@ -136,16 +136,32 @@ const isGone = (e) => e?.status === 404 || [10003, 10004, 10007, 10011, 10013].i
 // failure so the caller can keep the grant and retry.
 async function revokeAccess(userId, record) {
   const guild = await getGuild();
+  // Every call here is guarded by isGone, including the removal itself and not just the lookup.
+  //
+  // A record written before startup validation existed can name a role or channel from another guild.
+  // Removal of it fails with Unknown Role or an unowned-channel error forever, and because a renewal
+  // revokes the orphaned target BEFORE applying the new one, that member could never be repaired: every
+  // re-verification aborted on the same failure and the bad record stayed. An id that this guild does
+  // not have is by definition holding no access, so treat it as already gone and let the renewal
+  // proceed.
   if (record.mode === "channel") {
     for (const chId of record.channels ?? []) {
       let ch;
       try { ch = await guild.channels.fetch(chId); } catch (e) { if (isGone(e)) continue; throw e; }
-      await ch.permissionOverwrites.edit(userId, ACCESS_CLEARED, { type: OverwriteType.Member });
+      try {
+        await ch.permissionOverwrites.edit(userId, ACCESS_CLEARED, { type: OverwriteType.Member });
+      } catch (e) {
+        if (!isGone(e)) throw e;
+      }
     }
   } else if (record.roleId) {
     let member;
     try { member = await guild.members.fetch(userId); } catch (e) { if (isGone(e)) return; throw e; }
-    await member.roles.remove(record.roleId);
+    try {
+      await member.roles.remove(record.roleId);
+    } catch (e) {
+      if (!isGone(e)) throw e;
+    }
   }
 }
 

@@ -31,10 +31,11 @@ export function isValidRecord(r) {
 // Two properties the inline version did not have:
 //   - Persist before applying. A crash between the two then leaves a record with no access, which the
 //     sweep harmlessly clears, never access with no record, which would be permanent and untracked.
-//   - Serialize every operation globally (see #run). grant and sweep run one at a time, so a member
-//     who re-verifies while the sweep is in flight keeps their fresh access instead of having the stale
-//     revoke land on top of it, and no operation's whole-map save persists another operation's
-//     not-yet-committed record.
+//   - Serialize the operations on ONE member (see #run in the shared ledger). A member who re-verifies
+//     while a sweep is in flight keeps their fresh access instead of having the stale revoke land on
+//     top of it. Unrelated members proceed in parallel, and each grant is a single row write, so one
+//     member's slow platform call blocks nobody. This used to be one global queue rewriting a whole
+//     JSON map, which is what the comment described until the SQLite move made it wrong.
 
 // The ledger mechanics live in adapters/common/grant_ledger.js, shared with the other adapters. What
 // stays here is what is genuinely Discord's: two grant modes (a role or per-channel overwrites), the
@@ -89,7 +90,10 @@ export function parseTargetKey(key) {
   if (parts.length !== 2) bad(parts.length < 2 ? "no mode separator" : "more than one colon");
   const [mode, rest] = parts;
   if (mode !== "channel" && mode !== "role") bad(`unknown mode ${JSON.stringify(mode)}`);
-  const ids = rest.split(",");
+  // Trim and deduplicate, matching targetKey, which already treats ids as a set. Without this a
+  // hand-typed "channel:111, 222" produced the id " 222", which Discord rejects, and "channel:111,111"
+  // cleared the same channel twice and double-counted the result.
+  const ids = [...new Set(rest.split(",").map((id) => id.trim()))];
   if (ids.length === 0 || ids.some((id) => id === "")) bad("an empty id");
   if (mode === "role" && ids.length !== 1) bad("a role target names exactly one role");
   return { mode, ids };

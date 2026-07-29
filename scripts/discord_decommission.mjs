@@ -27,6 +27,10 @@ import process from "node:process";
 import { Client, GatewayIntentBits, OverwriteType } from "discord.js";
 import { parseTargetKey } from "../adapters/discord/grant_ledger.js";
 
+// Same predicate the bot uses: a 404 or one of these codes means the thing is already gone, so there
+// is nothing to take back. Anything else is a real failure worth reporting.
+const isGone = (e) => e?.status === 404 || [10003, 10004, 10007, 10011, 10013].includes(e?.code);
+
 const TOKEN = process.env.DISCORD_TOKEN;
 const GUILD_ID = process.env.DISCORD_GUILD_ID;
 const args = process.argv.slice(2);
@@ -144,7 +148,23 @@ client.once("ready", async () => {
       }
     } else {
       for (const chId of target.ids) {
-        const ch = await guild.channels.fetch(chId);
+        // Each channel stands alone. An unguarded fetch here meant one bad channel threw out of the
+        // whole loop: every channel before it had already been cleared, every channel after it was
+        // left untouched, and the summary that would have said so was never printed. The operator saw
+        // an error and had no idea how far it had got. This is the same shape as the per-holder catch
+        // below and the isGone-and-continue in the bot, neither of which was applied here.
+        let ch;
+        try {
+          ch = await guild.channels.fetch(chId);
+        } catch (e) {
+          if (isGone(e)) {
+            console.log(`[decommission] channel ${chId}: already gone, nothing to clear`);
+            continue; // a deleted channel holds no access
+          }
+          failed.push(`${chId}/*`);
+          console.error(`[decommission] could not read channel ${chId}: ${e.message}`);
+          continue;
+        }
         // Member overwrites only. A role overwrite on this channel is the operator's own arrangement.
         const holders = [...ch.permissionOverwrites.cache.values()].filter(
           (ow) => ow.type === OverwriteType.Member && ow.id !== client.user.id,

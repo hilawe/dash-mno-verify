@@ -239,15 +239,24 @@ test("a revoke failure during the sweep keeps the grant for a later retry", asyn
 test("a renewal that drops a target revokes the orphaned one before applying", async () => {
   const file = tmpFile();
   const revokedRecords = [];
+  // ORDER is the claim in the name, and the previous version never checked it: apply was a noop, so a
+  // regression that applied the new grant first and revoked afterwards would have passed. The sequence
+  // is recorded and asserted below.
+  const order = [];
   const l = new GrantLedger({ exclusive: false,
     file,
-    apply: noop,
-    revoke: (u, r) => (revokedRecords.push(r), noop()),
+    apply: () => (order.push("apply"), noop()),
+    revoke: (u, r) => (revokedRecords.push(r), order.push("revoke"), noop()),
     now: () => 100,
   });
   await l.grant("u1", { expiresAt: 200, mode: "channel", channels: ["c1", "c2"] });
   await l.grant("u1", { expiresAt: 999, mode: "channel", channels: ["c1"] }); // drops c2
   assert.deepEqual(revokedRecords, [{ mode: "channel", channels: ["c2"] }]);
+  assert.deepEqual(
+    order,
+    ["apply", "revoke", "apply"],
+    "the first grant applies, then the renewal revokes the orphaned target BEFORE applying the new one",
+  );
   assert.deepEqual(onDisk(file).u1, { expiresAt: 999, mode: "channel", channels: ["c1"] });
 });
 
