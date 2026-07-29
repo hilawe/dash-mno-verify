@@ -24,7 +24,7 @@ import {
 } from "discord.js";
 import process from "node:process";
 import { proveInstructions } from "../../common/prover_instructions.js";
-import { GrantLedger, authorizesTarget, staleTargets } from "./grant_ledger.js";
+import { GrantLedger, authorizesTarget, staleTargets, clearManagedAllows, deniedManagedBits } from "./grant_ledger.js";
 
 const TOKEN = process.env.DISCORD_TOKEN;
 const APP_ID = process.env.DISCORD_APP_ID;
@@ -113,30 +113,55 @@ const ACCESS_CLEARED = { ViewChannel: null, SendMessages: null, ReadMessageHisto
 
 // Apply the access a grant record describes. The overwrite type is passed explicitly, because after a
 // restart a raw user id is not resolvable to a member from cache, and the edit would otherwise throw.
+// Every channel is attempted independently and real failures are collected, so one bad channel cannot
+// abandon the rest. Under the old bare loop a retry always restarted at the failing channel, so a
+// member never received the channels behind it. Same shape as the decommission loop, which was fixed a
+// commit earlier while this one was left alone.
 async function applyAccess(userId, record) {
   const guild = await getGuild();
-  if (record.mode === "channel") {
-    for (const chId of record.channels) {
-      const ch = await guild.channels.fetch(chId);
-      await ch.permissionOverwrites.edit(userId, ACCESS, { type: OverwriteType.Member });
-    }
-  } else {
+  if (record.mode !== "channel") {
     const member = await guild.members.fetch(userId);
     await member.roles.add(record.roleId);
+    return;
   }
+  const failures = [];
+  for (const chId of record.channels) {
+    try {
+      const ch = await guild.channels.fetch(chId);
+      // An explicit denial outranks a proof. The proof says this person runs a masternode, not that a
+      // moderator's decision to exclude them should be overridden.
+      const denied = deniedManagedBits(ch.permissionOverwrites.cache.get(userId));
+      if (denied.length) {
+        failures.push(`${chId}: explicitly denied ${denied.join(", ")}, refusing to override`);
+        continue;
+      }
+      await ch.permissionOverwrites.edit(userId, ACCESS, { type: OverwriteType.Member });
+    } catch (e) {
+      failures.push(`${chId}: ${e.message}`);
+    }
+  }
+  if (failures.length) throw new Error(`could not grant ${failures.join("; ")}`);
 }
 
 // A 404 from Discord means the channel, member, or guild is already gone, so there is nothing to
 // revoke and the access cannot still be live. Any other error (a lost permission, an outage) is a real
 // failure that must propagate, so the sweep keeps the record and retries instead of dropping it and
 // stranding live access.
-const isGone = (e) => e?.status === 404 || [10003, 10004, 10007, 10011, 10013].includes(e?.code);
+// Numeric codes come from the Discord API; the string ones are discord.js's own, raised before a
+// request is made. GuildChannelUnowned is the channel counterpart of Unknown Role: a legacy record
+// naming another guild's channel raised it, isGone did not recognise it, and the failed removal then
+// blocked every corrected grant for that member forever.
+const GONE_CODES = new Set([10003, 10004, 10007, 10011, 10013, "GuildChannelUnowned", "GuildChannelResolve"]);
+const isGone = (e) => e?.status === 404 || GONE_CODES.has(e?.code);
 
 // Undo exactly what a grant record granted, using the record's own mode and target. Throws on a real
 // failure so the caller can keep the grant and retry.
 async function revokeAccess(userId, record) {
   const guild = await getGuild();
-  // Every call here is guarded by isGone, including the removal itself and not just the lookup.
+  // Every channel independently, failures collected and thrown after the loop, so the ledger keeps the
+  // record for retry and a blocked channel does not hide the ones behind it.
+  //
+  // Every call is guarded by isGone, including the removal itself and not just the lookup.
   //
   // A record written before startup validation existed can name a role or channel from another guild.
   // Removal of it fails with Unknown Role or an unowned-channel error forever, and because a renewal
@@ -145,15 +170,27 @@ async function revokeAccess(userId, record) {
   // not have is by definition holding no access, so treat it as already gone and let the renewal
   // proceed.
   if (record.mode === "channel") {
+    const failures = [];
     for (const chId of record.channels ?? []) {
       let ch;
-      try { ch = await guild.channels.fetch(chId); } catch (e) { if (isGone(e)) continue; throw e; }
       try {
-        await ch.permissionOverwrites.edit(userId, ACCESS_CLEARED, { type: OverwriteType.Member });
+        ch = await guild.channels.fetch(chId);
       } catch (e) {
-        if (!isGone(e)) throw e;
+        if (isGone(e)) continue;
+        failures.push(`${chId}: ${e.message}`);
+        continue;
+      }
+      // Clear only the managed bits this overwrite ALLOWS. Nulling a denied bit would remove an
+      // explicit exclusion and let a role-level allow through, so revoking would grant.
+      const patch = clearManagedAllows(ch.permissionOverwrites.cache.get(userId));
+      if (Object.keys(patch).length === 0) continue; // nothing this bot granted
+      try {
+        await ch.permissionOverwrites.edit(userId, patch, { type: OverwriteType.Member });
+      } catch (e) {
+        if (!isGone(e)) failures.push(`${chId}: ${e.message}`);
       }
     }
+    if (failures.length) throw new Error(`could not revoke ${failures.join("; ")}`);
   } else if (record.roleId) {
     let member;
     try { member = await guild.members.fetch(userId); } catch (e) { if (isGone(e)) return; throw e; }
@@ -289,11 +326,16 @@ async function reconcileGuild() {
   await requireCurrentTargets(guild);
   const removed = [];
   const failed = [];
+  // A member who left between the snapshot and the removal holds nothing, so that is completion, not
+  // failure. Counting it as a failure aborted the whole pass, and because the pass runs before the
+  // sweep and its timer are installed, one departed member stopped every OTHER member's expired grant
+  // from ever being revoked until a clean restart.
   const clear = async (userId, undo) => {
     try {
       await undo();
       removed.push(userId);
     } catch (e) {
+      if (isGone(e)) return; // already gone; nothing to take back
       failed.push(userId);
       console.error(`[discord] could not take access back from ${userId} during reconciliation: ${e.message}`);
     }
@@ -329,7 +371,9 @@ async function reconcileGuild() {
         if (ow.type !== OverwriteType.Member) continue; // role overwrites are the operator's business
         if (id === client.user.id) continue;
         if (authorizedNow(id, chId)) continue;
-        await clear(id, () => ch.permissionOverwrites.edit(id, ACCESS_CLEARED, { type: OverwriteType.Member }));
+        const patch = clearManagedAllows(ow);
+        if (Object.keys(patch).length === 0) continue; // an explicit denial, or nothing we granted
+        await clear(id, () => ch.permissionOverwrites.edit(id, patch, { type: OverwriteType.Member }));
       }
     }
   }

@@ -117,3 +117,38 @@ export function staleTargets(records, { mode, channels = [], roleId } = {}) {
   }
   return [...[...roles].sort().map((r) => targetKey("role", [r])), ...(chans.size ? [targetKey("channel", [...chans])] : [])];
 }
+
+// The three permission bits this bot manages on a private channel.
+export const MANAGED_BITS = ["ViewChannel", "SendMessages", "ReadMessageHistory"];
+
+// Which managed bits an existing per-member overwrite currently ALLOWS and which it explicitly DENIES.
+// `overwrite` is a discord.js PermissionOverwrites, or anything with allow/deny objects exposing has().
+export function managedState(overwrite) {
+  const has = (field, bit) => Boolean(overwrite?.[field]?.has?.(bit));
+  return {
+    allow: MANAGED_BITS.filter((b) => has("allow", b)),
+    deny: MANAGED_BITS.filter((b) => has("deny", b)),
+  };
+}
+
+// The edit that takes back ONLY what this bot granted.
+//
+// Clearing used to set all three bits to null unconditionally, and null removes the DENY as well as the
+// allow. So if an admin had explicitly denied a member ViewChannel while a role allowed it, expiry,
+// startup reconciliation or decommission cleared that denial and the member GAINED access. A function
+// whose entire purpose is removing access could hand it out. Six review rounds passed over it, because
+// everyone including the author was asking whether removal removes, never whether removal can grant.
+//
+// So: null out the managed bits this overwrite currently allows, and leave a denied bit denied.
+export function clearManagedAllows(overwrite) {
+  const patch = {};
+  for (const bit of managedState(overwrite).allow) patch[bit] = null;
+  return patch;
+}
+
+// Whether granting would override an explicit exclusion. An admin denying someone a channel outranks a
+// proof of masternode control: the proof says "this person runs a node", not "this person must be let
+// in regardless of what a moderator decided".
+export function deniedManagedBits(overwrite) {
+  return managedState(overwrite).deny;
+}

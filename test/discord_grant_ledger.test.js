@@ -4,7 +4,16 @@ import { mkdtempSync, existsSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { GrantLedger, extraTargets, authorizesTarget, targetKey, parseTargetKey, staleTargets } from "../adapters/discord/grant_ledger.js";
+import {
+  GrantLedger,
+  extraTargets,
+  authorizesTarget,
+  targetKey,
+  parseTargetKey,
+  staleTargets,
+  clearManagedAllows,
+  deniedManagedBits,
+} from "../adapters/discord/grant_ledger.js";
 
 // The grant ledger is what makes Discord-side access durable and correctly revoked. These pin the
 // behaviors the review flagged: survive a restart, revoke on expiry, leave a fresh re-verification
@@ -265,15 +274,24 @@ test("a renewal that drops a target revokes the orphaned one before applying", a
 test("if migrating the prior grant fails, the renewal aborts and keeps the prior grant", async () => {
   const file = tmpFile();
   let migrateFail = false;
+  // apply was a noop here too, so a mutant that applied the replacement inside the failure path still
+  // rejected and still kept the prior row, passing every assertion while the member held BOTH targets
+  // and the ledger tracked only the old one.
+  const applied = [];
   const l = new GrantLedger({ exclusive: false,
     file,
-    apply: noop,
+    apply: (u, r) => (applied.push(r.channels ?? r.roleId), noop()),
     revoke: () => (migrateFail ? Promise.reject(new Error("revoke down")) : noop()),
     now: () => 100,
   });
   await l.grant("u1", { expiresAt: 200, mode: "channel", channels: ["c1", "c2"] });
   migrateFail = true;
   await assert.rejects(l.grant("u1", { expiresAt: 999, mode: "channel", channels: ["c1"] }), /could not migrate/);
+  assert.deepEqual(
+    applied,
+    [["c1", "c2"]],
+    "an aborted renewal must not have applied the replacement; only the original grant applied",
+  );
   assert.deepEqual(onDisk(file).u1, { expiresAt: 200, mode: "channel", channels: ["c1", "c2"] });
 });
 
@@ -305,9 +323,13 @@ test("concurrent grants for different users all persist", async () => {
 test("a persist failure grants nothing and writes nothing", async () => {
   const file = tmpFile();
   let failNextWrite = false;
+  // "grants nothing" is half the name and was asserted only by implication, with apply as a noop that
+  // recorded nothing. A mutant that applied access BEFORE the failed write satisfied every assertion
+  // here while leaving member b holding untracked access. Record the calls.
+  const applied = [];
   const l = new GrantLedger({ exclusive: false,
     file,
-    apply: noop,
+    apply: (u) => (applied.push(u), noop()),
     revoke: noop,
     now: () => 100,
     putFn: (write) => {
@@ -316,8 +338,10 @@ test("a persist failure grants nothing and writes nothing", async () => {
     },
   });
   await l.grant("a", rec(200)); // committed
+  assert.deepEqual(applied, ["a"]);
   failNextWrite = true;
   await assert.rejects(l.grant("b", rec(300)), /could not persist/);
+  assert.deepEqual(applied, ["a"], "a write that failed must not have applied any access");
   assert.equal(l.has("b"), false);
   assert.deepEqual(Object.keys(onDisk(file)), ["a"]); // and never written
 });
@@ -439,4 +463,44 @@ test("staleTargets names the stale targets DISCOVERABLE from surviving records, 
     "an empty ledger means nothing DISCOVERABLE, not nothing owed: access on a target with no surviving " +
       "rows is real and this cannot see it",
   );
+});
+
+// Removing access must never GRANT it. Setting a managed bit to null removes the DENY as well as the
+// allow, so a member an admin had explicitly excluded, on a channel a role allows, would have the
+// exclusion cleared and gain entry. Expiry, startup reconciliation and decommission all did this. Six
+// review rounds passed over it, because everyone was asking whether removal removes, never whether
+// removal can grant.
+const fakeOverwrite = (allow = [], deny = []) => ({
+  allow: { has: (b) => allow.includes(b) },
+  deny: { has: (b) => deny.includes(b) },
+});
+
+test("clearing takes back only what was granted, and never lifts an explicit denial", () => {
+  assert.deepEqual(
+    clearManagedAllows(fakeOverwrite(["ViewChannel", "SendMessages", "ReadMessageHistory"])),
+    { ViewChannel: null, SendMessages: null, ReadMessageHistory: null },
+    "a fully granted overwrite is fully cleared",
+  );
+  assert.deepEqual(
+    clearManagedAllows(fakeOverwrite([], ["ViewChannel"])),
+    {},
+    "an overwrite that only DENIES is left completely alone: clearing it would grant access",
+  );
+  assert.deepEqual(
+    clearManagedAllows(fakeOverwrite(["SendMessages"], ["ViewChannel"])),
+    { SendMessages: null },
+    "the granted bit is taken back while the denial stands",
+  );
+  assert.deepEqual(clearManagedAllows(undefined), {}, "no overwrite, nothing to clear");
+});
+
+test("an explicit denial is reported so granting can refuse to override it", () => {
+  assert.deepEqual(deniedManagedBits(fakeOverwrite(["ViewChannel"])), [], "an allow is not a denial");
+  assert.deepEqual(deniedManagedBits(fakeOverwrite([], ["ViewChannel"])), ["ViewChannel"]);
+  assert.deepEqual(
+    deniedManagedBits(fakeOverwrite([], ["ViewChannel", "ReadMessageHistory"])),
+    ["ViewChannel", "ReadMessageHistory"],
+    "a moderator's exclusion outranks a proof of masternode control",
+  );
+  assert.deepEqual(deniedManagedBits(undefined), []);
 });

@@ -25,7 +25,7 @@
 // record of what was granted and a decommission is not a reason to forget that history.
 import process from "node:process";
 import { Client, GatewayIntentBits, OverwriteType } from "discord.js";
-import { parseTargetKey } from "../adapters/discord/grant_ledger.js";
+import { parseTargetKey, clearManagedAllows, managedState } from "../adapters/discord/grant_ledger.js";
 
 // Same predicate the bot uses: a 404 or one of these codes means the thing is already gone, so there
 // is nothing to take back. Anything else is a real failure worth reporting.
@@ -90,9 +90,9 @@ try {
   process.exit(1);
 }
 
-// The same bits the bot grants, reset to inherit rather than deleted, so a permission the channel set
-// on this user for another reason survives.
-const ACCESS_CLEARED = { ViewChannel: null, SendMessages: null, ReadMessageHistory: null };
+// Clearing removes only the managed bits an overwrite currently ALLOWS. Nulling all three
+// unconditionally also removed an explicit DENY, so decommissioning a channel could hand access to
+// someone a moderator had deliberately excluded, by letting a role-level allow through.
 
 // Role removal needs the privileged member intent, because it means enumerating who holds the role.
 // Channel work does not. Ask for it only when the target actually requires it.
@@ -167,7 +167,11 @@ client.once("ready", async () => {
         }
         // Member overwrites only. A role overwrite on this channel is the operator's own arrangement.
         const holders = [...ch.permissionOverwrites.cache.values()].filter(
-          (ow) => ow.type === OverwriteType.Member && ow.id !== client.user.id,
+          (ow) =>
+            ow.type === OverwriteType.Member &&
+            ow.id !== client.user.id &&
+            // Nothing to take back from an overwrite that only denies, and clearing it would grant.
+            managedState(ow).allow.length > 0,
         );
         console.log(`[decommission] channel ${chId}: ${holders.length} per-member overwrite(s)`);
         for (const ow of holders) {
@@ -176,7 +180,7 @@ client.once("ready", async () => {
             continue;
           }
           try {
-            await ch.permissionOverwrites.edit(ow.id, ACCESS_CLEARED, { type: OverwriteType.Member });
+            await ch.permissionOverwrites.edit(ow.id, clearManagedAllows(ow), { type: OverwriteType.Member });
             removed.push(`${chId}/${ow.id}`);
           } catch (e) {
             failed.push(`${chId}/${ow.id}`);
