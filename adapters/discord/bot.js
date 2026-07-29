@@ -235,8 +235,42 @@ let reconciled = false;
 // of trying to make that automatic produced a blocker every time, including stripping access an
 // operator had granted by hand on a channel the bot had finished with. Stale targets are REPORTED
 // here and cleared by `npm run discord:decommission`.
+// The target this bot is configured for must actually exist in this guild, and that has to be checked
+// before the pass removes anything or interactions open.
+//
+// Role and channel ids are globally unique, so an id belonging to a different server does not error, it
+// simply matches nothing. Without this the bot logged a successful reconciliation, opened for business,
+// and then persisted a ledger record naming a role it could never apply. Worse, that bad record then
+// blocked recovery: the next renewal tried to revoke the recorded foreign role first, which also failed,
+// so the member stayed stuck even after the configuration was corrected.
+//
+// The same validation was added to the decommission command last round and not here, which is the
+// recurring mistake in this component: fix the site a reviewer names, leave the identical shape beside it.
+async function requireCurrentTargets(guild) {
+  if (GRANT_MODE === "role") {
+    const role = await guild.roles.fetch(ROLE_ID).catch(() => null);
+    if (!role) {
+      throw new Error(
+        `role ${ROLE_ID} does not exist in ${guild.name} (${guild.id}). Check DISCORD_MNO_ROLE_ID and ` +
+          `DISCORD_GUILD_ID. Starting anyway would record grants for a role that can never be applied.`,
+      );
+    }
+    return;
+  }
+  for (const chId of GRANT_CHANNEL_IDS) {
+    const ch = await guild.channels.fetch(chId).catch(() => null);
+    if (!ch) {
+      throw new Error(
+        `channel ${chId} does not exist in ${guild.name} (${guild.id}). Check DISCORD_GRANT_CHANNEL_IDS ` +
+          `and DISCORD_GUILD_ID. Starting anyway would record grants that can never be applied.`,
+      );
+    }
+  }
+}
+
 async function reconcileGuild() {
   const guild = await getGuild();
+  await requireCurrentTargets(guild);
   const removed = [];
   const failed = [];
   const clear = async (userId, undo) => {

@@ -398,7 +398,7 @@ test("parseTargetKey validates the whole string, not just the front of it", () =
 // ledger rows still name, so an old channel whose rows have expired and been swept, or that held
 // access predating the ledger entirely, is invisible to it. That is why the README tells operators to
 // decommission on every repoint rather than to wait for a warning.
-test("staleTargets names what an old configuration left behind, and nothing current", () => {
+test("staleTargets names the stale targets DISCOVERABLE from surviving records, and nothing current", () => {
   const chanNow = { mode: "channel", channels: ["c1"], roleId: null };
 
   assert.deepEqual(staleTargets([{ mode: "channel", channels: ["c1"] }], chanNow), [], "the current target is not stale");

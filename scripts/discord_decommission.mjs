@@ -38,11 +38,22 @@ const flags = args.filter((a) => a.startsWith("-"));
 const positionals = args.filter((a) => !a.startsWith("-"));
 const unknown = flags.filter((f) => !KNOWN_FLAGS.has(f));
 const apply = flags.includes("--apply");
+const askedDryRun = flags.includes("--dry-run");
 const dryRun = !apply; // --dry-run is accepted for explicitness; it is already the default
 const targetArg = positionals[0];
 
 if (!TOKEN || !GUILD_ID) {
   console.error("[decommission] DISCORD_TOKEN and DISCORD_GUILD_ID must be set, the same as for the bot.");
+  process.exit(1);
+}
+// Both flags together is a contradiction, and resolving it in favour of the destructive one is exactly
+// the mistake this command already made once: an operator who typed --dry-run got a real deletion. If
+// the request is ambiguous, do nothing.
+if (apply && askedDryRun) {
+  console.error(
+    "[decommission] --apply and --dry-run contradict each other. Refusing rather than guessing which " +
+      "you meant. Run with neither to preview, or with --apply alone to remove.",
+  );
   process.exit(1);
 }
 if (unknown.length) {

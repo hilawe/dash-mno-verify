@@ -320,7 +320,9 @@ built from the post-migration code rather than from any earlier packet.
   it REPORTS stale targets found in the ledger's records, naming the command. Bulk removal moved to
   `npm run discord:decommission -- <target>`, one target, explicit, with `--dry-run`, run when the
   operator repoints the bot. No marker, no history, no retirement bookkeeping, no intent decision
-  before the client exists, and no path that can wedge. `parseTargetKey` validates the whole string
+  before the client exists. (An earlier version of this entry claimed "no path that can wedge"; the
+  fifth round found one, where a role id from another guild was persisted into a record that then
+  blocked its own repair, so current targets are validated against the guild before startup proceeds.) `parseTargetKey` validates the whole string
   (an earlier version read only the front of it and silently forgot the rest). `readMarker` was deleted
   rather than left as dead code.
   Also: Discord's default grant mode is now `channel`, because a role is visible on the profile card
