@@ -117,6 +117,15 @@ compare-and-set for permissions, so this cannot be closed. Separately, if Discor
 and applies it after the bot has stopped, that access exists with no record of it, and a startup pass
 is what finds it. Restart the bot after any incident where it was stopped abruptly.
 
+**The clock only moves forward, as far as this ledger is concerned.** It records the highest time it
+has observed, and every decision, including whether a new grant's deadline has already passed, is made
+against that floor rather than the raw reading. So if the host clock jumps far forward and is then
+corrected, new grants are refused until real time passes the recorded mark, and the refusal says so
+and names the two times. That is the same shape as the gateway's own clock guard, and the same
+tradeoff: refusing is visible and recoverable, while granting access the ledger already considers
+expired is neither. Keep the host on NTP. Starting once with the clock reset drops the floor, and it
+is the deliberate override, so only use it once you know the host's time is right.
+
 The bot needs no privileged intent at all. Per-user channel overwrites arrive with the ordinary
 Guilds intent, and SERVER MEMBERS was only ever needed by role mode, which is gone. `npm run discord:decommission` asks for the intent only when the target you name is
 a role, so you can enable it, run the command once, and turn it off again.

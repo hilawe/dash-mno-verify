@@ -545,14 +545,37 @@ export class GrantLedger {
       // Refuse a deadline that has already passed. Near an epoch boundary a slow queue or a slow
       // platform call could otherwise apply access that is expired the moment it is granted, and it
       // would then sit live until the next sweep, up to a full sweep interval later.
-      // Deliberately the unfloored clock. The gateway owns this deadline and issued it against ITS
-      // clock; the floor exists to stop a rolled-back adapter clock reviving an EXISTING grant. Using
-      // the floor here would mean a forward clock glitch, once recorded, rejected every new grant
-      // until wall time caught up to the inflated mark, which is an outage lasting as long as the
-      // jump. A grant accepted under a rolled-back clock is not a hole either: sweep and admitIfLive
-      // judge it against the floor and remove it.
-      if (seen.wall >= record.expiresAt) {
-        throw new Error(`refusing to grant ${userId} access that has already expired`);
+      //
+      // THE FLOOR, not the raw reading, and this is the ONE decision site that used to differ.
+      //
+      // The argument for the raw clock was that the gateway owns this deadline and issued it against
+      // ITS clock, while the floor exists to stop a rolled-back adapter clock reviving an EXISTING
+      // grant, so flooring here would turn a forward clock glitch into an outage lasting as long as
+      // the jump. It went on to say a grant accepted under a rolled-back clock was not a hole either,
+      // because sweep and admitIfLive judge against the floor and remove it.
+      //
+      // That last part was the mistake, and it is the shape this component keeps producing: a correct
+      // argument that never addresses the actual path. grant() does not only persist a record, it
+      // calls apply() directly a few lines below. So with the floor above the deadline and the raw
+      // clock below it, which is what a forward jump followed by a correction leaves behind, the
+      // access was applied on the platform while live() already reported false. It then sat there
+      // until the next sweep, up to a full sweep interval, and a member could repeat it after every
+      // sweep for as long as the inflated floor stood.
+      //
+      // Flooring here does cost what the old comment said. After a forward jump, new grants are
+      // refused until wall time catches up. That is the conservative direction, it is visible, it is
+      // logged, and resetClock is the deliberate operator escape from it. Granting access the same
+      // ledger considers expired is none of those things.
+      if (seen.floor >= record.expiresAt) {
+        throw new Error(
+          seen.floor > seen.wall
+            ? `refusing to grant ${userId} access expiring at ${record.expiresAt}: this ledger has ` +
+              `already observed time ${seen.floor}, which is ahead of its current clock ${seen.wall}. ` +
+              `Something moved the clock forward and it has since been corrected. New grants stay ` +
+              `refused until the clock passes ${seen.floor}. If the host clock is now known good, ` +
+              `start once with the clock reset to drop the floor.`
+            : `refusing to grant ${userId} access that has already expired`,
+        );
       }
       const prev = this.#row(userId);
       // If a renewal changes the target, revoke the parts of the prior grant the new one does not

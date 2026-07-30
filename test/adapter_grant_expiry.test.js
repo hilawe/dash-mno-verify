@@ -941,3 +941,37 @@ test("a retirement that would leave an invalid record changes nothing at all", a
     assert.equal(l.size(), 2, "the rollback put back the row the failing pass had already deleted");
     l.close();
   }));
+
+// A forward clock jump raises the durable floor. Correcting the clock afterwards leaves the floor
+// above the raw reading, so a deadline can sit in the future against the clock and in the past against
+// the floor. grant() used to compare against the raw reading while every expiry decision used the
+// floor, and it does not merely persist a record, it calls apply() directly. So the access reached the
+// platform while live() already reported false, and sat there until the next sweep. A member could
+// repeat it after every sweep for as long as the inflated floor stood.
+test("a grant is refused when the durable floor is past its deadline, even when the clock is not", async () =>
+  scopeDir(async ({ mk, file }) => {
+    const clock = { t: 1000 };
+    const applied = [];
+    const l = mk({
+      file: file("clock.db"),
+      scope: "g",
+      now: () => clock.t,
+      apply: async (id) => applied.push(id),
+    });
+
+    clock.t = 10000; // a forward jump
+    l.live("nobody"); // observing the clock is what records it in the durable floor
+    clock.t = 1000; // and the clock is corrected back
+
+    // 2000 is in the future against the corrected clock and in the past against the floor.
+    await assert.rejects(() => l.grant("u1", { expiresAt: 2000, mode: "channel", channels: ["c1"] }),
+      /already observed time 10000/);
+    assert.deepEqual(applied, [], "nothing reached the platform, which is the half a refusal alone would not prove");
+    assert.equal(l.has("u1"), false, "and nothing was persisted");
+
+    // Past the floor it works again, so this is a refusal and not a wedge.
+    clock.t = 10001;
+    await l.grant("u2", { expiresAt: 20000, mode: "channel", channels: ["c1"] });
+    assert.deepEqual(applied, ["u2"]);
+    l.close();
+  }));
