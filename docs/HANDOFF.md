@@ -5,6 +5,137 @@ counts and supersedes everything below it. Historical sections are append-only a
 only marked superseded. Read this first when picking the project back up, then `TODO.md` for the full
 prioritized punch list.
 
+## CURRENT STATE, 2026-07-30
+
+`main` at `7427a34`, pushed, 307 tests green (`npm test`, about two and a half minutes). Node 22.13 or
+newer. Read this section, then `TODO.md`. The 2026-07-29 section below is superseded.
+
+### Where the project is
+
+Unchanged in substance. Anonymous zero-knowledge proof of masternode control, gating a private
+community. Oracle reads the deterministic masternode list and publishes a Merkle root, a
+platform-neutral gateway verifies proofs and issues short access grants, adapters apply them. Working
+prototype, validated on real mainnet data, NOT audited. Do not gate anything of value.
+
+Everything this session touched is the Discord adapter, the shared adapter grant ledger, and the
+decommission command.
+
+### ROLE MODE IS GONE, and this is a product decision, not a refactor
+
+A verified member is added to the private channel with a per-user permission overwrite. That is the
+only mode. A Discord role is visible on the member's profile card to everyone in the server, so
+granting one announced who holds a masternode, which is the fact the whole construction exists to
+keep private. It defeated the system by design rather than by defect, so hardening it further was the
+wrong answer. `DISCORD_GRANT_MODE=role` and `DISCORD_MNO_ROLE_ID` refuse to start.
+
+Role targets survive in exactly one place, deliberately. `npm run discord:decommission -- role:<id>`
+still takes back access an earlier deployment granted, and the bot refuses to start while any role
+grant remains in the ledger, printing the command for each. Removing a mode must not strand the
+access it granted.
+
+Do not reintroduce role mode. If someone asks for it, the answer is that the privacy property is the
+product.
+
+### Round 9 and what closed it
+
+The ninth review round, four reviewers, four BLOCKs. Every finding is now closed.
+
+- **`615f7fe`** One module owns every permission change. `adapters/discord/permissions.js` holds the
+  only permission mutations in the project, each carrying its own denial check. The check had reached
+  `revokeAccess` and missed the grant path, reconciliation, and all four role mutations, so a member
+  an administrator had excluded could walk back in by running `/submit`. Also stopped the role branch
+  calling `process.exit(1)`, which ran before the sweep timer was installed and so froze cleanup for
+  everyone.
+- **`f8579b6`** The ledger database is bound to one guild in durable metadata, not only per record.
+  Per-record fields cannot cover records written before the field existed, and reading "unknown" as
+  "ours" let a repointed bot delete the record of access still live elsewhere. An unbound ledger
+  holding grants fails closed and needs `DISCORD_LEDGER_ADOPT_GUILD_ID` naming the guild explicitly.
+- **`f6609de`** Decommission retires the rows it clears, and only what actually came back. A row is
+  not history to the sweep, it is revocation work still owed, so a retired channel left in a record
+  got its bits cleared again later, possibly stripping unrelated access. An empty bound ledger now
+  rebinds, which is the exit the previous commit's guard was missing.
+- **`7617c56`** Tests that prove the guards refuse and that nothing can bypass them.
+- **`8504bd5`** Role mode removed.
+- **`7427a34`** `grant()` judges the deadline against the clock floor like every other decision. It
+  used the raw reading, so after a forward jump and a correction it applied access the ledger already
+  considered expired, live until the next sweep and repeatable after each one.
+
+### THE ONE DEFECT SHAPE THIS COMPONENT PRODUCES
+
+Nine rounds, one shape, in three costumes. Read this before touching the adapter.
+
+1. **A fix lands where the reviewer pointed and its twin survives nearby.** Eight rounds of this. The
+   answer that finally worked was structural, not another careful fix: put the check and the mutation
+   in one operation, in one module, and add a test asserting no other file can mutate at all. That
+   test catches the next occurrence by itself, including in code nobody has written yet.
+2. **A correct argument that never reaches the actual path.** The comment defending the raw clock was
+   right about the gateway owning the deadline and right about the outage cost, and never mentioned
+   the `apply()` call below it. "Every caller checks" was right about two callers. "The ledger is
+   history" was right about what a human means by a ledger and wrong about what the sweep does with
+   it. When a comment argues for something, check the paths it does NOT mention.
+3. **A guard with no exit.** The guild binding refused a repoint and gave the operator no way to
+   satisfy it, so correct operation could not complete. A refusal that protects something real can
+   still be wrong. Every guard needs an exit that ordinary correct operation reaches.
+
+### How to run reviews here, still the most transferable thing
+
+Framing changes results more than the code does. The 2026-07-29 section has the full eight lessons and
+they all still hold. The ones round 9 confirmed again:
+
+- **Never frame a packet as "confirm these fixes".** Still true.
+- **Ask whether an operation can do the OPPOSITE of its purpose.** Produced two of round 9's blockers.
+- **Ask whether a comment claims more than the code does.** Produced the finding that anchored the
+  whole round.
+- **Make reviewers separate READ from INFERRED.** Round 9's packet reviewers used it honestly and it
+  made their reviews far more useful. It is also how the role-mode decision got made: every role
+  finding in every review was INFERRED, because nobody could execute those semantics.
+- **The executing reviewer does the load-bearing work.** Again. Every correct finding came with a
+  reproduction. One packet reviewer produced a wrong finding by missing a caveat eight lines from the
+  claim it was disputing, and another reasoned away two real defects in writing.
+- **Watch for identical reviews.** Round 9 produced two byte-identical pastes labelled as different
+  models. That is one data point, not two, and it cost a re-run.
+
+### Gotchas that cost real time
+
+Everything in the 2026-07-29 list still applies. New this session:
+
+- An `async` test fixture that tears down in a `finally` without awaiting the callback deletes its
+  temp directory mid-test. One test failed correctly and another PASSED for the wrong reason. Await
+  the callback.
+- `get()` on the ledger returns the record, not a `{record, rev}` wrapper, and a missing row is
+  `null`, not `undefined`.
+- A structural test scanning for `roles.add(` matches a plain `Set` named `roles`. Match the receiver
+  form.
+- `roleId` in `core/gateway.js`, `common/`, and the provers is the PROTOCOL context id and has nothing
+  to do with a Discord role. A search and replace over role tokens would break the context hash the
+  nullifier is scoped to. Audit before editing.
+
+### Punch list, in order
+
+1. **A fresh full round on `7427a34`.** The shape changed substantially, so this reviews something new
+   rather than re-reading folded fixes.
+2. **A periodic re-check of the current target**, not only at startup. Cheap now that role mode is gone.
+3. **Confirm the `dash-cli` read buffer against a real node.** `MNO_CLI_MAX_BUFFER` (64 MB) was
+   reasoned from the 1 MB default and never observed failing.
+4. **The three smaller items**: prevention rather than recovery for an implausible forward clock jump,
+   a model-based crash harness that interrupts at every write boundary, and what mixed `hashVersion`
+   gateways in one cluster should do.
+5. **Direct node mode** and **the durable privacy-preserving Platform claim**. Neither started, and
+   these two are what gate real use.
+6. **An audit.** Still none.
+
+### Breaking changes for any existing deployment
+
+Everything in the 2026-07-29 list, plus:
+
+- Role mode is removed. `DISCORD_GRANT_MODE=role` and `DISCORD_MNO_ROLE_ID` refuse to start, and the
+  bot refuses to start while a role grant remains in the ledger.
+- The bot no longer needs the SERVER MEMBERS privileged intent.
+- A ledger holding grants but no guild binding refuses to start until adopted with
+  `DISCORD_LEDGER_ADOPT_GUILD_ID`.
+- Stop the bot before running decommission with `--apply`, since it now writes to the ledger.
+- After a forward clock jump and correction, new grants are refused until real time passes the mark.
+
 ## CURRENT STATE, 2026-07-29
 
 `main` at `f482028`, pushed, clean tree, 285 tests green (`npm test`, about two and a half minutes).
