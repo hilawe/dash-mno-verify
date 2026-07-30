@@ -42,9 +42,11 @@ created it. Any other permission is left alone.
 
 **Per-member overwrites on a gated channel belong to the bot.** If it finds one that DENIES, that
 channel is quarantined: admissions stay closed, the channel is left untouched, and cleanup of the other
-channels carries on. The check also runs immediately before every individual removal, including from
-the decommission command and from records naming a channel you have since dropped, because a startup
-check cannot cover a mutation that happens later or in another process.
+channels carries on. The check also runs immediately before every individual grant and every individual
+removal, including from the decommission command and from records naming a channel you have since
+dropped, because a startup check cannot cover a mutation that happens later or in another process.
+Every permission change the bot makes goes through one module that carries the check with it, so there
+is no way to add a mutation that skips it.
 
 One residual, stated rather than hidden: that check reads Discord's cached view of the overwrite, so a
 denial set moments earlier and not yet propagated can still be cleared. Discord offers no
@@ -57,25 +59,32 @@ at a different server while records from the old one survive, it refuses to star
 server, because that access is still live and unreachable from here. Sweeping would have deleted the
 only record of it. Decommission it in the old server first.
 
-Why it refuses rather than clearing: If you have denied someone `ViewChannel` on a gated channel, the bot will not start and
-will name the member, because every option available to it is wrong: clearing the overwrite would let a
+Why it refuses rather than clearing: If you have denied someone `ViewChannel` on a gated channel, the
+bot quarantines that channel and names the member, because every option available to it is wrong:
+clearing the overwrite would let a
 role-level allow through and admit the person you excluded, and honouring it would mean reading and
 rewriting permissions that you are editing at the same time. Express an exclusion with a role-level
 deny instead, or simply do not grant. Two earlier versions tried to be clever here and each produced a
 worse defect than the one it fixed.
 
 **In role mode the configured role must only ever ADD permissions.** If it carries a deny overwrite on
-any channel, for ANY permission and not just the three this bot manages, the bot refuses to start.
-Adding the role would otherwise remove that permission there and removing it would restore it, so a
-grant would revoke and a revocation would grant. A role denying `Connect` on a voice channel inverts
-voice access exactly as one denying `ViewChannel` inverts text access.
+any channel, for ANY permission and not just the three this bot manages, the role is quarantined:
+admissions close and the role is left alone. Adding the role would otherwise remove that permission
+there and removing it would restore it, so a grant would revoke and a revocation would grant. A role
+denying `Connect` on a voice channel inverts voice access exactly as one denying `ViewChannel` inverts
+text access. The same check runs again immediately before every individual role add and remove, so a
+deny added after startup is caught at the mutation rather than by the snapshot.
 
-A startup pass that cannot clear someone refuses to start rather than reporting success.
+A pass that cannot clear someone closes admissions rather than reporting success. It does not stop the
+process, and that distinction matters: killing the process here would also stop the expiry sweep, so
+one excluded member or one denied role would leave every OTHER member's lapsed access in place
+indefinitely. Cleanup always continues.
 
-**What it cannot catch.** A startup check is a snapshot. If Discord accepts a request and applies it
-after the check has run, that access exists and nothing will find it until the next restart. The
-window is small but real, and it is the reason to restart the bot after any incident where it was
-stopped abruptly.
+**What it cannot catch.** The check reads Discord's cached view. If a denial is set and has not
+propagated to the cache by the time the mutation runs, the mutation proceeds. Discord offers no
+compare-and-set for permissions, so this cannot be closed. Separately, if Discord accepts a request
+and applies it after the bot has stopped, that access exists with no record of it, and a startup pass
+is what finds it. Restart the bot after any incident where it was stopped abruptly.
 
 Role mode needs the SERVER MEMBERS INTENT enabled for the application in Discord's developer portal,
 because deciding who should keep a role means enumerating who holds it. Channel mode needs no

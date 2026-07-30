@@ -34,6 +34,16 @@ import {
   isGone,
   isNotOurs,
 } from "./grant_ledger.js";
+// Every Discord permission mutation goes through these, and each one performs its own denial check
+// immediately before acting. Nine rounds of adding the check at the site a reviewer named, and leaving
+// its twin unguarded a few lines away, is what this import exists to end.
+import {
+  grantMemberOverwrite,
+  clearMemberOverwrite,
+  addRole,
+  removeRole,
+  isDenialConflict,
+} from "./permissions.js";
 
 const TOKEN = process.env.DISCORD_TOKEN;
 const APP_ID = process.env.DISCORD_APP_ID;
@@ -113,32 +123,30 @@ if (!Number.isFinite(SWEEP_SECONDS) || SWEEP_SECONDS <= 0) {
 
 let guildRef = null;
 const getGuild = async () => (guildRef ??= await client.guilds.fetch(GUILD_ID));
-const ACCESS = { ViewChannel: true, SendMessages: true, ReadMessageHistory: true };
-// Reset the three managed bits to inherit. Every caller checks for a conflicting denial IMMEDIATELY
-// BEFORE using this, because a startup gate is not enough: it covers only the current, reachable target,
-// while revocation acts on whatever the record names and the decommission command is a separate process
-// on any channel. See refuseIfDenied below and grant_ledger.js for why preserving a denial instead was
-// tried twice and rejected twice.
-const ACCESS_CLEARED = { ViewChannel: null, SendMessages: null, ReadMessageHistory: null };
-
-// Apply the access a grant record describes. The overwrite type is passed explicitly, because after a
-// restart a raw user id is not resolvable to a member from cache, and the edit would otherwise throw.
-// Every channel is attempted independently and real failures are collected, so one bad channel cannot
-// abandon the rest. Under the old bare loop a retry always restarted at the failing channel, so a
-// member never received the channels behind it. Same shape as the decommission loop, which was fixed a
-// commit earlier while this one was left alone.
+// Apply the access a grant record describes. Every channel is attempted independently and real
+// failures are collected, so one bad channel cannot abandon the rest. Under the old bare loop a retry
+// always restarted at the failing channel, so a member never received the channels behind it. Same
+// shape as the decommission loop, which was fixed a commit earlier while this one was left alone.
+//
+// The grant path used to write the managed bits with no denial check at all, which three of the four
+// round 9 reviewers reported as a blocker: setting the bits to true over a member-level deny overrides
+// an exclusion an administrator set by hand, so a member who had been deliberately shut out could walk
+// back in by running /submit. The fourth reviewer called that the intentional ownership claim, but the
+// bot's own design says it refuses a conflict it can see, and the startup quarantine exists precisely
+// to stop granting while a denial is present. A denial that appears after startup is the same conflict
+// with worse timing. grantMemberOverwrite and addRole carry the check now.
 async function applyAccess(userId, record) {
   const guild = await getGuild();
   if (record.mode !== "channel") {
     const member = await guild.members.fetch(userId);
-    await member.roles.add(record.roleId);
+    await addRole(guild, member, record.roleId);
     return;
   }
   const failures = [];
   for (const chId of record.channels) {
     try {
       const ch = await guild.channels.fetch(chId);
-      await ch.permissionOverwrites.edit(userId, ACCESS, { type: OverwriteType.Member });
+      await grantMemberOverwrite(ch, userId);
     } catch (e) {
       failures.push(`${chId}: ${e.message}`);
     }
@@ -159,22 +167,11 @@ async function applyAccess(userId, record) {
 // may be a channel dropped from the configuration, one that was briefly unreachable when the gate ran,
 // or a whole other guild.
 //
-// Residual, stated rather than solved: this reads the cached overwrite, so a denial the cache has not
-// yet seen can still be cleared. There is no compare-and-set for Discord permissions. The difference
-// from the two versions that were rejected is that this REFUSES to touch a conflict instead of trying
-// to preserve it through a rewrite, which is a far smaller claim.
-function refuseIfDenied(ch, userId) {
-  const offenders = memberDenialsOnGatedChannel(
-    [...ch.permissionOverwrites.cache.values()].filter((ow) => ow.type === OverwriteType.Member && ow.id === userId),
-  );
-  if (offenders.length) {
-    throw new Error(
-      `${ch.id}: ${userId} has an overwrite DENYING ${offenders[0].deny.join(", ")}. Clearing it would ` +
-        `grant them access through a role-level allow, so this is refused and the record is kept.`,
-    );
-  }
-}
-
+// Residual, stated rather than solved: the check reads the cached overwrite, so a denial the cache has
+// not yet seen can still be cleared. There is no compare-and-set for Discord permissions. The
+// difference from the two versions that were rejected is that this REFUSES to touch a conflict instead
+// of trying to preserve it through a rewrite, which is a far smaller claim. The check itself lives in
+// permissions.js now, attached to the mutation, so it cannot be present here and absent elsewhere.
 async function revokeAccess(userId, record) {
   const guild = await getGuild();
   // A record from another guild names access this process cannot reach. Refusing keeps the row, so the
@@ -209,8 +206,7 @@ async function revokeAccess(userId, record) {
         continue;
       }
       try {
-        refuseIfDenied(ch, userId);
-        await ch.permissionOverwrites.edit(userId, ACCESS_CLEARED, { type: OverwriteType.Member });
+        await clearMemberOverwrite(ch, userId);
       } catch (e) {
         if (!isGone(e)) failures.push(`${chId}: ${e.message}`);
       }
@@ -220,7 +216,9 @@ async function revokeAccess(userId, record) {
     let member;
     try { member = await guild.members.fetch(userId); } catch (e) { if (isGone(e)) return; throw e; }
     try {
-      await member.roles.remove(record.roleId);
+      // Guarded now. A role that gained a denial after startup inverts removal, so taking it away
+      // would hand the denied permission back. Refusing keeps the record for retry.
+      await removeRole(guild, member, record.roleId);
     } catch (e) {
       if (!isGone(e)) throw e;
     }
@@ -364,13 +362,26 @@ async function usableTargets(guild) {
     }));
     const offenders = roleDenialsAcrossChannels(channels, ROLE_ID);
     if (offenders.length) {
+      // QUARANTINE, not exit. This used to call process.exit(1), which runs inside the ready handler
+      // BEFORE the startup sweep and its timer are installed, so one deny overwrite on the configured
+      // role stopped every unrelated member's expired access from ever being revoked, indefinitely if
+      // the deny was deliberate operator policy. That is the exact inversion the channel branch below
+      // was changed to fix, and the role branch beside it was left alone: the twin, again, and three
+      // of the four round 9 reviewers found it. Admissions close, cleanup continues, and each role
+      // mutation refuses on its own through removeRole, so the sweep keeps a conflicted record for
+      // retry while unrelated records are swept normally.
       console.error(
-        `[discord] refusing to start: role ${ROLE_ID} carries a denial on ` +
+        `[discord] role ${ROLE_ID} is QUARANTINED: it carries a denial on ` +
           `${offenders.map((o) => `${o.channel} (${o.deny.join(", ")})`).join(", ")}. Adding this role ` +
           `would REMOVE access there and removing it would GRANT access, so a grant would revoke and a ` +
-          `revocation would grant. Use a role that only ever adds permissions.`,
+          `revocation would grant. Use a role that only ever adds permissions. Admissions stay closed ` +
+          `and expired access elsewhere is still being cleaned up.`,
       );
-      process.exit(1);
+      return {
+        channels: [],
+        ready: false,
+        why: `role ${ROLE_ID} carries a denial that would invert every grant and revocation`,
+      };
     }
     return { channels: [], ready: true };
   }
@@ -453,6 +464,15 @@ async function reconcileGuild() {
       removed.push(userId);
     } catch (e) {
       if (isGone(e)) return; // already gone; nothing to take back
+      // A refusal is not a failure here, and must not be counted as one. This member carries a denial,
+      // so they hold no access to take back and leaving their overwrite alone is the correct outcome.
+      // Counting it as a failure would throw at the end of the pass, close admissions for everybody,
+      // and turn one deliberately excluded member into a server-wide outage: the same "guard causes a
+      // larger failure than it reports" shape this component keeps producing.
+      if (isDenialConflict(e)) {
+        console.warn(`[discord] left ${userId} alone during reconciliation: ${e.message}`);
+        return;
+      }
       failed.push(userId);
       console.error(`[discord] could not take access back from ${userId} during reconciliation: ${e.message}`);
     }
@@ -473,7 +493,7 @@ async function reconcileGuild() {
       if (id === client.user.id) continue; // never strip the bot
       if (!m.roles.cache.has(ROLE_ID)) continue;
       if (authorizedNow(id)) continue;
-      await clear(id, () => m.roles.remove(ROLE_ID));
+      await clear(id, () => removeRole(guild, m, ROLE_ID));
     }
   } else {
     for (const chId of targets.channels) {
@@ -488,7 +508,12 @@ async function reconcileGuild() {
         if (ow.type !== OverwriteType.Member) continue; // role overwrites are the operator's business
         if (id === client.user.id) continue;
         if (authorizedNow(id, chId)) continue;
-        await clear(id, () => ch.permissionOverwrites.edit(id, ACCESS_CLEARED, { type: OverwriteType.Member }));
+        // Guarded per member, not by the startup snapshot alone. usableTargets checked this channel
+        // moments ago, but the loop below can run for a long time on a large channel and an
+        // administrator can add a denial while it runs. Clearing that denial lets a role-level allow
+        // through, so the pass whose whole purpose is taking access back would hand it out. All four
+        // round 9 reviewers found this one.
+        await clear(id, () => clearMemberOverwrite(ch, id));
       }
     }
   }

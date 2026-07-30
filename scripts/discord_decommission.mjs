@@ -34,6 +34,11 @@ import {
   memberDenialsOnGatedChannel,
   roleDenialsAcrossChannels,
 } from "../adapters/discord/grant_ledger.js";
+// The same guarded mutations the bot uses. The per-channel and per-role preflights below still run,
+// because an operator deserves to be told the whole target is unsafe before anything is touched, but
+// the preflight is no longer the only thing standing between this command and an inverted removal. A
+// denial added after the preflight, while a long holder loop is running, is caught at the mutation.
+import { clearMemberOverwrite, removeRole, isDenialConflict } from "../adapters/discord/permissions.js";
 
 const TOKEN = process.env.DISCORD_TOKEN;
 const GUILD_ID = process.env.DISCORD_GUILD_ID;
@@ -93,12 +98,6 @@ try {
   console.error(`[decommission] ${e.message}`);
   process.exit(1);
 }
-
-// Reset the three managed bits to inherit, AFTER the preflight below has established there is no
-// denial to lift. The bot's startup refusal does not protect this command: it covers only the current
-// gated channels of one process, and decommission runs separately against a target the bot by
-// definition no longer manages. All four reviewers of the previous version found that gap.
-const ACCESS_CLEARED = { ViewChannel: null, SendMessages: null, ReadMessageHistory: null };
 
 // Role removal needs the privileged member intent, because it means enumerating who holds the role.
 // Channel work does not. Ask for it only when the target actually requires it.
@@ -162,12 +161,16 @@ client.once("ready", async () => {
           continue;
         }
         try {
-          await m.roles.remove(roleId);
+          await removeRole(guild, m, roleId);
           removed.push(m.id);
         } catch (e) {
           if (isGone(e)) continue; // the member or role went away; nothing left to take back
           failed.push(m.id);
-          console.error(`[decommission] could not remove the role from ${m.id}: ${e.message}`);
+          console.error(
+            isDenialConflict(e)
+              ? `[decommission] REFUSED for ${m.id}: ${e.message} Nothing was changed for this member.`
+              : `[decommission] could not remove the role from ${m.id}: ${e.message}`,
+          );
         }
       }
     } else {
@@ -220,12 +223,16 @@ client.once("ready", async () => {
             continue;
           }
           try {
-            await ch.permissionOverwrites.edit(ow.id, ACCESS_CLEARED, { type: OverwriteType.Member });
+            await clearMemberOverwrite(ch, ow.id);
             removed.push(`${chId}/${ow.id}`);
           } catch (e) {
             if (isGone(e)) continue; // already gone
             failed.push(`${chId}/${ow.id}`);
-            console.error(`[decommission] could not clear ${ow.id} on ${chId}: ${e.message}`);
+            console.error(
+              isDenialConflict(e)
+                ? `[decommission] REFUSED ${ow.id} on ${chId}: ${e.message} Nothing was changed for them.`
+                : `[decommission] could not clear ${ow.id} on ${chId}: ${e.message}`,
+            );
           }
         }
       }
