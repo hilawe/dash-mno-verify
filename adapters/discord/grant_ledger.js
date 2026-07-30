@@ -121,8 +121,8 @@ export function staleTargets(records, { mode, channels = [], roleId } = {}) {
 // The three permission bits this bot manages on a private channel.
 export const MANAGED_BITS = ["ViewChannel", "SendMessages", "ReadMessageHistory"];
 
-// Which managed bits an existing per-member overwrite currently ALLOWS and which it explicitly DENIES.
-// `overwrite` is a discord.js PermissionOverwrites, or anything with allow/deny objects exposing has().
+// Which managed bits an overwrite ALLOWS and which it DENIES. `overwrite` is a discord.js
+// PermissionOverwrites, or anything exposing allow/deny objects with has().
 export function managedState(overwrite) {
   const has = (field, bit) => Boolean(overwrite?.[field]?.has?.(bit));
   return {
@@ -131,24 +131,53 @@ export function managedState(overwrite) {
   };
 }
 
-// The edit that takes back ONLY what this bot granted.
+// PER-MEMBER OVERWRITES ON A GATED CHANNEL BELONG TO THE BOT. THAT IS THE WHOLE DESIGN NOW.
 //
-// Clearing used to set all three bits to null unconditionally, and null removes the DENY as well as the
-// allow. So if an admin had explicitly denied a member ViewChannel while a role allowed it, expiry,
-// startup reconciliation or decommission cleared that denial and the member GAINED access. A function
-// whose entire purpose is removing access could hand it out. Six review rounds passed over it, because
-// everyone including the author was asking whether removal removes, never whether removal can grant.
+// Two rounds were spent trying to be careful about denials a moderator had set: preserve them when
+// clearing, refuse to grant over them. Both attempts produced a defect worse than the one they fixed.
+// Preserving denials meant a read-modify-write against a CACHED overwrite, so a denial the cache had
+// not seen yet was wiped by the very code written to protect it. Refusing to grant over a denial meant
+// the ledger's uncertain-apply cleanup then stripped the member's pre-existing access, so declining to
+// grant took access away.
 //
-// So: null out the managed bits this overwrite currently allows, and leave a denied bit denied.
-export function clearManagedAllows(overwrite) {
-  const patch = {};
-  for (const bit of managedState(overwrite).allow) patch[bit] = null;
-  return patch;
+// The root problem is structural: the bot cannot do a conditional update against a permission surface
+// other people edit concurrently, and Discord offers no compare-and-set. Every careful version was
+// wrong in a new way.
+//
+// So it stops guessing. One per-member overwrite exists per member per channel, the bot claims that
+// slot on a gated channel, and if it finds one carrying a denial it refuses to run rather than fight
+// whoever set it. Exclusions are expressed with role-level denies, or by not granting. Clearing can
+// then be unconditional and correct, because nothing the bot did not create is ever there.
+export function memberDenialsOnGatedChannel(overwrites) {
+  const offenders = [];
+  for (const ow of overwrites ?? []) {
+    const deny = managedState(ow).deny;
+    if (deny.length) offenders.push({ id: ow.id, deny });
+  }
+  return offenders;
 }
 
-// Whether granting would override an explicit exclusion. An admin denying someone a channel outranks a
-// proof of masternode control: the proof says "this person runs a node", not "this person must be let
-// in regardless of what a moderator decided".
-export function deniedManagedBits(overwrite) {
-  return managedState(overwrite).deny;
+// A role the bot adds and removes must only ever ADD permissions. If it carries a deny anywhere, adding
+// it takes access away from the member somewhere else and removing it hands access back, so a grant
+// revokes and a revocation grants. Reproduced against the real permission resolver.
+export function roleDenialsAcrossChannels(channels, roleId) {
+  const offenders = [];
+  for (const ch of channels ?? []) {
+    for (const ow of ch.overwrites ?? []) {
+      if (String(ow.id) !== String(roleId)) continue;
+      const deny = managedState(ow).deny;
+      if (deny.length) offenders.push({ channel: ch.id, deny });
+    }
+  }
+  return offenders;
 }
+
+// "Already gone", so there is nothing to take back. Numeric codes come from the Discord API; the string
+// ones are discord.js's own, raised before a request is made.
+//
+// This lives here, exported, because it existed TWICE: the bot's copy learned the string codes and the
+// decommission command's copy did not, so the same input was "gone" in one file and a hard failure in
+// the other. Duplicating a predicate is how a fix reaches one site and misses its twin, which is the
+// defect this component has produced in every review round. One definition, two importers.
+const GONE_CODES = new Set([10003, 10004, 10007, 10011, 10013, "GuildChannelUnowned", "GuildChannelResolve"]);
+export const isGone = (e) => e?.status === 404 || GONE_CODES.has(e?.code);

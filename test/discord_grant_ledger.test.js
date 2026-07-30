@@ -11,8 +11,8 @@ import {
   targetKey,
   parseTargetKey,
   staleTargets,
-  clearManagedAllows,
-  deniedManagedBits,
+  memberDenialsOnGatedChannel,
+  roleDenialsAcrossChannels,
 } from "../adapters/discord/grant_ledger.js";
 
 // The grant ledger is what makes Discord-side access durable and correctly revoked. These pin the
@@ -465,42 +465,72 @@ test("staleTargets names the stale targets DISCOVERABLE from surviving records, 
   );
 });
 
-// Removing access must never GRANT it. Setting a managed bit to null removes the DENY as well as the
-// allow, so a member an admin had explicitly excluded, on a channel a role allows, would have the
-// exclusion cleared and gain entry. Expiry, startup reconciliation and decommission all did this. Six
-// review rounds passed over it, because everyone was asking whether removal removes, never whether
-// removal can grant.
-const fakeOverwrite = (allow = [], deny = []) => ({
+// Removing access must never GRANT it, and granting must never remove it. Two rounds were spent trying
+// to make the bot reason about denials a moderator had set, and both attempts produced a worse defect:
+// preserving them meant a read-modify-write against a CACHED overwrite, so a denial the cache had not
+// seen was wiped by the code written to protect it, and refusing to grant over one meant the ledger's
+// uncertain-apply cleanup then stripped the member's pre-existing access.
+//
+// The bot no longer reasons about them. It owns the per-member overwrite slot on a gated channel and
+// refuses to run if it finds a denial there. These pin the two detections that refusal rests on.
+const fakeOverwrite = (id, allow = [], deny = []) => ({
+  id,
   allow: { has: (b) => allow.includes(b) },
   deny: { has: (b) => deny.includes(b) },
 });
 
-test("clearing takes back only what was granted, and never lifts an explicit denial", () => {
+test("a per-member denial on a gated channel is detected, so the bot can refuse rather than fight it", () => {
   assert.deepEqual(
-    clearManagedAllows(fakeOverwrite(["ViewChannel", "SendMessages", "ReadMessageHistory"])),
-    { ViewChannel: null, SendMessages: null, ReadMessageHistory: null },
-    "a fully granted overwrite is fully cleared",
+    memberDenialsOnGatedChannel([fakeOverwrite("u1", ["ViewChannel", "SendMessages"])]),
+    [],
+    "an overwrite that only grants is the bot's own work and is not a conflict",
   );
   assert.deepEqual(
-    clearManagedAllows(fakeOverwrite([], ["ViewChannel"])),
-    {},
-    "an overwrite that only DENIES is left completely alone: clearing it would grant access",
+    memberDenialsOnGatedChannel([fakeOverwrite("u1", [], ["ViewChannel"])]),
+    [{ id: "u1", deny: ["ViewChannel"] }],
+    "a denial means somebody else is using the slot this bot owns",
   );
   assert.deepEqual(
-    clearManagedAllows(fakeOverwrite(["SendMessages"], ["ViewChannel"])),
-    { SendMessages: null },
-    "the granted bit is taken back while the denial stands",
+    memberDenialsOnGatedChannel([fakeOverwrite("u1", ["SendMessages"], ["ViewChannel"])]),
+    [{ id: "u1", deny: ["ViewChannel"] }],
+    "a mixed overwrite is still a conflict: clearing it would lift the denial",
   );
-  assert.deepEqual(clearManagedAllows(undefined), {}, "no overwrite, nothing to clear");
+  assert.deepEqual(
+    memberDenialsOnGatedChannel([fakeOverwrite("a", [], ["ViewChannel"]), fakeOverwrite("b", [], ["SendMessages"])]).map((o) => o.id),
+    ["a", "b"],
+    "every offender is named, so the operator fixes them all in one go",
+  );
+  assert.deepEqual(memberDenialsOnGatedChannel([]), []);
+  assert.deepEqual(memberDenialsOnGatedChannel(undefined), []);
 });
 
-test("an explicit denial is reported so granting can refuse to override it", () => {
-  assert.deepEqual(deniedManagedBits(fakeOverwrite(["ViewChannel"])), [], "an allow is not a denial");
-  assert.deepEqual(deniedManagedBits(fakeOverwrite([], ["ViewChannel"])), ["ViewChannel"]);
+// A role the bot adds and removes must only ever ADD permissions. Carrying a deny anywhere means adding
+// it takes access away from the member on that channel, and removing it hands access back, so a grant
+// revokes and a revocation grants. Reproduced against the real permission resolver by a reviewer.
+test("a role carrying a denial anywhere is detected, because adding it would remove access", () => {
+  const ch = (id, overwrites) => ({ id, overwrites });
   assert.deepEqual(
-    deniedManagedBits(fakeOverwrite([], ["ViewChannel", "ReadMessageHistory"])),
-    ["ViewChannel", "ReadMessageHistory"],
-    "a moderator's exclusion outranks a proof of masternode control",
+    roleDenialsAcrossChannels([ch("c1", [fakeOverwrite("r1", ["ViewChannel"])])], "r1"),
+    [],
+    "a role that only grants is monotonic and safe to add and remove",
   );
-  assert.deepEqual(deniedManagedBits(undefined), []);
+  assert.deepEqual(
+    roleDenialsAcrossChannels([ch("c9", [fakeOverwrite("r1", [], ["ViewChannel"])])], "r1"),
+    [{ channel: "c9", deny: ["ViewChannel"] }],
+    "a denial on an unrelated channel is what makes adding the role remove access there",
+  );
+  assert.deepEqual(
+    roleDenialsAcrossChannels([ch("c9", [fakeOverwrite("SOMEONE_ELSE", [], ["ViewChannel"])])], "r1"),
+    [],
+    "another id's denial is not this role's problem",
+  );
+  assert.deepEqual(
+    roleDenialsAcrossChannels(
+      [ch("c1", [fakeOverwrite("r1", ["ViewChannel"])]), ch("c2", [fakeOverwrite("r1", [], ["SendMessages"])])],
+      "r1",
+    ),
+    [{ channel: "c2", deny: ["SendMessages"] }],
+    "one bad channel among good ones is still reported",
+  );
+  assert.deepEqual(roleDenialsAcrossChannels([], "r1"), []);
 });

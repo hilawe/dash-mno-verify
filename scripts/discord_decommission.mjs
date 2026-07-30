@@ -25,11 +25,10 @@
 // record of what was granted and a decommission is not a reason to forget that history.
 import process from "node:process";
 import { Client, GatewayIntentBits, OverwriteType } from "discord.js";
-import { parseTargetKey, clearManagedAllows, managedState } from "../adapters/discord/grant_ledger.js";
-
-// Same predicate the bot uses: a 404 or one of these codes means the thing is already gone, so there
-// is nothing to take back. Anything else is a real failure worth reporting.
-const isGone = (e) => e?.status === 404 || [10003, 10004, 10007, 10011, 10013].includes(e?.code);
+// isGone is IMPORTED, not copied. This file had its own numeric-only copy while the bot's had learned
+// discord.js's string codes, so the same error was "already gone" in one file and a hard failure in the
+// other. A duplicated predicate is how a fix reaches one site and misses its twin.
+import { parseTargetKey, isGone } from "../adapters/discord/grant_ledger.js";
 
 const TOKEN = process.env.DISCORD_TOKEN;
 const GUILD_ID = process.env.DISCORD_GUILD_ID;
@@ -90,9 +89,11 @@ try {
   process.exit(1);
 }
 
-// Clearing removes only the managed bits an overwrite currently ALLOWS. Nulling all three
-// unconditionally also removed an explicit DENY, so decommissioning a channel could hand access to
-// someone a moderator had deliberately excluded, by letting a role-level allow through.
+// Per-member overwrites on a gated channel belong to the bot, which refuses to start if it finds one
+// carrying a denial, so clearing all three managed bits here is safe. Trying instead to preserve
+// denials meant a read-modify-write against a cache on state other people edit, and produced a worse
+// defect than the one it fixed. See adapters/discord/grant_ledger.js.
+const ACCESS_CLEARED = { ViewChannel: null, SendMessages: null, ReadMessageHistory: null };
 
 // Role removal needs the privileged member intent, because it means enumerating who holds the role.
 // Channel work does not. Ask for it only when the target actually requires it.
@@ -142,6 +143,7 @@ client.once("ready", async () => {
           await m.roles.remove(roleId);
           removed.push(m.id);
         } catch (e) {
+          if (isGone(e)) continue; // the member or role went away; nothing left to take back
           failed.push(m.id);
           console.error(`[decommission] could not remove the role from ${m.id}: ${e.message}`);
         }
@@ -167,11 +169,7 @@ client.once("ready", async () => {
         }
         // Member overwrites only. A role overwrite on this channel is the operator's own arrangement.
         const holders = [...ch.permissionOverwrites.cache.values()].filter(
-          (ow) =>
-            ow.type === OverwriteType.Member &&
-            ow.id !== client.user.id &&
-            // Nothing to take back from an overwrite that only denies, and clearing it would grant.
-            managedState(ow).allow.length > 0,
+          (ow) => ow.type === OverwriteType.Member && ow.id !== client.user.id,
         );
         console.log(`[decommission] channel ${chId}: ${holders.length} per-member overwrite(s)`);
         for (const ow of holders) {
@@ -180,9 +178,10 @@ client.once("ready", async () => {
             continue;
           }
           try {
-            await ch.permissionOverwrites.edit(ow.id, clearManagedAllows(ow), { type: OverwriteType.Member });
+            await ch.permissionOverwrites.edit(ow.id, ACCESS_CLEARED, { type: OverwriteType.Member });
             removed.push(`${chId}/${ow.id}`);
           } catch (e) {
+            if (isGone(e)) continue; // already gone
             failed.push(`${chId}/${ow.id}`);
             console.error(`[decommission] could not clear ${ow.id} on ${chId}: ${e.message}`);
           }

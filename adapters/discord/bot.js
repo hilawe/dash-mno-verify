@@ -24,7 +24,14 @@ import {
 } from "discord.js";
 import process from "node:process";
 import { proveInstructions } from "../../common/prover_instructions.js";
-import { GrantLedger, authorizesTarget, staleTargets, clearManagedAllows, deniedManagedBits } from "./grant_ledger.js";
+import {
+  GrantLedger,
+  authorizesTarget,
+  staleTargets,
+  memberDenialsOnGatedChannel,
+  roleDenialsAcrossChannels,
+  isGone,
+} from "./grant_ledger.js";
 
 const TOKEN = process.env.DISCORD_TOKEN;
 const APP_ID = process.env.DISCORD_APP_ID;
@@ -105,10 +112,11 @@ if (!Number.isFinite(SWEEP_SECONDS) || SWEEP_SECONDS <= 0) {
 let guildRef = null;
 const getGuild = async () => (guildRef ??= await client.guilds.fetch(GUILD_ID));
 const ACCESS = { ViewChannel: true, SendMessages: true, ReadMessageHistory: true };
-// Reset only the bits the bot granted, back to inherit, rather than deleting the whole overwrite, so a
-// permission the channel set on this user for another reason is left intact. Treat a bot-managed
-// channel as bot-owned (see the README), since the bot cannot tell a manual ViewChannel grant from its
-// own and will clear it on expiry.
+// Reset the three managed bits to inherit. Unconditional, and safe only because startup refuses to run
+// when a per-member overwrite on a gated channel carries a denial: the bot owns that slot, so there is
+// never anything here it did not create. Two rounds of trying to preserve denials instead produced a
+// worse defect each time, because it meant a read-modify-write against a cache on state other people
+// edit. See grant_ledger.js for the full reasoning.
 const ACCESS_CLEARED = { ViewChannel: null, SendMessages: null, ReadMessageHistory: null };
 
 // Apply the access a grant record describes. The overwrite type is passed explicitly, because after a
@@ -128,13 +136,6 @@ async function applyAccess(userId, record) {
   for (const chId of record.channels) {
     try {
       const ch = await guild.channels.fetch(chId);
-      // An explicit denial outranks a proof. The proof says this person runs a masternode, not that a
-      // moderator's decision to exclude them should be overridden.
-      const denied = deniedManagedBits(ch.permissionOverwrites.cache.get(userId));
-      if (denied.length) {
-        failures.push(`${chId}: explicitly denied ${denied.join(", ")}, refusing to override`);
-        continue;
-      }
       await ch.permissionOverwrites.edit(userId, ACCESS, { type: OverwriteType.Member });
     } catch (e) {
       failures.push(`${chId}: ${e.message}`);
@@ -147,12 +148,7 @@ async function applyAccess(userId, record) {
 // revoke and the access cannot still be live. Any other error (a lost permission, an outage) is a real
 // failure that must propagate, so the sweep keeps the record and retries instead of dropping it and
 // stranding live access.
-// Numeric codes come from the Discord API; the string ones are discord.js's own, raised before a
-// request is made. GuildChannelUnowned is the channel counterpart of Unknown Role: a legacy record
-// naming another guild's channel raised it, isGone did not recognise it, and the failed removal then
-// blocked every corrected grant for that member forever.
-const GONE_CODES = new Set([10003, 10004, 10007, 10011, 10013, "GuildChannelUnowned", "GuildChannelResolve"]);
-const isGone = (e) => e?.status === 404 || GONE_CODES.has(e?.code);
+
 
 // Undo exactly what a grant record granted, using the record's own mode and target. Throws on a real
 // failure so the caller can keep the grant and retry.
@@ -180,12 +176,8 @@ async function revokeAccess(userId, record) {
         failures.push(`${chId}: ${e.message}`);
         continue;
       }
-      // Clear only the managed bits this overwrite ALLOWS. Nulling a denied bit would remove an
-      // explicit exclusion and let a role-level allow through, so revoking would grant.
-      const patch = clearManagedAllows(ch.permissionOverwrites.cache.get(userId));
-      if (Object.keys(patch).length === 0) continue; // nothing this bot granted
       try {
-        await ch.permissionOverwrites.edit(userId, patch, { type: OverwriteType.Member });
+        await ch.permissionOverwrites.edit(userId, ACCESS_CLEARED, { type: OverwriteType.Member });
       } catch (e) {
         if (!isGone(e)) failures.push(`${chId}: ${e.message}`);
       }
@@ -299,31 +291,87 @@ let reconciled = false;
 //
 // The same validation was added to the decommission command last round and not here, which is the
 // recurring mistake in this component: fix the site a reviewer names, leave the identical shape beside it.
-async function requireCurrentTargets(guild) {
+// Returns the channels this bot can actually work with, and refuses outright on a conflict it must not
+// paper over.
+//
+// Two different failure classes, deliberately handled differently, because conflating them was
+// finding 3 of the last round:
+//
+//   UNREACHABLE (deleted, another guild's, no permission). Not fatal. Skip that channel, keep working
+//   the others, and keep interactions closed so nobody is granted against a target that is not there.
+//   Throwing here previously exited the ready handler BEFORE the sweep and its timer were installed,
+//   so one bad channel stopped every other member's expired grant from ever being revoked. A guard
+//   that protects startup must not block the cleanup it exists to enable.
+//
+//   A DENIAL ON A GATED CHANNEL. Fatal, and it stops the process. A per-member overwrite carrying a
+//   denial means somebody else is using the slot this bot owns, and every action available here is
+//   wrong: clearing it grants the member access through a role-level allow, honouring it means
+//   read-modify-write against a cache on state that changes underneath, and both were tried and both
+//   produced a defect worse than the one they fixed. Refusing is the only honest option, and the
+//   operator fixes it with a role-level deny instead.
+async function usableTargets(guild) {
   if (GRANT_MODE === "role") {
     const role = await guild.roles.fetch(ROLE_ID).catch(() => null);
     if (!role) {
-      throw new Error(
-        `role ${ROLE_ID} does not exist in ${guild.name} (${guild.id}). Check DISCORD_MNO_ROLE_ID and ` +
-          `DISCORD_GUILD_ID. Starting anyway would record grants for a role that can never be applied.`,
-      );
+      return { channels: [], ready: false, why: `role ${ROLE_ID} does not exist in ${guild.name} (${guild.id})` };
     }
-    return;
+    // A role the bot adds and removes must only ever ADD permissions. Carrying a deny anywhere means
+    // granting it takes access away somewhere else, and removing it hands access back, so a grant
+    // revokes and a revocation grants.
+    const channels = [...(await guild.channels.fetch()).values()].filter(Boolean).map((ch) => ({
+      id: ch.id,
+      overwrites: [...(ch.permissionOverwrites?.cache?.values() ?? [])],
+    }));
+    const offenders = roleDenialsAcrossChannels(channels, ROLE_ID);
+    if (offenders.length) {
+      console.error(
+        `[discord] refusing to start: role ${ROLE_ID} carries a denial on ` +
+          `${offenders.map((o) => `${o.channel} (${o.deny.join(", ")})`).join(", ")}. Adding this role ` +
+          `would REMOVE access there and removing it would GRANT access, so a grant would revoke and a ` +
+          `revocation would grant. Use a role that only ever adds permissions.`,
+      );
+      process.exit(1);
+    }
+    return { channels: [], ready: true };
   }
+
+  const usable = [];
+  const unreachable = [];
   for (const chId of GRANT_CHANNEL_IDS) {
     const ch = await guild.channels.fetch(chId).catch(() => null);
     if (!ch) {
-      throw new Error(
-        `channel ${chId} does not exist in ${guild.name} (${guild.id}). Check DISCORD_GRANT_CHANNEL_IDS ` +
-          `and DISCORD_GUILD_ID. Starting anyway would record grants that can never be applied.`,
-      );
+      unreachable.push(chId);
+      continue;
     }
+    const offenders = memberDenialsOnGatedChannel([...ch.permissionOverwrites.cache.values()].filter(
+      (ow) => ow.type === OverwriteType.Member,
+    ));
+    if (offenders.length) {
+      console.error(
+        `[discord] refusing to start: channel ${chId} has per-member overwrites that DENY ` +
+          `${[...new Set(offenders.flatMap((o) => o.deny))].join(", ")} for ` +
+          `${offenders.map((o) => o.id).join(", ")}. Per-member overwrites on a gated channel belong to ` +
+          `this bot, and it will not fight whoever set those: clearing one would grant that member ` +
+          `access through a role-level allow. Express the exclusion with a role-level deny, or remove ` +
+          `the member overwrite, then start again.`,
+      );
+      process.exit(1);
+    }
+    usable.push(chId);
   }
+  if (unreachable.length) {
+    return {
+      channels: usable,
+      ready: false,
+      why: `channel(s) ${unreachable.join(", ")} are missing from ${guild.name} (${guild.id})`,
+    };
+  }
+  return { channels: usable, ready: true };
 }
 
 async function reconcileGuild() {
   const guild = await getGuild();
-  await requireCurrentTargets(guild);
+  const targets = await usableTargets(guild);
   const removed = [];
   const failed = [];
   // A member who left between the snapshot and the removal holds nothing, so that is completion, not
@@ -359,7 +407,7 @@ async function reconcileGuild() {
       await clear(id, () => m.roles.remove(ROLE_ID));
     }
   } else {
-    for (const chId of GRANT_CHANNEL_IDS) {
+    for (const chId of targets.channels) {
       let ch;
       try {
         ch = await guild.channels.fetch(chId);
@@ -371,9 +419,7 @@ async function reconcileGuild() {
         if (ow.type !== OverwriteType.Member) continue; // role overwrites are the operator's business
         if (id === client.user.id) continue;
         if (authorizedNow(id, chId)) continue;
-        const patch = clearManagedAllows(ow);
-        if (Object.keys(patch).length === 0) continue; // an explicit denial, or nothing we granted
-        await clear(id, () => ch.permissionOverwrites.edit(id, patch, { type: OverwriteType.Member }));
+        await clear(id, () => ch.permissionOverwrites.edit(id, ACCESS_CLEARED, { type: OverwriteType.Member }));
       }
     }
   }
@@ -396,8 +442,8 @@ async function reconcileGuild() {
     );
   }
 
-  reconciled = true;
   console.log(`[discord] reconciled ${GRANT_MODE} target, took access back from ${removed.length} member(s)`);
+  return targets;
 }
 
 // Every failure inside the handler has to be caught here. discord.js does not look at the promise an
@@ -505,11 +551,25 @@ client.once("ready", async () => {
   // who does not re-verify loses access after the epoch.
   // Reconcile BEFORE the first sweep. The sweep only knows the ledger, so running it first would
   // report a tidy result while untracked access sat there unseen.
+  // Admission readiness and cleanup readiness are SEPARATE, which was the point of the last round's
+  // third finding. A target that is missing means nobody new should be admitted, and it must not also
+  // stop the bot revoking access that has already expired. Previously a single bad channel threw out
+  // of this handler before the sweep and its timer existed, so every other member's lapsed grant went
+  // unrevoked until somebody noticed. Interactions stay shut; cleanup runs regardless.
+  let ready = false;
   try {
-    await reconcileGuild();
+    ready = (await reconcileGuild()).ready;
   } catch (e) {
-    console.error(`[discord] ${e.message}`);
-    process.exit(1);
+    console.error(`[discord] reconciliation failed: ${e.message}`);
+  }
+  if (ready) {
+    reconciled = true;
+  } else {
+    console.error(
+      "[discord] interactions stay CLOSED because a configured target is missing. Expired access is " +
+        "still being revoked on the usual schedule. Fix the configuration and restart to accept " +
+        "verifications again.",
+    );
   }
   await sweepAndNotify().catch((e) => console.error("[discord] startup sweep failed:", e.message));
   setInterval(() => sweepAndNotify().catch((e) => console.error("[discord] sweep failed:", e.message)), SWEEP_SECONDS * 1000);

@@ -35,19 +35,22 @@ effort and its absence proves nothing.** It can only see targets that surviving 
 so an old channel holding access that predates the ledger, or whose rows have since expired and been
 swept, produces no warning at all while the access is still there.
 
-The removal is deliberate on purpose. On a decommissioned channel it takes back the three bits this
-bot grants (`ViewChannel`, `SendMessages`, `ReadMessageHistory`) wherever a per-member overwrite
-currently ALLOWS them, including overwrites you added by hand, because a stored overwrite carries no
-record of who created it. Any other permission is left alone.
+The removal is deliberate on purpose. It resets the three bits this bot grants (`ViewChannel`,
+`SendMessages`, `ReadMessageHistory`) on every per-member overwrite it finds on the decommissioned
+channel, including overwrites you added by hand, because a stored overwrite carries no record of who
+created it. Any other permission is left alone.
 
-**An explicit denial is never lifted, anywhere.** If you have denied someone `ViewChannel` on a
-channel a role otherwise allows, neither expiry, nor the startup check, nor decommissioning will
-clear that denial, because removing it would let the role's allow through and hand access to the
-person you excluded. For the same reason the bot refuses to grant a member who is explicitly
-denied: your exclusion outranks their proof, and the failure is reported rather than silently
-overridden. That trade is reasonable at the moment you decide
-to decommission a channel, and unreasonable for a bot to make on its own at every restart, which is
-what an earlier version did.
+**Per-member overwrites on a gated channel belong to the bot, and it refuses to run if it finds one
+that DENIES.** If you have denied someone `ViewChannel` on a gated channel, the bot will not start and
+will name the member, because every option available to it is wrong: clearing the overwrite would let a
+role-level allow through and admit the person you excluded, and honouring it would mean reading and
+rewriting permissions that you are editing at the same time. Express an exclusion with a role-level
+deny instead, or simply do not grant. Two earlier versions tried to be clever here and each produced a
+worse defect than the one it fixed.
+
+**In role mode the configured role must only ever ADD permissions.** If it carries a deny overwrite on
+any channel, the bot refuses to start, because adding the role would then remove that member's access
+there and removing it would restore it, so a grant would revoke and a revocation would grant.
 
 A startup pass that cannot clear someone refuses to start rather than reporting success.
 

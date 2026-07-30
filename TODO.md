@@ -340,6 +340,25 @@ built from the post-migration code rather than from any earlier packet.
   test says "nothing discoverable" rather than "nothing owed". Revisit only if the ledger ever grows a
   durable record of targets it has ever granted through, which is the same history the rejected designs
   kept getting wrong. (`adapters/discord/grant_ledger.js`)
+- [x] Stop reasoning about permission denials the bot does not own (2026-07-29, seventh round on this
+  component). Two rounds were spent trying to be careful about a denial a moderator had set: preserve it
+  when clearing, refuse to grant over it. Both produced a defect worse than the one they fixed.
+  Preserving meant a read-modify-write against a CACHED overwrite, so a denial the cache had not yet
+  seen was wiped by the code written to protect it. Refusing to grant over one meant the ledger's
+  uncertain-apply cleanup then stripped the member's pre-existing access, so declining to grant took
+  access away. The root problem is structural: no compare-and-set exists for a permission surface other
+  people edit concurrently, so every careful version was wrong in a new way.
+  Resolved by not deciding. Per-member overwrites on a gated channel belong to the bot, it refuses to
+  start if it finds one carrying a denial and names the member, and clearing is unconditional and
+  therefore correct. Exclusions are expressed with role-level denies. In role mode the configured role
+  must be monotonic: a deny overwrite anywhere refuses startup, because adding the role would otherwise
+  remove access there and removing it would restore it.
+  Also from that round: admission readiness and cleanup readiness are now separate, so an unreachable
+  channel keeps interactions closed without stopping the sweep that revokes expired access (previously
+  one bad channel aborted the ready handler before the sweep timer existed); and `isGone` has ONE
+  definition, imported by both the bot and the decommission command, because it existed twice and only
+  one copy learned discord.js's string error codes.
+  (`adapters/discord/grant_ledger.js`, `adapters/discord/bot.js`, `scripts/discord_decommission.mjs`)
 - [ ] A startup check cannot catch a platform effect that lands after it (2026-07-27 third round,
   major, reproduced). The bot records a grant, Discord ACCEPTS the request, the bot is terminated
   before the effect appears, the replacement's startup check sees no access, its sweep deletes the
