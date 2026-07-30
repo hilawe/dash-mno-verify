@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -776,3 +776,102 @@ test("a malformed revision counter refuses to start rather than restarting the s
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ---- scope binding ---------------------------------------------------------------------------------
+//
+// A repointed adapter used to be able to delete the record of access that was still live somewhere
+// else. A legacy record carried no place, "unknown" was read as "ours", the revoke went to the new
+// place, the not-found came back, isGone called it already gone, and the row was deleted. The access
+// stayed live and nothing tracked it. Per-record fields could not fix that, because the rows that
+// caused it predate the field. The database itself is bound instead.
+
+// AWAITS the callback. An earlier version of this helper did not, so the finally below removed the
+// directory while an async test was still running, the reopen found no file, created a fresh empty
+// database, and bound it silently. One test then failed for the right reason and another PASSED for
+// the wrong one. A fixture that tears down early makes every test built on it meaningless in whichever
+// direction it happens to land.
+async function scopeDir(fn) {
+  const dir = mkdtempSync(join(tmpdir(), "mno-scope-"));
+  const mk = (o) =>
+    new GrantLedger({
+      exclusive: false,
+      apply: async () => {},
+      revoke: async () => {},
+      now: () => 1000,
+      log: () => {},
+      ...o,
+    });
+  const rec = (expiresAt) => ({ expiresAt, mode: "channel", channels: ["c1"] });
+  try {
+    return await fn({ dir, mk, rec, file: (n) => join(dir, n) });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test("a fresh ledger binds to its scope, and reopening at the same scope is accepted", () =>
+  scopeDir(({ mk, file }) => {
+    const f = file("a.db");
+    const first = mk({ file: f, scope: "guildA" });
+    assert.equal(first.scope(), "guildA");
+    first.close();
+    const again = mk({ file: f, scope: "guildA" });
+    assert.equal(again.scope(), "guildA");
+    again.close();
+  }));
+
+test("reopening a bound ledger at a different scope throws and deletes nothing", async () =>
+  scopeDir(async ({ mk, rec, file }) => {
+    const f = file("a.db");
+    const first = mk({ file: f, scope: "guildA" });
+    await first.grant("u1", rec(9999));
+    first.close();
+
+    assert.throws(() => mk({ file: f, scope: "guildB" }), /bound to guildA/);
+
+    // The refusal must not have swept, revoked, or dropped the row it refused to reason about.
+    const back = mk({ file: f, scope: "guildA" });
+    assert.equal(back.size(), 1, "the refused repoint left the grant intact");
+    assert.equal(back.get("u1").expiresAt, 9999);
+    back.close();
+  }));
+
+test("an unbound ledger that already holds grants refuses to bind on its own", async () =>
+  scopeDir(async ({ mk, rec, file }) => {
+    const f = file("legacy.db");
+    const seed = mk({ file: f, scope: null });
+    await seed.grant("u1", rec(9999));
+    assert.equal(seed.scope(), null, "no scope was configured, so nothing was bound");
+    seed.close();
+
+    assert.throws(() => mk({ file: f, scope: "guildA" }), /not bound to any scope/);
+  }));
+
+test("adopting an unbound ledger requires naming the scope, and a mistyped name is refused", async () =>
+  scopeDir(async ({ mk, rec, file }) => {
+    const f = file("legacy.db");
+    const seed = mk({ file: f, scope: null });
+    await seed.grant("u1", rec(9999));
+    seed.close();
+
+    assert.throws(
+      () => mk({ file: f, scope: "guildA", adoptScope: "guildZ" }),
+      /was guildZ, which is not guildA/,
+      "an assertion that does not match the configured scope must not adopt",
+    );
+
+    const adopted = mk({ file: f, scope: "guildA", adoptScope: "guildA" });
+    assert.equal(adopted.scope(), "guildA");
+    assert.equal(adopted.size(), 1, "adoption keeps the grants rather than starting over");
+    adopted.close();
+  }));
+
+test("a legacy JSON import reaches the same fail-closed path as rows already in the database", () =>
+  scopeDir(({ mk, rec, file }) => {
+    const f = file("imported.db");
+    const json = file("grants.json");
+    writeFileSync(json, JSON.stringify({ grants: { u9: rec(9999) } }));
+    // The import commits before the binding is judged, so these rows are held to the same rule: their
+    // origin is unknowable, so they are not assumed local.
+    assert.throws(() => mk({ file: f, scope: "guildA", importFrom: json }), /not bound to any scope/);
+  }));

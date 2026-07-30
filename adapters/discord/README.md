@@ -54,10 +54,25 @@ compare-and-set for permissions, so this cannot be closed. The bot refuses to to
 see rather than trying to preserve one it cannot, which is a much narrower claim than two earlier
 versions made.
 
-**One ledger serves one server.** Every grant records the guild it was made in. If you repoint the bot
-at a different server while records from the old one survive, it refuses to start and names the old
-server, because that access is still live and unreachable from here. Sweeping would have deleted the
-only record of it. Decommission it in the old server first.
+**One ledger serves one server.** The ledger database itself is bound to a guild the first time it is
+used, and every grant also records the guild it was made in. If you repoint the bot at a different
+server while a bound ledger survives, it refuses to start and names the old server, because that access
+is still live and unreachable from here. Sweeping would have deleted the only record of it.
+Decommission it in the old server first.
+
+The binding is on the database and not only on the records because per-record fields cannot cover the
+records written before the field existed. Those read as "unknown", and reading unknown as "ours" is
+what allowed a repointed bot to revoke a legacy record against the new guild, receive a not-found it
+classified as already gone, and delete the row while the access stayed live and untracked in the old
+one. With the database bound, every row in it belongs to that guild whatever the row itself says.
+
+A ledger that already holds grants but carries no binding is the one case the bot cannot resolve on its
+own, because nothing inside the process can tell where those grants were made. It fails closed and asks
+you. Once you have confirmed the answer, start it once with `DISCORD_LEDGER_ADOPT_GUILD_ID` set to the
+same guild id as `DISCORD_GUILD_ID` and the existing grants are adopted, or move the file aside and let
+a fresh ledger bind. The variable has to name the guild explicitly and match, so a mistyped value
+refuses rather than adopting the grants into a server nobody named. Nothing verifies the assertion, so
+it is worth checking the old server before making it.
 
 Why it refuses rather than clearing: If you have denied someone `ViewChannel` on a gated channel, the
 bot quarantines that channel and names the member, because every option available to it is wrong:

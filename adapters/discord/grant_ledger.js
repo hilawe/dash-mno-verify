@@ -201,9 +201,21 @@ export const isNotOurs = (e) => NOT_OURS_CODES.has(e?.code);
 const GONE_CODES = new Set([10003, 10004, 10007, 10011, 10013]);
 export const isGone = (e) => e?.status === 404 || GONE_CODES.has(e?.code);
 
-// Records written before records carried a guild id read as null, which means "unknown, assume ours".
-// A record naming a DIFFERENT guild is a repoint that was never decommissioned: access is live over
-// there, this process cannot touch it, and pretending otherwise deletes the only trace of it.
+// Records written before records carried a guild id read as null, and this returns nothing for them.
+//
+// That used to be the hole. "Unknown" was read as "assume ours", so a repointed bot could revoke a
+// legacy record against the new guild, receive a not-found that isGone already classified as already
+// gone, and delete the row while the access stayed live and untracked in the old guild. Two reviewers
+// found it and one reproduced it with a real migrated record.
+//
+// It is closed at a level this predicate cannot see. The ledger DATABASE is now bound to one guild,
+// and an existing unbound ledger holding grants refuses to start until an operator asserts where those
+// grants were made. So a record with no guild id belongs to the bound guild by construction, and
+// "unknown, assume ours" is now a fact about the database rather than a guess about the record.
+//
+// This still reports a record naming a DIFFERENT guild, because that is an anomaly the binding does
+// not explain: access is live over there, this process cannot touch it, and pretending otherwise
+// deletes the only trace of it.
 export function foreignGuildRecords(records, guildId) {
   const out = [];
   for (const r of records ?? []) {

@@ -225,9 +225,23 @@ async function revokeAccess(userId, record) {
   }
 }
 
+// The ledger is bound to this guild in the database itself, not only on each record.
+//
+// Per-record guild ids protect records written since the field existed. They cannot protect the ones
+// written before it, which read as "unknown", and treating unknown as "ours" let a repointed bot
+// revoke a legacy record against the new guild, receive a not-found that the code already classified
+// as already gone, and delete the row while the access stayed live and untracked in the old guild.
+// Binding the database removes the question, because every row in it belongs to this guild by
+// construction.
+//
+// DISCORD_LEDGER_ADOPT_GUILD_ID is the operator asserting which guild an existing unbound ledger's
+// grants were made in. It has to name the guild explicitly and match, because the whole difficulty is
+// that nothing inside this process can work that out.
 const ledger = new GrantLedger({
   file: GRANTS_DB,
   importFrom: LEGACY_GRANTS_FILE,
+  scope: GUILD_ID,
+  adoptScope: process.env.DISCORD_LEDGER_ADOPT_GUILD_ID ?? null,
   apply: applyAccess,
   revoke: revokeAccess,
   log: (m) => console.error("[discord]", m),

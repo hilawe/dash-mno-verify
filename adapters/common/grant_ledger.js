@@ -110,6 +110,21 @@ export class GrantLedger {
     resetClock = false,
     log = () => {},
     importFrom = null,
+    // The platform place this ledger's grants live in: a Discord guild, a Matrix room, a Telegram
+    // chat. It is bound into the database itself on first use, not merely recorded on each record.
+    //
+    // Per-record fields alone could not carry this. A record written before the field existed reads as
+    // "unknown", every safe answer to unknown was wrong, and treating unknown as "ours" let a repointed
+    // adapter revoke a legacy record against the new place, receive a not-found the code already
+    // classified as already-gone, and delete the row while the access stayed live and untracked in the
+    // old one. Binding the DATABASE removes the question: every row in it belongs to the bound scope by
+    // construction, whatever any individual record does or does not say.
+    scope = null,
+    // The operator asserting, by naming it, which scope an existing unbound ledger belongs to. Adoption
+    // cannot be inferred, because the whole problem is that the origin of those rows is unknowable from
+    // inside the process. It must equal `scope`, so a mistyped value refuses rather than adopting the
+    // rows into the wrong place.
+    adoptScope = null,
     putFn = null,
     // TEST SEAM. `exclusive: false` disables the single-writer lock, and exists only so tests can open
     // a second connection while a ledger is live. No adapter spreads operator configuration into these
@@ -136,7 +151,7 @@ export class GrantLedger {
     // open on the way out would mean the operator cannot open the database to fix the very thing the
     // error just told them to fix. Close it, then rethrow the original.
     try {
-      this.#open({ file, exclusive, importFrom, resetClock });
+      this.#open({ file, exclusive, importFrom, resetClock, scope, adoptScope });
     } catch (e) {
       try {
         this.#db.close();
@@ -147,7 +162,7 @@ export class GrantLedger {
     }
   }
 
-  #open({ file, exclusive, importFrom, resetClock }) {
+  #open({ file, exclusive, importFrom, resetClock, scope, adoptScope }) {
     // Narrow the file BEFORE enabling write-ahead logging: SQLite creates the sibling -wal and -shm
     // files from the database file's own mode, so doing this afterwards leaves those two holding the
     // same rows at the default mode. The ledger pairs platform accounts with the access they hold,
@@ -227,7 +242,15 @@ export class GrantLedger {
     };
 
     this.#seedRevSeq();
+    // A mismatch is checked BEFORE the import, because the import renames the source file once it
+    // commits and an operator who pointed the adapter at the wrong place should not have their legacy
+    // file moved as a side effect of the attempt.
+    this.#refuseForeignScope(scope);
     this.#importLegacy(importFrom);
+    // Binding happens AFTER the import, so rows adopted from a legacy JSON file are judged by the same
+    // rule as rows already in the database. A fresh ledger binds silently. A ledger that already holds
+    // grants of unknown origin refuses until the operator names the scope.
+    this.#bindScope(scope, adoptScope);
     this.#validateAll();
 
     // A large forward clock jump, once observed, floors every later decision above every real
@@ -244,6 +267,62 @@ export class GrantLedger {
     // Compare the loaded high-water against the clock immediately, so a process that STARTS behind its
     // own mark records that before it can answer a single admission.
     this.#observeClock();
+  }
+
+  // ---- scope binding -----------------------------------------------------------------------------
+
+  // The scope this database is bound to, or null while it is still unbound.
+  scope() {
+    return this.#stmt.readMeta.get("scope")?.v ?? null;
+  }
+
+  // A database bound to somewhere else describes access this process cannot reach. Sweeping it would
+  // revoke against the wrong place, get an already-gone answer, and delete the only record of live
+  // access. Refuse, and say what to do about it.
+  #refuseForeignScope(scope) {
+    const bound = this.scope();
+    if (bound === null || scope === null || String(bound) === String(scope)) return;
+    throw new Error(
+      `refusing to start: ${this.file} is bound to ${bound}, but this adapter is configured for ` +
+        `${scope}. The grants in it name access that is still live in ${bound} and cannot be reached ` +
+        `from here, so sweeping them would delete the only record of it. Point the adapter back at ` +
+        `${bound} and decommission there, or configure a different ledger file for ${scope}.`,
+    );
+  }
+
+  // Bind an unbound database, but only when it is safe to do so without asking.
+  //
+  // An EMPTY ledger has no history to get wrong, so it binds silently. A ledger that already holds
+  // grants is the dangerous case: those rows may have been written against a different place, and
+  // nothing inside this process can tell. Guessing "they must be ours" is exactly the assumption that
+  // let a repoint delete live access. So it fails closed and makes the operator assert the answer.
+  #bindScope(scope, adoptScope) {
+    if (scope === null || this.scope() !== null) return;
+    const rows = this.#stmt.count.get().n;
+    if (rows === 0) {
+      this.#stmt.setMeta.run("scope", String(scope));
+      return;
+    }
+    if (adoptScope !== null && String(adoptScope) === String(scope)) {
+      this.#stmt.setMeta.run("scope", String(scope));
+      this.log(
+        `adopted ${rows} existing grant(s) in ${this.file} as belonging to ${scope}, by explicit ` +
+          `operator assertion. Nothing verified that claim, so if any of them were made elsewhere, ` +
+          `that access is now tracked against the wrong place.`,
+      );
+      return;
+    }
+    throw new Error(
+      `refusing to start: ${this.file} holds ${rows} grant(s) but is not bound to any scope, so ` +
+        `nothing here can tell whether they were made in ${scope} or somewhere else. Treating them as ` +
+        `local is what let a repointed adapter delete the record of access that was still live ` +
+        `elsewhere. Confirm where these grants were made, then either start once asserting it, or ` +
+        `move this file aside and let a fresh ledger bind to ${scope}.` +
+        (adoptScope === null
+          ? ""
+          : ` The assertion given was ${adoptScope}, which is not ${scope}, so it was refused rather ` +
+            `than adopting the grants into a scope the operator did not name.`),
+    );
   }
 
   // ---- durable state, all synchronous ------------------------------------------------------------
