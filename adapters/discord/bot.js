@@ -315,9 +315,10 @@ async function usableTargets(guild) {
     if (!role) {
       return { channels: [], ready: false, why: `role ${ROLE_ID} does not exist in ${guild.name} (${guild.id})` };
     }
-    // A role the bot adds and removes must only ever ADD permissions. Carrying a deny anywhere means
-    // granting it takes access away somewhere else, and removing it hands access back, so a grant
-    // revokes and a revocation grants.
+    // A role the bot adds and removes must only ever ADD permissions. ANY denied bit anywhere inverts
+    // it: granting takes that permission away and revoking hands it back, so a grant revokes and a
+    // revocation grants. Not limited to the three bits channel mode manages, because a role denying
+    // Connect inverts voice access exactly as one denying ViewChannel inverts text access.
     const channels = [...(await guild.channels.fetch()).values()].filter(Boolean).map((ch) => ({
       id: ch.id,
       overwrites: [...(ch.permissionOverwrites?.cache?.values() ?? [])],

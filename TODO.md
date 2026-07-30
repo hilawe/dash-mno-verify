@@ -351,8 +351,10 @@ built from the post-migration code rather than from any earlier packet.
   Resolved by not deciding. Per-member overwrites on a gated channel belong to the bot, it refuses to
   start if it finds one carrying a denial and names the member, and clearing is unconditional and
   therefore correct. Exclusions are expressed with role-level denies. In role mode the configured role
-  must be monotonic: a deny overwrite anywhere refuses startup, because adding the role would otherwise
-  remove access there and removing it would restore it.
+  must be monotonic: ANY denied bit on any channel refuses startup, because adding the role would
+  otherwise remove that permission there and removing it would restore it. Not limited to the three
+  managed bits; a first version checked only those, which would have caught the reviewer's reproduction
+  and missed every other permission.
   Also from that round: admission readiness and cleanup readiness are now separate, so an unreachable
   channel keeps interactions closed without stopping the sweep that revokes expired access (previously
   one bad channel aborted the ready handler before the sweep timer existed); and `isGone` has ONE

@@ -157,16 +157,25 @@ export function memberDenialsOnGatedChannel(overwrites) {
   return offenders;
 }
 
-// A role the bot adds and removes must only ever ADD permissions. If it carries a deny anywhere, adding
-// it takes access away from the member somewhere else and removing it hands access back, so a grant
-// revokes and a revocation grants. Reproduced against the real permission resolver.
+// A role the bot adds and removes must only ever ADD permissions, and that means ANY denial anywhere,
+// not just the three bits channel mode manages.
+//
+// The inversion does not care which bit is denied. If the role denies Connect on a voice channel, then
+// granting it takes voice away and revoking it gives voice back, so a grant revokes and a revocation
+// grants exactly as it would for ViewChannel. An earlier version of this checked only the managed
+// three, which caught the reviewer's reproduction and would have missed every other permission.
+//
+// Reads the whole deny bitfield. `toArray()` names the bits when discord.js provides it, so the refusal
+// message can tell the operator what to fix rather than printing a number.
 export function roleDenialsAcrossChannels(channels, roleId) {
   const offenders = [];
   for (const ch of channels ?? []) {
     for (const ow of ch.overwrites ?? []) {
       if (String(ow.id) !== String(roleId)) continue;
-      const deny = managedState(ow).deny;
-      if (deny.length) offenders.push({ channel: ch.id, deny });
+      const bits = ow.deny?.bitfield;
+      if (bits === undefined || BigInt(bits) === 0n) continue;
+      const named = typeof ow.deny?.toArray === "function" ? ow.deny.toArray() : [String(bits)];
+      offenders.push({ channel: ch.id, deny: named });
     }
   }
   return offenders;

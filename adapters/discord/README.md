@@ -49,8 +49,10 @@ deny instead, or simply do not grant. Two earlier versions tried to be clever he
 worse defect than the one it fixed.
 
 **In role mode the configured role must only ever ADD permissions.** If it carries a deny overwrite on
-any channel, the bot refuses to start, because adding the role would then remove that member's access
-there and removing it would restore it, so a grant would revoke and a revocation would grant.
+any channel, for ANY permission and not just the three this bot manages, the bot refuses to start.
+Adding the role would otherwise remove that permission there and removing it would restore it, so a
+grant would revoke and a revocation would grant. A role denying `Connect` on a voice channel inverts
+voice access exactly as one denying `ViewChannel` inverts text access.
 
 A startup pass that cannot clear someone refuses to start rather than reporting success.
 

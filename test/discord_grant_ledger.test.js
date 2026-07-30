@@ -506,30 +506,47 @@ test("a per-member denial on a gated channel is detected, so the bot can refuse 
 
 // A role the bot adds and removes must only ever ADD permissions. Carrying a deny anywhere means adding
 // it takes access away from the member on that channel, and removing it hands access back, so a grant
-// revokes and a revocation grants. Reproduced against the real permission resolver by a reviewer.
-test("a role carrying a denial anywhere is detected, because adding it would remove access", () => {
+// revokes and a revocation grants. Reproduced against the real permission resolver by two reviewers.
+//
+// ANY denied bit counts, not just the three channel mode manages. A role denying Connect inverts voice
+// access exactly as one denying ViewChannel inverts text access, and an earlier version of this check
+// looked only at the managed three, so it would have caught the reproduction it was written for and
+// missed every other permission.
+const denyBits = (names) => ({
+  bitfield: names.length ? 1n : 0n,
+  toArray: () => names,
+});
+const roleOverwrite = (id, denied = []) => ({ id, deny: denyBits(denied) });
+
+test("a role carrying ANY denial is detected, because adding it would remove access", () => {
   const ch = (id, overwrites) => ({ id, overwrites });
+
   assert.deepEqual(
-    roleDenialsAcrossChannels([ch("c1", [fakeOverwrite("r1", ["ViewChannel"])])], "r1"),
+    roleDenialsAcrossChannels([ch("c1", [roleOverwrite("r1")])], "r1"),
     [],
-    "a role that only grants is monotonic and safe to add and remove",
+    "a role that denies nothing is monotonic and safe to add and remove",
   );
   assert.deepEqual(
-    roleDenialsAcrossChannels([ch("c9", [fakeOverwrite("r1", [], ["ViewChannel"])])], "r1"),
+    roleDenialsAcrossChannels([ch("c9", [roleOverwrite("r1", ["ViewChannel"])])], "r1"),
     [{ channel: "c9", deny: ["ViewChannel"] }],
     "a denial on an unrelated channel is what makes adding the role remove access there",
   );
   assert.deepEqual(
-    roleDenialsAcrossChannels([ch("c9", [fakeOverwrite("SOMEONE_ELSE", [], ["ViewChannel"])])], "r1"),
+    roleDenialsAcrossChannels([ch("v1", [roleOverwrite("r1", ["Connect", "Speak"])])], "r1"),
+    [{ channel: "v1", deny: ["Connect", "Speak"] }],
+    "a bit outside the three managed ones inverts just as surely, and must be caught",
+  );
+  assert.deepEqual(
+    roleDenialsAcrossChannels([ch("c9", [roleOverwrite("SOMEONE_ELSE", ["ViewChannel"])])], "r1"),
     [],
     "another id's denial is not this role's problem",
   );
   assert.deepEqual(
     roleDenialsAcrossChannels(
-      [ch("c1", [fakeOverwrite("r1", ["ViewChannel"])]), ch("c2", [fakeOverwrite("r1", [], ["SendMessages"])])],
+      [ch("c1", [roleOverwrite("r1")]), ch("c2", [roleOverwrite("r1", ["AddReactions"])])],
       "r1",
     ),
-    [{ channel: "c2", deny: ["SendMessages"] }],
+    [{ channel: "c2", deny: ["AddReactions"] }],
     "one bad channel among good ones is still reported",
   );
   assert.deepEqual(roleDenialsAcrossChannels([], "r1"), []);
