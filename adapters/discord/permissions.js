@@ -65,11 +65,14 @@ function assertNoMemberDenial(ch, userId, what) {
   }
 }
 
-// Refuse if the configured role denies ANY permission on ANY channel.
+// Refuse if the role denies ANY permission on ANY channel.
 //
-// The inversion does not care which bit is denied. A role denying Connect inverts voice access
-// exactly as one denying ViewChannel inverts text access, so adding the role removes a permission and
-// removing it hands one back. A grant would revoke and a revocation would grant.
+// This bot never grants a role. Role mode was removed because a role is visible on the member's
+// profile card and so discloses who holds a masternode. What remains is the decommission command's
+// ability to take an old role back, and that still needs this check: removing a role that DENIES
+// something hands that permission back, so a command whose purpose is taking access away would grant
+// it. The inversion does not care which bit is denied, since a role denying Connect inverts voice
+// access exactly as one denying ViewChannel inverts text access.
 //
 // This reads `guild.channels.cache` rather than fetching, deliberately. A fetch of every channel
 // before every member's role mutation would turn one sweep into hundreds of round trips, and the
@@ -104,11 +107,6 @@ export async function grantMemberOverwrite(ch, userId) {
 export async function clearMemberOverwrite(ch, userId) {
   assertNoMemberDenial(ch, userId, "clearing the managed bits");
   await ch.permissionOverwrites.edit(userId, ACCESS_CLEARED, { type: OverwriteType.Member });
-}
-
-export async function addRole(guild, member, roleId) {
-  assertRoleOnlyAdds(guild, roleId, "adding the role");
-  await member.roles.add(roleId);
 }
 
 export async function removeRole(guild, member, roleId) {

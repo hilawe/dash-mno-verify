@@ -4,6 +4,20 @@ Known issues and planned work, in priority order, from a code review of the curr
 This is a working prototype and is not audited. Do not gate anything of real value until at
 least the P0 items are done and the system has had an audit.
 
+ROLE MODE HAS BEEN REMOVED (2026-07-30). A verified member is added to the private channel with a
+per-user permission overwrite, and that is the only mode. A Discord role is visible on the member's
+profile card to everyone in the server, so granting one announced who holds a masternode, which is
+the fact this whole construction exists to keep private. It defeated the system by design rather than
+by defect, so hardening it further was the wrong answer and it should not have been reachable by
+setting one environment variable. One of the round 9 reviewers recommended the same removal
+independently, on the ground that Discord offers no compare-and-set for that surface. Removing it also
+removed the part of the adapter nobody could verify: every role finding in every review was marked
+INFERRED, because no reviewer could execute those semantics and neither can the tests.
+`DISCORD_GRANT_MODE=role` and `DISCORD_MNO_ROLE_ID` now refuse to start. Role targets survive in ONE
+place on purpose, `npm run discord:decommission -- role:<id>`, so an operator can take back access an
+earlier deployment granted, and the bot refuses to start while any role grant remains in the ledger.
+Removing a mode must not strand the access it granted.
+
 The full adversarial review of 2026-06-26 is the source of truth, committed at
 `REVIEW_FINDINGS_dash-mno-verify_2026-06-26.md`. The B1 relay path (a valid proof relayed by a
 stranger granted the stranger) is closed for the supported adapter flow: the gateway binds the
@@ -392,7 +406,7 @@ built from the post-migration code rather than from any earlier packet.
   expired row, and the effect then lands. That member holds access nothing tracks. The startup pass
   narrows this window but cannot close it, because it is a snapshot. The README now says so rather than
   implying the pass covers the case fully. Options: re-run the current-target check periodically rather
-  than only at startup (cheap in channel mode, a full member enumeration in role mode), or keep a
+  than only at startup (cheap, since it reads channel overwrites and role mode is gone), or keep a
   tombstone for a revoked grant and re-check it after a convergence window. The periodic re-check is
   the simpler of the two and would also catch access an admin adds by hand.
   (`adapters/discord/bot.js`)

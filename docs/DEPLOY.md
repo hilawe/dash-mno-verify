@@ -98,10 +98,10 @@ export DISCORD_TOKEN=... DISCORD_APP_ID=... DISCORD_GUILD_ID=...
 export MNO_GATEWAY_URL=http://127.0.0.1:8787
 export MNO_ADAPTER_SECRET=<the same value the gateway uses>
 # Channel mode (recommended): add verified members to the private channel(s), no public role.
-export DISCORD_GRANT_MODE=channel DISCORD_GRANT_CHANNEL_IDS=<channel id,...>
-# Role mode (simpler, but the role is visible on the profile card, so it discloses who holds a
-# masternode; channel mode is the default for that reason):
-# export DISCORD_GRANT_MODE=role DISCORD_MNO_ROLE_ID=...
+export DISCORD_GRANT_CHANNEL_IDS=<channel id,...>
+# Per-channel access is the only mode. Role mode was removed: a Discord role is visible on the
+# member's profile card, so it disclosed who holds a masternode, which is the fact this system
+# exists to keep private. DISCORD_GRANT_MODE=role and DISCORD_MNO_ROLE_ID now refuse to start.
 npm run bot
 ```
 

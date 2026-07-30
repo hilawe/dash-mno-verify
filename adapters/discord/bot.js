@@ -4,11 +4,10 @@
 // It asks the gateway for a challenge, relays it to the member, takes the proof the
 // member produced locally, asks the gateway to verify, and grants access on success.
 //
-// Access is granted in one of two ways (DISCORD_GRANT_MODE). In "channel" mode the bot adds the
-// member straight to the private channel with a per-user permission overwrite, the automated form of
-// adding someone by hand, so nothing about their masternode shows on their public profile. In "role"
-// mode it assigns a server role, which is simpler but visible on the profile card, so it reveals who
-// holds a masternode. A privacy-sensitive community should use "channel".
+// Access is a per-user permission overwrite on the private channel, the automated form of adding
+// someone by hand, so nothing about their masternode shows on their public profile. There is no other
+// mode. A server role would have been simpler but is visible on the profile card, so it revealed who
+// holds a masternode, and that mode has been removed rather than left one variable away.
 //
 // To port to Telegram or Matrix, reimplement these two handlers against that platform's
 // API and keep every call to the gateway byte-for-byte identical.
@@ -29,7 +28,6 @@ import {
   authorizesTarget,
   staleTargets,
   memberDenialsOnGatedChannel,
-  roleDenialsAcrossChannels,
   foreignGuildRecords,
   isGone,
   isNotOurs,
@@ -37,38 +35,41 @@ import {
 // Every Discord permission mutation goes through these, and each one performs its own denial check
 // immediately before acting. Nine rounds of adding the check at the site a reviewer named, and leaving
 // its twin unguarded a few lines away, is what this import exists to end.
-import {
-  grantMemberOverwrite,
-  clearMemberOverwrite,
-  addRole,
-  removeRole,
-  isDenialConflict,
-} from "./permissions.js";
+import { grantMemberOverwrite, clearMemberOverwrite, isDenialConflict } from "./permissions.js";
 
 const TOKEN = process.env.DISCORD_TOKEN;
 const APP_ID = process.env.DISCORD_APP_ID;
 const GUILD_ID = process.env.DISCORD_GUILD_ID;
-const ROLE_ID = process.env.DISCORD_MNO_ROLE_ID;
 const GATEWAY = process.env.MNO_GATEWAY_URL ?? "http://127.0.0.1:8787";
 // Adapter bearer token the gateway requires when MNO_ADAPTER_SECRET is set there. Sent on the
 // account-bearing calls so the gateway trusts the account this adapter vouches for (review B1/M5).
 const ADAPTER_SECRET = process.env.MNO_ADAPTER_SECRET;
 const authHeaders = ADAPTER_SECRET ? { authorization: `Bearer ${ADAPTER_SECRET}` } : {};
 
-// Channel mode is the default, because the alternative discloses the very thing the proof protects.
-// A Discord ROLE is visible on the member's profile card to everyone in the server, so granting one
-// announces who holds a masternode (never which one, but that they hold one at all). The whole point
-// of the zero-knowledge construction upstream is that this fact stays private, and a default that
-// leaks it means anyone who does not read the documentation gets the disclosing behaviour for free.
-// Channel mode adds a per-user permission overwrite on the private channel instead, which is the
-// automated form of adding someone by hand and shows nothing publicly.
-const GRANT_MODE = process.env.DISCORD_GRANT_MODE ?? "channel";
+// THERE IS ONE GRANT MODE, AND IT IS PER-CHANNEL OVERWRITES. ROLE MODE IS GONE.
+//
+// A Discord role is visible on the member's profile card to everyone in the server, so granting one
+// announced who holds a masternode. Never which one, but that they hold one at all, and that is
+// precisely the fact the zero-knowledge construction upstream exists to keep private. Every other
+// protection in this project is downstream of that fact staying secret, so a mode that discloses it
+// defeated the system by design rather than by defect, and it should not have been reachable by
+// setting one environment variable.
+//
+// Removing it also removes the part of this adapter nobody could verify. A role inverts if it denies
+// any permission anywhere, so adding it removed access and removing it granted access, and every guard
+// against that ran against a cached, guild-wide scan of every channel. Four reviewers marked every
+// role finding INFERRED, because none of them could execute those semantics against a live server, and
+// neither could the tests. The channel paths are the ones with real reproductions behind them.
+//
+// A ledger written by an older version can still hold role records. Those are NOT silently ignored:
+// the bot refuses to start and names them, and `npm run discord:decommission -- role:<id>` still exists
+// to take that access back. Removing a mode must not strand the access it granted.
 const GRANT_CHANNEL_IDS = (process.env.DISCORD_GRANT_CHANNEL_IDS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
-// The context the proof is scoped to (platform, community, and this id). The nullifier and the
-// two-tier members set are scoped to it, so keep it stable. In channel mode it defaults to the first
-// channel id, in role mode to the role id, but set DISCORD_CONTEXT_ID for a context that does not
-// change if the role or channel ids do.
-const CONTEXT_ID = process.env.DISCORD_CONTEXT_ID ?? (GRANT_MODE === "channel" ? GRANT_CHANNEL_IDS[0] : ROLE_ID);
+// The context the proof is scoped to (platform, community, and this id). This is the PROTOCOL's
+// context id and has nothing to do with a Discord role. The nullifier and the two-tier members set are
+// scoped to it, so keep it stable. It defaults to the first channel id, but set DISCORD_CONTEXT_ID for
+// a context that does not change if the channel ids do.
+const CONTEXT_ID = process.env.DISCORD_CONTEXT_ID ?? GRANT_CHANNEL_IDS[0];
 const SWEEP_SECONDS = Number(process.env.DISCORD_SWEEP_SECONDS ?? 300);
 // The ledger is a SQLite database now. DISCORD_GRANTS_FILE keeps its old meaning, the JSON file, and
 // is read once on first start to migrate its grants and clock state across, after which it is renamed
@@ -77,43 +78,30 @@ const SWEEP_SECONDS = Number(process.env.DISCORD_SWEEP_SECONDS ?? 300);
 const GRANTS_DB = process.env.DISCORD_GRANTS_DB ?? "adapters/discord/grants.db";
 const LEGACY_GRANTS_FILE = process.env.DISCORD_GRANTS_FILE ?? "adapters/discord/grants.json";
 
-// The default changed from role to channel, so a deployment that never set DISCORD_GRANT_MODE gets a
-// different mode than it used to. Require the mode explicitly whenever a role id is present, rather
-// than guessing which one was meant.
-//
-// This check deliberately sits OUTSIDE the "no channel ids" branch. An earlier version put it inside,
-// so a deployment carrying an unused DISCORD_GRANT_CHANNEL_IDS alongside its role id flipped silently
-// from role mode to channel mode, taking the default proof context with it from the role id to the
-// channel id. The condition is about the mode being unstated, not about which ids happen to be set.
-if (!process.env.DISCORD_GRANT_MODE && ROLE_ID) {
+// Refuse a configuration that asks for the removed mode rather than quietly doing something else with
+// it. An operator who set DISCORD_GRANT_MODE=role chose the disclosing behaviour on purpose, and
+// silently giving them channel mode would change who can see what without telling them.
+if (process.env.DISCORD_GRANT_MODE && process.env.DISCORD_GRANT_MODE !== "channel") {
   console.error(
-    "[discord] set DISCORD_GRANT_MODE explicitly. The default is now 'channel', because a Discord role " +
-      "is visible on the member's profile card and so discloses who holds a masternode, which is the " +
-      "fact the proof exists to keep private. This bot has DISCORD_MNO_ROLE_ID set and no explicit " +
-      "mode, so it may have been relying on the old 'role' default.\n" +
-      "  DISCORD_GRANT_MODE=channel  with DISCORD_GRANT_CHANNEL_IDS set (recommended)\n" +
-      "  DISCORD_GRANT_MODE=role     to keep the disclosing behaviour",
+    `[discord] DISCORD_GRANT_MODE=${process.env.DISCORD_GRANT_MODE} is not available. Role mode has ` +
+      `been removed, because a Discord role is visible on the member's profile card and so discloses ` +
+      `who holds a masternode, which is the fact this system exists to keep private. Per-channel ` +
+      `access is the only mode. Unset DISCORD_GRANT_MODE, or set it to 'channel'.\n` +
+      `  If a role is still granting access from an earlier deployment, take it back with:\n` +
+      `    npm run discord:decommission -- role:<id> --apply`,
   );
   process.exit(1);
 }
-if (GRANT_MODE !== "channel" && GRANT_MODE !== "role") {
-  console.error(`[discord] DISCORD_GRANT_MODE must be 'channel' or 'role', got '${GRANT_MODE}'`);
-  process.exit(1);
-}
-if (GRANT_MODE === "channel" && GRANT_CHANNEL_IDS.length === 0) {
-  console.error("[discord] DISCORD_GRANT_MODE=channel needs DISCORD_GRANT_CHANNEL_IDS (comma-separated channel ids)");
-  process.exit(1);
-}
-if (GRANT_MODE === "role") {
-  console.warn(
-    "[discord] WARNING: role mode grants a Discord role, which is visible on the member's profile card " +
-      "to everyone in the server. It therefore discloses who holds a masternode, which is the fact the " +
-      "proof exists to keep private. Use channel mode unless your community has decided it does not " +
-      "care about that disclosure.",
+if (process.env.DISCORD_MNO_ROLE_ID) {
+  console.error(
+    "[discord] DISCORD_MNO_ROLE_ID is set, but role mode has been removed and this bot never grants a " +
+      "role. Unset it so nobody reads this configuration as still handing out that role. Access that " +
+      "role already carries is cleared with: npm run discord:decommission -- role:<id> --apply",
   );
+  process.exit(1);
 }
-if (GRANT_MODE === "role" && !ROLE_ID) {
-  console.error("[discord] DISCORD_GRANT_MODE=role needs DISCORD_MNO_ROLE_ID");
+if (GRANT_CHANNEL_IDS.length === 0) {
+  console.error("[discord] DISCORD_GRANT_CHANNEL_IDS is required (comma-separated channel ids)");
   process.exit(1);
 }
 if (!Number.isFinite(SWEEP_SECONDS) || SWEEP_SECONDS <= 0) {
@@ -134,13 +122,17 @@ const getGuild = async () => (guildRef ??= await client.guilds.fetch(GUILD_ID));
 // back in by running /submit. The fourth reviewer called that the intentional ownership claim, but the
 // bot's own design says it refuses a conflict it can see, and the startup quarantine exists precisely
 // to stop granting while a denial is present. A denial that appears after startup is the same conflict
-// with worse timing. grantMemberOverwrite and addRole carry the check now.
+// with worse timing. grantMemberOverwrite carries the check now.
 async function applyAccess(userId, record) {
   const guild = await getGuild();
+  // Only channel records are ever written. A role record can only have come from a version that had
+  // role mode, and startup refuses to run at all while one is in the ledger, so reaching this with one
+  // means that guard was bypassed rather than that this should handle it.
   if (record.mode !== "channel") {
-    const member = await guild.members.fetch(userId);
-    await addRole(guild, member, record.roleId);
-    return;
+    throw new Error(
+      `refusing to grant ${userId} a ${record.mode} target: this bot only ever grants per-channel ` +
+        `access. Take the old target back with npm run discord:decommission.`,
+    );
   }
   const failures = [];
   for (const chId of record.channels) {
@@ -212,16 +204,15 @@ async function revokeAccess(userId, record) {
       }
     }
     if (failures.length) throw new Error(`could not revoke ${failures.join("; ")}`);
-  } else if (record.roleId) {
-    let member;
-    try { member = await guild.members.fetch(userId); } catch (e) { if (isGone(e)) return; throw e; }
-    try {
-      // Guarded now. A role that gained a denial after startup inverts removal, so taking it away
-      // would hand the denied permission back. Refusing keeps the record for retry.
-      await removeRole(guild, member, record.roleId);
-    } catch (e) {
-      if (!isGone(e)) throw e;
-    }
+  } else {
+    // A role record from an older version. This bot no longer touches roles at all, and taking one
+    // back needs the guild-wide denial scan the decommission command still carries, because removing a
+    // role that denies something hands that permission back. Keep the record so the access stays
+    // tracked, and say what clears it.
+    throw new Error(
+      `record names role ${record.roleId}, which this bot no longer manages. Take it back with ` +
+        `npm run discord:decommission -- role:${record.roleId} --apply. The record is kept until then.`,
+    );
   }
 }
 
@@ -279,30 +270,17 @@ async function registerCommands() {
 }
 
 
-// GuildMembers is a PRIVILEGED intent and must be enabled for the application in Discord's developer
-// portal. Role mode needs it, because reconciliation has to enumerate who currently holds the role.
-// Channel mode does not: per-user channel overwrites arrive with the Guilds intent. The startup
-// reconciliation below fails closed with an explicit message if role mode cannot read the member list,
-// rather than recording a pass it did not actually make.
-// Role mode needs the privileged member intent, because deciding who should keep a role means
-// enumerating who holds it. Channel mode does not: per-user channel overwrites arrive with the
-// ordinary Guilds intent. This depends on the configured mode and nothing else, so there is no state
-// to read before the client exists. An earlier version read the marker synchronously here to decide,
-// which produced a startup that could refuse forever with no way out.
-const client = new Client({
-  intents:
-    GRANT_MODE === "role" ? [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers] : [GatewayIntentBits.Guilds],
-});
+// No privileged intent. Per-user channel overwrites arrive with the ordinary Guilds intent. Role mode
+// was the only thing that needed SERVER MEMBERS, because deciding who should keep a role meant
+// enumerating who holds it, and removing that mode removed the need to ask Discord for the member list
+// at all.
+const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
 
 // `channelId` names the ONE channel being judged, so a member keeps the channel their record covers
 // even when the configuration has since grown to include others.
 const authorizedNow = (userId, channelId = null) =>
-  authorizesTarget(ledger.get(userId), ledger.live(userId), {
-    mode: GRANT_MODE,
-    channel: channelId,
-    roleId: ROLE_ID,
-  });
+  authorizesTarget(ledger.get(userId), ledger.live(userId), { mode: "channel", channel: channelId });
 
 // Interactions arrive as soon as the gateway is ready, and the ready handler awaits this pass, so a
 // member can run /submit while it is running. Reconciliation touches Discord directly rather than
@@ -355,51 +333,6 @@ let reconciled = false;
 //   produced a defect worse than the one they fixed. Refusing is the only honest option, and the
 //   operator fixes it with a role-level deny instead.
 async function usableTargets(guild) {
-  if (GRANT_MODE === "role") {
-    let role;
-    try {
-      role = await guild.roles.fetch(ROLE_ID);
-    } catch (e) {
-      if (!isGone(e) && !isNotOurs(e)) throw e; // a blip must not read as "the role is missing"
-      role = null;
-    }
-    if (!role) {
-      return { channels: [], ready: false, why: `role ${ROLE_ID} does not exist in ${guild.name} (${guild.id})` };
-    }
-    // A role the bot adds and removes must only ever ADD permissions. ANY denied bit anywhere inverts
-    // it: granting takes that permission away and revoking hands it back, so a grant revokes and a
-    // revocation grants. Not limited to the three bits channel mode manages, because a role denying
-    // Connect inverts voice access exactly as one denying ViewChannel inverts text access.
-    const channels = [...(await guild.channels.fetch()).values()].filter(Boolean).map((ch) => ({
-      id: ch.id,
-      overwrites: [...(ch.permissionOverwrites?.cache?.values() ?? [])],
-    }));
-    const offenders = roleDenialsAcrossChannels(channels, ROLE_ID);
-    if (offenders.length) {
-      // QUARANTINE, not exit. This used to call process.exit(1), which runs inside the ready handler
-      // BEFORE the startup sweep and its timer are installed, so one deny overwrite on the configured
-      // role stopped every unrelated member's expired access from ever being revoked, indefinitely if
-      // the deny was deliberate operator policy. That is the exact inversion the channel branch below
-      // was changed to fix, and the role branch beside it was left alone: the twin, again, and three
-      // of the four round 9 reviewers found it. Admissions close, cleanup continues, and each role
-      // mutation refuses on its own through removeRole, so the sweep keeps a conflicted record for
-      // retry while unrelated records are swept normally.
-      console.error(
-        `[discord] role ${ROLE_ID} is QUARANTINED: it carries a denial on ` +
-          `${offenders.map((o) => `${o.channel} (${o.deny.join(", ")})`).join(", ")}. Adding this role ` +
-          `would REMOVE access there and removing it would GRANT access, so a grant would revoke and a ` +
-          `revocation would grant. Use a role that only ever adds permissions. Admissions stay closed ` +
-          `and expired access elsewhere is still being cleaned up.`,
-      );
-      return {
-        channels: [],
-        ready: false,
-        why: `role ${ROLE_ID} carries a denial that would invert every grant and revocation`,
-      };
-    }
-    return { channels: [], ready: true };
-  }
-
   const usable = [];
   const unreachable = [];
   const conflicted = [];
@@ -470,6 +403,22 @@ async function reconcileGuild() {
         `and this bot starts against ${GUILD_ID}.`,
     );
   }
+  // A role record can only have come from a version that had role mode. This bot cannot take that
+  // access back, so it must not pretend the ledger is clean: it refuses and names the command that
+  // does. Removing a mode must not strand the access it granted, and quietly ignoring those rows would
+  // leave a masternode holder's status visible on their profile card with nothing tracking it.
+  const roleRecords = ledger.all().filter((r) => r?.mode === "role");
+  if (roleRecords.length) {
+    const ids = [...new Set(roleRecords.map((r) => String(r.roleId)).filter(Boolean))];
+    throw new Error(
+      `the ledger holds ${roleRecords.length} grant(s) for role(s) ${ids.join(", ")}, from a version ` +
+        `that granted roles. Role mode has been removed because a role is visible on the member's ` +
+        `profile card and so discloses who holds a masternode. That access is still live and still ` +
+        `disclosing.\n` +
+        ids.map((id) => `    npm run discord:decommission -- role:${id} --apply`).join("\n") +
+        `\n  Run that for each, then start again. The command retires the rows it clears.`,
+    );
+  }
   const targets = await usableTargets(guild);
   const removed = [];
   const failed = [];
@@ -497,24 +446,7 @@ async function reconcileGuild() {
     }
   };
 
-  if (GRANT_MODE === "role") {
-    let members;
-    try {
-      members = await guild.members.fetch();
-    } catch (e) {
-      throw new Error(
-        `cannot read the member list to reconcile role ${ROLE_ID} (${e.message}). Enable the SERVER ` +
-          `MEMBERS INTENT for this application in Discord's developer portal, or use channel mode, ` +
-          `which needs no privileged intent and does not disclose who holds a masternode.`,
-      );
-    }
-    for (const [id, m] of members) {
-      if (id === client.user.id) continue; // never strip the bot
-      if (!m.roles.cache.has(ROLE_ID)) continue;
-      if (authorizedNow(id)) continue;
-      await clear(id, () => removeRole(guild, m, ROLE_ID));
-    }
-  } else {
+  {
     for (const chId of targets.channels) {
       let ch;
       try {
@@ -546,7 +478,7 @@ async function reconcileGuild() {
 
   // Report, never act. A record naming a target this bot no longer grants through means an earlier
   // configuration handed out access that is still out there.
-  const stale = staleTargets(ledger.all(), { mode: GRANT_MODE, channels: GRANT_CHANNEL_IDS, roleId: ROLE_ID });
+  const stale = staleTargets(ledger.all(), { mode: "channel", channels: GRANT_CHANNEL_IDS });
   for (const t of stale) {
     console.warn(
       `[discord] WARNING: the ledger holds grants for ${t}, which this bot no longer manages. Members ` +
@@ -555,7 +487,7 @@ async function reconcileGuild() {
     );
   }
 
-  console.log(`[discord] reconciled ${GRANT_MODE} target, took access back from ${removed.length} member(s)`);
+  console.log(`[discord] reconciled, took access back from ${removed.length} member(s)`);
   return targets;
 }
 
@@ -649,23 +581,22 @@ async function handleInteraction(i) {
     try {
       await ledger.grant(i.user.id, {
         expiresAt: out.expiresAt,
-        mode: GRANT_MODE,
+        mode: "channel",
         guildId: GUILD_ID, // so a repoint cannot delete a record for access in a guild we can no longer reach
         channels: GRANT_CHANNEL_IDS,
-        roleId: ROLE_ID,
       });
     } catch (e) {
       console.error("[discord] grant failed:", e.message);
       return i.editReply("Verified, but granting access did not complete. Run `/verify` again to retry.");
     }
     const until = new Date(out.expiresAt * 1000).toISOString().replace("T", " ").slice(0, 16);
-    const where = GRANT_MODE === "channel" ? "access to the masternode channel" : "the masternode role";
+    const where = "access to the masternode channel";
     return i.editReply(`Verified. You have ${where} for this epoch (until ${until} UTC). Run \`/verify\` again after it rolls over to keep access.`);
   }
 }
 
 client.once("ready", async () => {
-  console.log(`[discord] logged in as ${client.user.tag}, grant mode ${GRANT_MODE}`);
+  console.log(`[discord] logged in as ${client.user.tag}, granting per-channel access`);
   // Sweep once now (clearing grants that lapsed while the bot was down), then on a timer, so a member
   // who does not re-verify loses access after the epoch.
   // Reconcile BEFORE the first sweep. The sweep only knows the ledger, so running it first would
@@ -701,9 +632,8 @@ await client.login(TOKEN).catch((e) => {
   console.error(
     `[discord] could not log in: ${e.message}` +
       (/disallowed intents/i.test(e.message)
-        ? "\nRole mode needs the SERVER MEMBERS INTENT enabled for this application in Discord's " +
-          "developer portal. Channel mode needs no privileged intent, and does not disclose who holds " +
-          "a masternode, so prefer it."
+        ? "\nThis bot asks only for the ordinary Guilds intent, so a disallowed-intent rejection means " +
+          "something else is requesting a privileged one. It no longer needs SERVER MEMBERS."
         : ""),
   );
   process.exit(1);

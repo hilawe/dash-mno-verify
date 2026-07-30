@@ -3,16 +3,18 @@
 The first platform adapter. It is deliberately thin: it does Discord input and output
 and the access grant, and delegates every decision to the gateway.
 
-## Channel and role grant modes
+## How access is granted
 
-A verified member is granted access in one of two ways, set by `DISCORD_GRANT_MODE`.
+A verified member is granted access one way, and there is no longer a choice to get wrong.
 
-- `channel` (**the default**). The bot adds the member to the private channel(s) in `DISCORD_GRANT_CHANNEL_IDS` with a per-user permission overwrite, which is the automated form of adding someone by hand. It shows nothing on the member's public profile, so an ordinary server member outside the channel cannot tell who holds a masternode. The people who can already see that channel's access (server admins who inspect the overwrites or the audit log, the bot operator, and the other members inside the private channel) still can, and the proof hides which node in every case. The members of the private channel see each other, exactly as they would if added manually.
-- `role` (opt in, and it warns at startup). The bot assigns `DISCORD_MNO_ROLE_ID`. Easier to set up, but a Discord role is visible on the member's profile card to anyone in the server, so it announces who holds a masternode. That is the fact the proof exists to keep private, which is why it is no longer the default. Use it only where your community has decided that exposure does not matter.
+The bot adds the member to the private channel(s) in `DISCORD_GRANT_CHANNEL_IDS` with a per-user permission overwrite, which is the automated form of adding someone by hand. It shows nothing on the member's public profile, so an ordinary server member outside the channel cannot tell who holds a masternode. The people who can already see that channel's access (server admins who inspect the overwrites or the audit log, the bot operator, and the other members inside the private channel) still can, and the proof hides which node in every case. The members of the private channel see each other, exactly as they would if added manually.
+Role mode has been REMOVED. It assigned a server role, which was easier to set up, but a Discord role is visible on the member's profile card to anyone in the server, so it announced who holds a masternode. That is the fact the proof exists to keep private, so the mode defeated the system by design rather than by defect and should not have been one environment variable away. `DISCORD_GRANT_MODE=role` and `DISCORD_MNO_ROLE_ID` now refuse to start rather than quietly doing something else.
+
+If an earlier deployment granted a role, that access is still live and still disclosing. The bot refuses to start while any role grant remains in the ledger and names it. Clear it with `npm run discord:decommission -- role:<id> --apply`, which still exists for exactly this. Removing a mode must not strand the access it granted.
 
 The verification conversation itself is always private, since `/verify` and `/submit` use ephemeral replies that only the member sees. The grant is the only step that can be public, which is why `channel` mode exists.
 
-Either way, the bot runs a sweep (`DISCORD_SWEEP_SECONDS`, default 300) that removes a member's access once their epoch grant lapses and they have not re-verified, so access tracks current masternode control rather than being permanent once granted. It persists its grant ledger to a SQLite database (`DISCORD_GRANTS_DB`, default `adapters/discord/grants.db`, which holds user ids, is mode 0600, and is gitignored), so access is still revoked after a restart, and it sweeps once at startup. An existing JSON ledger at `DISCORD_GRANTS_FILE` is migrated into it on first start and then renamed with a `.migrated` suffix.
+The bot runs a sweep (`DISCORD_SWEEP_SECONDS`, default 300) that removes a member's access once their epoch grant lapses and they have not re-verified, so access tracks current masternode control rather than being permanent once granted. It persists its grant ledger to a SQLite database (`DISCORD_GRANTS_DB`, default `adapters/discord/grants.db`, which holds user ids, is mode 0600, and is gitignored), so access is still revoked after a restart, and it sweeps once at startup. An existing JSON ledger at `DISCORD_GRANTS_FILE` is migrated into it on first start and then renamed with a `.migrated` suffix.
 
 **Every startup, before its first sweep, the bot checks the target it manages now.** It finds everyone
 holding access there with no live matching grant and takes that access back. This is not a one-time
@@ -21,8 +23,8 @@ accepting a request and acting on it, which always looks like an ordinary restar
 refused with a "try again in a moment" reply until it finishes, since it calls Discord directly rather
 than through the ledger's per-member queue.
 
-**It never cleans up after a repoint by itself.** If you point the bot at a different channel or role,
-the old one still holds whatever it held. **Decommission the old target deliberately, every time you
+**It never cleans up after a repoint by itself.** If you point the bot at different channels, the old
+ones still hold whatever they held. **Decommission the old target deliberately, every time you
 repoint.** Treat that as part of the repoint, not as something to wait for a prompt about:
 
 ```
@@ -96,13 +98,13 @@ rewriting permissions that you are editing at the same time. Express an exclusio
 deny instead, or simply do not grant. Two earlier versions tried to be clever here and each produced a
 worse defect than the one it fixed.
 
-**In role mode the configured role must only ever ADD permissions.** If it carries a deny overwrite on
-any channel, for ANY permission and not just the three this bot manages, the role is quarantined:
-admissions close and the role is left alone. Adding the role would otherwise remove that permission
-there and removing it would restore it, so a grant would revoke and a revocation would grant. A role
-denying `Connect` on a voice channel inverts voice access exactly as one denying `ViewChannel` inverts
-text access. The same check runs again immediately before every individual role add and remove, so a
-deny added after startup is caught at the mutation rather than by the snapshot.
+**A role being decommissioned must only ever ADD permissions.** The bot never grants a role, but the
+decommission command can still take an old one back, and removing a role that DENIES something hands
+that permission back, so a command whose purpose is taking access away would grant it. If the role
+carries a deny overwrite on any channel, for ANY permission and not just the three this bot manages,
+the removal is refused and says which channel. A role denying `Connect` on a voice channel inverts
+voice access exactly as one denying `ViewChannel` inverts text access. The check runs immediately
+before every individual removal, not only once before the loop.
 
 A pass that cannot clear someone closes admissions rather than reporting success. It does not stop the
 process, and that distinction matters: killing the process here would also stop the expiry sweep, so
@@ -115,9 +117,8 @@ compare-and-set for permissions, so this cannot be closed. Separately, if Discor
 and applies it after the bot has stopped, that access exists with no record of it, and a startup pass
 is what finds it. Restart the bot after any incident where it was stopped abruptly.
 
-Role mode needs the SERVER MEMBERS INTENT enabled for the application in Discord's developer portal,
-because deciding who should keep a role means enumerating who holds it. Channel mode needs no
-privileged intent. `npm run discord:decommission` asks for the intent only when the target you name is
+The bot needs no privileged intent at all. Per-user channel overwrites arrive with the ordinary
+Guilds intent, and SERVER MEMBERS was only ever needed by role mode, which is gone. `npm run discord:decommission` asks for the intent only when the target you name is
 a role, so you can enable it, run the command once, and turn it off again.
 
 Only one adapter process may run against a given ledger at a time, and the database enforces it: it is
@@ -149,15 +150,11 @@ export DISCORD_GUILD_ID=...              # the server id
 export MNO_GATEWAY_URL=http://127.0.0.1:8787
 export MNO_ADAPTER_SECRET=...            # the same value the gateway runs with, or its calls get 401
 
-# Channel mode (recommended): add verified members to the private channel(s), no public role
-export DISCORD_GRANT_MODE=channel
+# Add verified members to the private channel(s). This is the only grant mode.
 export DISCORD_GRANT_CHANNEL_IDS=111111111111111111,222222222222222222
 export DISCORD_CONTEXT_ID=mn-members     # stable context the proof is scoped to (optional)
-
-# Role mode (opt in): assign a server role, VISIBLE on the profile card, so it discloses
-# who holds a masternode. The bot warns at startup if you use it.
-# export DISCORD_GRANT_MODE=role
-# export DISCORD_MNO_ROLE_ID=...
+# DISCORD_GRANT_MODE=role and DISCORD_MNO_ROLE_ID are refused. A Discord role is visible on the
+# member's profile card, so it disclosed who holds a masternode.
 
 # export DISCORD_SWEEP_SECONDS=300       # how often to revoke lapsed access
 ```

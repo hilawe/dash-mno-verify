@@ -57,7 +57,6 @@ Invite the bot with the `bot` and `applications.commands` scopes, and give it "M
 export DISCORD_TOKEN=... DISCORD_APP_ID=... DISCORD_GUILD_ID=...
 export MNO_GATEWAY_URL=http://127.0.0.1:8787
 export MNO_ADAPTER_SECRET=$SECRET                    # the SAME value the gateway uses
-export DISCORD_GRANT_MODE=channel
 export DISCORD_GRANT_CHANNEL_IDS=<private channel id> # comma-separate several
 export DISCORD_CONTEXT_ID=mn-members                 # a stable label the proof is scoped to
 npm run bot

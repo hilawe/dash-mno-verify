@@ -10,7 +10,6 @@ import {
   ACCESS_CLEARED,
   grantMemberOverwrite,
   clearMemberOverwrite,
-  addRole,
   removeRole,
   DenialConflict,
   isDenialConflict,
@@ -124,36 +123,28 @@ test("a clean overwrite is cleared to inherit, not deleted and not denied", asyn
   assert.deepEqual(Object.values(ACCESS_CLEARED), [null, null, null], "inherit, so no denial is manufactured");
 });
 
-test("a role denying ANY bit refuses both adding and removing, not only the three managed ones", async () => {
-  // A role denying Connect inverts voice access exactly as one denying ViewChannel inverts text
-  // access. An earlier version checked only the managed three, which caught the reviewer's
-  // reproduction and would have missed every other permission.
+test("removing a role that denies ANY bit refuses, not only the three managed ones", async () => {
+  // This bot never grants a role, so only removal remains, and only from the decommission command.
+  // Removing a role that denies something hands that permission back, so the command whose purpose is
+  // taking access away would grant it. A role denying Connect inverts voice access exactly as one
+  // denying ViewChannel inverts text access, and an earlier version checked only the managed three.
   for (const bit of ["ViewChannel", "SendMessages", "Connect", "Speak", "ManageMessages"]) {
-    const guild = guildDenying("r1", [bit]);
-    const adding = memberWith();
-    await assert.rejects(() => addRole(guild, adding.m, "r1"), isDenialConflict, `add, ${bit}`);
-    assert.deepEqual(adding.calls, [], `add must not run, ${bit}`);
-
-    const removing = memberWith();
-    await assert.rejects(() => removeRole(guild, removing.m, "r1"), isDenialConflict, `remove, ${bit}`);
-    assert.deepEqual(removing.calls, [], `remove must not run, ${bit}`);
+    const { m, calls } = memberWith();
+    await assert.rejects(() => removeRole(guildDenying("r1", [bit]), m, "r1"), isDenialConflict, bit);
+    assert.deepEqual(calls, [], `remove must not run, ${bit}`);
   }
 });
 
-test("a role denial on some OTHER role does not block the configured one", async () => {
+test("a denial on some OTHER role does not block removing this one", async () => {
   const { m, calls } = memberWith();
-  await addRole(guildDenying("other-role", ["ViewChannel"]), m, "r1");
-  assert.deepEqual(calls, [["add", "r1"]]);
+  await removeRole(guildDenying("other-role", ["ViewChannel"]), m, "r1");
+  assert.deepEqual(calls, [["remove", "r1"]]);
 });
 
-test("a clean role is added and removed normally", async () => {
-  const adding = memberWith();
-  await addRole(guildClean(), adding.m, "r1");
-  assert.deepEqual(adding.calls, [["add", "r1"]]);
-
-  const removing = memberWith();
-  await removeRole(guildClean(), removing.m, "r1");
-  assert.deepEqual(removing.calls, [["remove", "r1"]]);
+test("a clean role is removed normally", async () => {
+  const { m, calls } = memberWith();
+  await removeRole(guildClean(), m, "r1");
+  assert.deepEqual(calls, [["remove", "r1"]]);
 });
 
 test("a refusal is distinguishable from a failure, and says nothing was sent", async () => {
