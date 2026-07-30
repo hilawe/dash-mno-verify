@@ -28,7 +28,12 @@ import { Client, GatewayIntentBits, OverwriteType } from "discord.js";
 // isGone is IMPORTED, not copied. This file had its own numeric-only copy while the bot's had learned
 // discord.js's string codes, so the same error was "already gone" in one file and a hard failure in the
 // other. A duplicated predicate is how a fix reaches one site and misses its twin.
-import { parseTargetKey, isGone } from "../adapters/discord/grant_ledger.js";
+import {
+  parseTargetKey,
+  isGone,
+  memberDenialsOnGatedChannel,
+  roleDenialsAcrossChannels,
+} from "../adapters/discord/grant_ledger.js";
 
 const TOKEN = process.env.DISCORD_TOKEN;
 const GUILD_ID = process.env.DISCORD_GUILD_ID;
@@ -89,10 +94,10 @@ try {
   process.exit(1);
 }
 
-// Per-member overwrites on a gated channel belong to the bot, which refuses to start if it finds one
-// carrying a denial, so clearing all three managed bits here is safe. Trying instead to preserve
-// denials meant a read-modify-write against a cache on state other people edit, and produced a worse
-// defect than the one it fixed. See adapters/discord/grant_ledger.js.
+// Reset the three managed bits to inherit, AFTER the preflight below has established there is no
+// denial to lift. The bot's startup refusal does not protect this command: it covers only the current
+// gated channels of one process, and decommission runs separately against a target the bot by
+// definition no longer manages. All four reviewers of the previous version found that gap.
 const ACCESS_CLEARED = { ViewChannel: null, SendMessages: null, ReadMessageHistory: null };
 
 // Role removal needs the privileged member intent, because it means enumerating who holds the role.
@@ -121,6 +126,23 @@ client.once("ready", async () => {
         throw new Error(
           `role ${roleId} does not exist in ${guild.name} (${guild.id}). Check DISCORD_GUILD_ID and the ` +
             `role id; nothing was changed.`,
+        );
+      }
+      // PREFLIGHT. Removing a role that DENIES something hands that permission back, so a command whose
+      // purpose is taking access away would grant it. Same check the bot makes before it will start.
+      const roleOffenders = roleDenialsAcrossChannels(
+        [...(await guild.channels.fetch()).values()].filter(Boolean).map((c) => ({
+          id: c.id,
+          overwrites: [...(c.permissionOverwrites?.cache?.values() ?? [])],
+        })),
+        roleId,
+      );
+      if (roleOffenders.length) {
+        throw new Error(
+          `role ${role.name} (${roleId}) DENIES ` +
+            `${roleOffenders.map((o) => `${o.deny.join("/")} on ${o.channel}`).join(", ")}. Removing it ` +
+            `would GRANT those permissions rather than take access away. Nothing was changed. Remove the ` +
+            `deny overwrite first, or take the role away by hand knowing what it restores.`,
         );
       }
       let members;
@@ -160,17 +182,37 @@ client.once("ready", async () => {
           ch = await guild.channels.fetch(chId);
         } catch (e) {
           if (isGone(e)) {
-            console.log(`[decommission] channel ${chId}: already gone, nothing to clear`);
-            continue; // a deleted channel holds no access
+            // A typo looks identical to a deleted channel here, and a manual destructive command must
+            // not report success for a target it never found. Fail, so the operator checks the id.
+            failed.push(`${chId}/*`);
+            console.error(
+              `[decommission] channel ${chId} is not in ${guild.name} (${guild.id}). If you meant a ` +
+                `deleted channel there is nothing to clear; otherwise check the id. Nothing was changed ` +
+                `for it.`,
+            );
+            continue;
           }
           failed.push(`${chId}/*`);
           console.error(`[decommission] could not read channel ${chId}: ${e.message}`);
           continue;
         }
         // Member overwrites only. A role overwrite on this channel is the operator's own arrangement.
-        const holders = [...ch.permissionOverwrites.cache.values()].filter(
+        const members = [...ch.permissionOverwrites.cache.values()].filter(
           (ow) => ow.type === OverwriteType.Member && ow.id !== client.user.id,
         );
+        // PREFLIGHT, per channel. Clearing an overwrite that DENIES lifts the denial and lets a
+        // role-level allow through, so the removal would grant. Refuse the channel, keep going.
+        const denied = memberDenialsOnGatedChannel(members);
+        if (denied.length) {
+          failed.push(`${chId}/*`);
+          console.error(
+            `[decommission] channel ${chId} SKIPPED: ${denied.map((d) => `${d.id} is denied ${d.deny.join("/")}`).join(", ")}. ` +
+              `Clearing those would GRANT access through a role-level allow. Remove the member overwrite ` +
+              `or express the exclusion with a role-level deny, then run this again.`,
+          );
+          continue;
+        }
+        const holders = members;
         console.log(`[decommission] channel ${chId}: ${holders.length} per-member overwrite(s)`);
         for (const ow of holders) {
           if (dryRun) {

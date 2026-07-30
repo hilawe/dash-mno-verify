@@ -40,8 +40,24 @@ The removal is deliberate on purpose. It resets the three bits this bot grants (
 channel, including overwrites you added by hand, because a stored overwrite carries no record of who
 created it. Any other permission is left alone.
 
-**Per-member overwrites on a gated channel belong to the bot, and it refuses to run if it finds one
-that DENIES.** If you have denied someone `ViewChannel` on a gated channel, the bot will not start and
+**Per-member overwrites on a gated channel belong to the bot.** If it finds one that DENIES, that
+channel is quarantined: admissions stay closed, the channel is left untouched, and cleanup of the other
+channels carries on. The check also runs immediately before every individual removal, including from
+the decommission command and from records naming a channel you have since dropped, because a startup
+check cannot cover a mutation that happens later or in another process.
+
+One residual, stated rather than hidden: that check reads Discord's cached view of the overwrite, so a
+denial set moments earlier and not yet propagated can still be cleared. Discord offers no
+compare-and-set for permissions, so this cannot be closed. The bot refuses to touch a conflict it can
+see rather than trying to preserve one it cannot, which is a much narrower claim than two earlier
+versions made.
+
+**One ledger serves one server.** Every grant records the guild it was made in. If you repoint the bot
+at a different server while records from the old one survive, it refuses to start and names the old
+server, because that access is still live and unreachable from here. Sweeping would have deleted the
+only record of it. Decommission it in the old server first.
+
+Why it refuses rather than clearing: If you have denied someone `ViewChannel` on a gated channel, the bot will not start and
 will name the member, because every option available to it is wrong: clearing the overwrite would let a
 role-level allow through and admit the person you excluded, and honouring it would mean reading and
 rewriting permissions that you are editing at the same time. Express an exclusion with a role-level

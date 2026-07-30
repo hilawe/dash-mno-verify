@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, existsSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
+import { PermissionFlagsBits } from "discord.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -13,6 +14,9 @@ import {
   staleTargets,
   memberDenialsOnGatedChannel,
   roleDenialsAcrossChannels,
+  foreignGuildRecords,
+  isGone,
+  isNotOurs,
 } from "../adapters/discord/grant_ledger.js";
 
 // The grant ledger is what makes Discord-side access durable and correctly revoked. These pin the
@@ -71,6 +75,9 @@ test("a not-yet-expired grant is left alone by the sweep", async () => {
   await l.grant("u1", rec(500));
   assert.deepEqual(await l.sweep(), []);
   assert.equal(revoked.length, 0);
+  // "left alone" includes still being there. Without this a sweep that dropped the row while reporting
+  // nothing revoked would pass, and the member would silently stop being tracked.
+  assert.equal(l.has("u1"), true, "the record must survive, not merely go unreported");
 });
 
 // The race the review found: the sweep deletes an expired record then awaits the revoke, and a fresh
@@ -512,8 +519,11 @@ test("a per-member denial on a gated channel is detected, so the bot can refuse 
 // access exactly as one denying ViewChannel inverts text access, and an earlier version of this check
 // looked only at the managed three, so it would have caught the reproduction it was written for and
 // missed every other permission.
+// REAL bit values, from discord.js. The first version of this gave every non-empty denial
+// `bitfield: 1n`, so a regression that read the wrong bit passed every assertion while missing real
+// denials. ViewChannel is 1024, Connect 1048576, Speak 2097152, AddReactions 64.
 const denyBits = (names) => ({
-  bitfield: names.length ? 1n : 0n,
+  bitfield: names.reduce((acc, n) => acc | BigInt(PermissionFlagsBits[n] ?? 0n), 0n),
   toArray: () => names,
 });
 const roleOverwrite = (id, denied = []) => ({ id, deny: denyBits(denied) });
@@ -550,4 +560,34 @@ test("a role carrying ANY denial is detected, because adding it would remove acc
     "one bad channel among good ones is still reported",
   );
   assert.deepEqual(roleDenialsAcrossChannels([], "r1"), []);
+});
+
+// A record naming another guild describes access this process cannot reach. Treating that as "already
+// gone" let a sweep resolve and DELETE the row, so repointing the bot at a different server silently
+// discarded the records of access still live in the old one. "Cannot act here" and "nothing to act on"
+// are different, which is why isNotOurs is separate from isGone.
+test("a record from another guild is detected, so a repoint cannot delete what it cannot reach", () => {
+  assert.deepEqual(foreignGuildRecords([{ guildId: "g1" }], "g1"), [], "our own guild is not foreign");
+  assert.deepEqual(foreignGuildRecords([{ guildId: "OLD" }], "g1"), [{ guildId: "OLD" }]);
+  assert.deepEqual(
+    foreignGuildRecords([{ expiresAt: 1, mode: "channel", channels: ["c1"] }], "g1"),
+    [],
+    "a record written before records carried a guild reads as unknown, not foreign",
+  );
+  assert.deepEqual(
+    foreignGuildRecords([{ guildId: "g1" }, { guildId: "OLD" }, { guildId: "OTHER" }], "g1").map((f) => f.guildId),
+    ["OLD", "OTHER"],
+    "every foreign guild is named so the operator knows where to go",
+  );
+  assert.deepEqual(foreignGuildRecords([], "g1"), []);
+});
+
+test("isNotOurs and isGone say different things, because conflating them deleted live records", () => {
+  assert.equal(isGone({ code: 10003 }), true, "Unknown Channel in this guild: nothing to take back");
+  assert.equal(isGone({ status: 404 }), true);
+  assert.equal(isNotOurs({ code: "GuildChannelUnowned" }), true, "another guild's channel: alive, unreachable");
+  assert.equal(isGone({ code: "GuildChannelUnowned" }), false, "and NOT gone, or the record would be deleted");
+  assert.equal(isNotOurs({ code: 10003 }), false);
+  assert.equal(isGone({ code: 50013 }), false, "Missing Permissions is a real failure, not absence");
+  assert.equal(isNotOurs({ code: 50013 }), false);
 });

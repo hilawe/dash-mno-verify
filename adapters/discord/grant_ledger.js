@@ -181,6 +181,16 @@ export function roleDenialsAcrossChannels(channels, roleId) {
   return offenders;
 }
 
+// "NOT OURS TO ACT ON" is a different thing from "already gone", and conflating them cost a blocker.
+//
+// GuildChannelUnowned means the id belongs to another guild. Access there is very much alive; this
+// process simply cannot reach it. Treating that as gone let a sweep resolve successfully and DELETE the
+// ledger row, so after repointing the bot at a different server the records of access still live in the
+// old one were quietly discarded and nothing tracked it again. The fix that widened isGone to unblock a
+// stuck renewal created that, which is why the two are now separate predicates.
+const NOT_OURS_CODES = new Set(["GuildChannelUnowned", "GuildChannelResolve"]);
+export const isNotOurs = (e) => NOT_OURS_CODES.has(e?.code);
+
 // "Already gone", so there is nothing to take back. Numeric codes come from the Discord API; the string
 // ones are discord.js's own, raised before a request is made.
 //
@@ -188,5 +198,16 @@ export function roleDenialsAcrossChannels(channels, roleId) {
 // decommission command's copy did not, so the same input was "gone" in one file and a hard failure in
 // the other. Duplicating a predicate is how a fix reaches one site and misses its twin, which is the
 // defect this component has produced in every review round. One definition, two importers.
-const GONE_CODES = new Set([10003, 10004, 10007, 10011, 10013, "GuildChannelUnowned", "GuildChannelResolve"]);
+const GONE_CODES = new Set([10003, 10004, 10007, 10011, 10013]);
 export const isGone = (e) => e?.status === 404 || GONE_CODES.has(e?.code);
+
+// Records written before records carried a guild id read as null, which means "unknown, assume ours".
+// A record naming a DIFFERENT guild is a repoint that was never decommissioned: access is live over
+// there, this process cannot touch it, and pretending otherwise deletes the only trace of it.
+export function foreignGuildRecords(records, guildId) {
+  const out = [];
+  for (const r of records ?? []) {
+    if (r?.guildId && String(r.guildId) !== String(guildId)) out.push({ guildId: String(r.guildId) });
+  }
+  return out;
+}

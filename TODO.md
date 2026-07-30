@@ -361,6 +361,31 @@ built from the post-migration code rather than from any earlier packet.
   definition, imported by both the bot and the decommission command, because it existed twice and only
   one copy learned discord.js's string error codes.
   (`adapters/discord/grant_ledger.js`, `adapters/discord/bot.js`, `scripts/discord_decommission.mjs`)
+- [x] Move the permission-denial guard from startup to each mutation (2026-07-29, eighth round, all four
+  reviewers converged). The startup gate covered only the CURRENT, reachable target of ONE process,
+  while `revokeAccess` acts on whatever the record names, and the decommission command is a separate
+  process operating on a target the bot by definition no longer manages. Three mutation paths were
+  reproduced clearing a denial and thereby GRANTING access to an excluded member while reporting
+  successful removal. The guard now runs immediately before each mutation and refuses that one mutation,
+  keeping the record; a conflicting channel is quarantined rather than exiting the process, which was
+  the twin of the readiness split. RESIDUAL, documented not solved: the check reads a cached overwrite,
+  so a denial not yet propagated can still be cleared. No compare-and-set exists for Discord
+  permissions. (`adapters/discord/bot.js`, `scripts/discord_decommission.mjs`)
+- [x] Bind the ledger to one guild. Records carried no guild id, and `isGone` treated
+  `GuildChannelUnowned` as "already gone", so after repointing the bot at a different server the sweep
+  resolved successfully and DELETED rows for access still live in the old server, which then went
+  untracked forever. Caused by the earlier widening of `isGone` that unblocked a stuck renewal.
+  `isNotOurs` is now a separate predicate: "cannot act here" is not "nothing to act on". Grants record
+  `guildId`, and a foreign record refuses startup naming the old guild. Records predating the field read
+  as unknown rather than foreign. (`adapters/discord/grant_ledger.js`, `adapters/discord/bot.js`)
+- [x] Stop swallowing transient Discord errors as "target missing". `.catch(() => null)` mapped a 500 or
+  a rate limit to "this channel does not exist", which closed admissions until a manual restart: a guard
+  causing a larger outage than the blip it reacted to. Only a genuinely gone or foreign target counts;
+  anything else propagates so the supervisor retries. (`adapters/discord/bot.js`)
+- [x] The decommission command validates its target and preflights both branches. A typo'd channel id
+  reported success because `10003` was treated as harmless, and neither branch checked denials. Role
+  removal now refuses when the role denies anything anywhere, since removing it would hand those
+  permissions back. (`scripts/discord_decommission.mjs`)
 - [ ] A startup check cannot catch a platform effect that lands after it (2026-07-27 third round,
   major, reproduced). The bot records a grant, Discord ACCEPTS the request, the bot is terminated
   before the effect appears, the replacement's startup check sees no access, its sweep deletes the

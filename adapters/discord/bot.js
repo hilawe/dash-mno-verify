@@ -30,7 +30,9 @@ import {
   staleTargets,
   memberDenialsOnGatedChannel,
   roleDenialsAcrossChannels,
+  foreignGuildRecords,
   isGone,
+  isNotOurs,
 } from "./grant_ledger.js";
 
 const TOKEN = process.env.DISCORD_TOKEN;
@@ -112,11 +114,11 @@ if (!Number.isFinite(SWEEP_SECONDS) || SWEEP_SECONDS <= 0) {
 let guildRef = null;
 const getGuild = async () => (guildRef ??= await client.guilds.fetch(GUILD_ID));
 const ACCESS = { ViewChannel: true, SendMessages: true, ReadMessageHistory: true };
-// Reset the three managed bits to inherit. Unconditional, and safe only because startup refuses to run
-// when a per-member overwrite on a gated channel carries a denial: the bot owns that slot, so there is
-// never anything here it did not create. Two rounds of trying to preserve denials instead produced a
-// worse defect each time, because it meant a read-modify-write against a cache on state other people
-// edit. See grant_ledger.js for the full reasoning.
+// Reset the three managed bits to inherit. Every caller checks for a conflicting denial IMMEDIATELY
+// BEFORE using this, because a startup gate is not enough: it covers only the current, reachable target,
+// while revocation acts on whatever the record names and the decommission command is a separate process
+// on any channel. See refuseIfDenied below and grant_ledger.js for why preserving a denial instead was
+// tried twice and rejected twice.
 const ACCESS_CLEARED = { ViewChannel: null, SendMessages: null, ReadMessageHistory: null };
 
 // Apply the access a grant record describes. The overwrite type is passed explicitly, because after a
@@ -152,8 +154,37 @@ async function applyAccess(userId, record) {
 
 // Undo exactly what a grant record granted, using the record's own mode and target. Throws on a real
 // failure so the caller can keep the grant and retry.
+// Refuses THIS mutation rather than the process, so the ledger keeps the record and unrelated cleanup
+// continues. A startup gate cannot cover this: revocation acts on the target the RECORD names, which
+// may be a channel dropped from the configuration, one that was briefly unreachable when the gate ran,
+// or a whole other guild.
+//
+// Residual, stated rather than solved: this reads the cached overwrite, so a denial the cache has not
+// yet seen can still be cleared. There is no compare-and-set for Discord permissions. The difference
+// from the two versions that were rejected is that this REFUSES to touch a conflict instead of trying
+// to preserve it through a rewrite, which is a far smaller claim.
+function refuseIfDenied(ch, userId) {
+  const offenders = memberDenialsOnGatedChannel(
+    [...ch.permissionOverwrites.cache.values()].filter((ow) => ow.type === OverwriteType.Member && ow.id === userId),
+  );
+  if (offenders.length) {
+    throw new Error(
+      `${ch.id}: ${userId} has an overwrite DENYING ${offenders[0].deny.join(", ")}. Clearing it would ` +
+        `grant them access through a role-level allow, so this is refused and the record is kept.`,
+    );
+  }
+}
+
 async function revokeAccess(userId, record) {
   const guild = await getGuild();
+  // A record from another guild names access this process cannot reach. Refusing keeps the row, so the
+  // access stays tracked instead of being forgotten.
+  if (record.guildId && String(record.guildId) !== String(GUILD_ID)) {
+    throw new Error(
+      `record names guild ${record.guildId}, this bot serves ${GUILD_ID}. The access is still live there ` +
+        `and cannot be reached from here. Decommission it in that guild; the record is kept until then.`,
+    );
+  }
   // Every channel independently, failures collected and thrown after the loop, so the ledger keeps the
   // record for retry and a blocked channel does not hide the ones behind it.
   //
@@ -172,11 +203,13 @@ async function revokeAccess(userId, record) {
       try {
         ch = await guild.channels.fetch(chId);
       } catch (e) {
-        if (isGone(e)) continue;
-        failures.push(`${chId}: ${e.message}`);
+        if (isGone(e)) continue; // genuinely absent from this guild: nothing to take back
+        // NOT the same thing: another guild's channel is alive and unreachable, so keep the record.
+        failures.push(`${chId}: ${isNotOurs(e) ? "belongs to another guild" : e.message}`);
         continue;
       }
       try {
+        refuseIfDenied(ch, userId);
         await ch.permissionOverwrites.edit(userId, ACCESS_CLEARED, { type: OverwriteType.Member });
       } catch (e) {
         if (!isGone(e)) failures.push(`${chId}: ${e.message}`);
@@ -311,7 +344,13 @@ let reconciled = false;
 //   operator fixes it with a role-level deny instead.
 async function usableTargets(guild) {
   if (GRANT_MODE === "role") {
-    const role = await guild.roles.fetch(ROLE_ID).catch(() => null);
+    let role;
+    try {
+      role = await guild.roles.fetch(ROLE_ID);
+    } catch (e) {
+      if (!isGone(e) && !isNotOurs(e)) throw e; // a blip must not read as "the role is missing"
+      role = null;
+    }
     if (!role) {
       return { channels: [], ready: false, why: `role ${ROLE_ID} does not exist in ${guild.name} (${guild.id})` };
     }
@@ -338,9 +377,17 @@ async function usableTargets(guild) {
 
   const usable = [];
   const unreachable = [];
+  const conflicted = [];
   for (const chId of GRANT_CHANNEL_IDS) {
-    const ch = await guild.channels.fetch(chId).catch(() => null);
-    if (!ch) {
+    // Only a genuinely absent or foreign channel counts as unreachable. Swallowing EVERY error here
+    // meant a Discord 500 or a rate limit read as "this channel does not exist", which locked out
+    // verification until somebody restarted the bot: a guard causing a larger outage than the blip it
+    // was reacting to. A transient failure propagates so the supervisor restarts and retries.
+    let ch;
+    try {
+      ch = await guild.channels.fetch(chId);
+    } catch (e) {
+      if (!isGone(e) && !isNotOurs(e)) throw e;
       unreachable.push(chId);
       continue;
     }
@@ -348,23 +395,34 @@ async function usableTargets(guild) {
       (ow) => ow.type === OverwriteType.Member,
     ));
     if (offenders.length) {
+      // QUARANTINE, not exit. Calling process.exit here killed the sweep for every unrelated member,
+      // which is exactly the inversion the readiness split fixed for unreachable channels and left in
+      // place for denials. One conflicting member must not stop everyone else's expired access being
+      // revoked.
+      conflicted.push(chId);
       console.error(
-        `[discord] refusing to start: channel ${chId} has per-member overwrites that DENY ` +
+        `[discord] channel ${chId} is QUARANTINED: per-member overwrites DENY ` +
           `${[...new Set(offenders.flatMap((o) => o.deny))].join(", ")} for ` +
           `${offenders.map((o) => o.id).join(", ")}. Per-member overwrites on a gated channel belong to ` +
           `this bot, and it will not fight whoever set those: clearing one would grant that member ` +
           `access through a role-level allow. Express the exclusion with a role-level deny, or remove ` +
-          `the member overwrite, then start again.`,
+          `the member overwrite. Admissions stay closed and this channel is left alone; cleanup of ` +
+          `other channels continues.`,
       );
-      process.exit(1);
+      continue;
     }
     usable.push(chId);
   }
-  if (unreachable.length) {
+  if (unreachable.length || conflicted.length) {
     return {
       channels: usable,
       ready: false,
-      why: `channel(s) ${unreachable.join(", ")} are missing from ${guild.name} (${guild.id})`,
+      why: [
+        unreachable.length ? `channel(s) ${unreachable.join(", ")} are missing from ${guild.name} (${guild.id})` : "",
+        conflicted.length ? `channel(s) ${conflicted.join(", ")} have conflicting per-member denials` : "",
+      ]
+        .filter(Boolean)
+        .join("; "),
     };
   }
   return { channels: usable, ready: true };
@@ -372,6 +430,16 @@ async function usableTargets(guild) {
 
 async function reconcileGuild() {
   const guild = await getGuild();
+  // Records naming another guild describe access this process cannot reach. Sweeping would delete the
+  // row and forget it. Refuse until the operator decommissions it over there.
+  const foreign = foreignGuildRecords(ledger.all(), GUILD_ID);
+  if (foreign.length) {
+    throw new Error(
+      `the ledger holds grants for guild(s) ${[...new Set(foreign.map((f) => f.guildId))].join(", ")}, ` +
+        `but this bot serves ${GUILD_ID}. That access is still live and unreachable from here. Point the ` +
+        `bot back and run npm run discord:decommission, or clear it by hand, before serving a new guild.`,
+    );
+  }
   const targets = await usableTargets(guild);
   const removed = [];
   const failed = [];
@@ -535,7 +603,13 @@ async function handleInteraction(i) {
     }
 
     try {
-      await ledger.grant(i.user.id, { expiresAt: out.expiresAt, mode: GRANT_MODE, channels: GRANT_CHANNEL_IDS, roleId: ROLE_ID });
+      await ledger.grant(i.user.id, {
+        expiresAt: out.expiresAt,
+        mode: GRANT_MODE,
+        guildId: GUILD_ID, // so a repoint cannot delete a record for access in a guild we can no longer reach
+        channels: GRANT_CHANNEL_IDS,
+        roleId: ROLE_ID,
+      });
     } catch (e) {
       console.error("[discord] grant failed:", e.message);
       return i.editReply("Verified, but granting access did not complete. Run `/verify` again to retry.");
