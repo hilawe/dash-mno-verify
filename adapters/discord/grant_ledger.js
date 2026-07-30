@@ -118,6 +118,44 @@ export function staleTargets(records, { mode, channels = [], roleId } = {}) {
   return [...[...roles].sort().map((r) => targetKey("role", [r])), ...(chans.size ? [targetKey("channel", [...chans])] : [])];
 }
 
+// The transform a decommission hands to the ledger once it has taken access back on Discord.
+//
+// The command used to leave the ledger alone entirely, on the reasoning that a decommission is not a
+// reason to forget history. But the rows are not history to the sweep, which treats every one of them
+// as revocation work still owed. Two failure modes came out of that. A retired channel stayed in the
+// record until it expired, so the sweep cleared those permission bits a second time, potentially long
+// after the channel had been repurposed and an operator had granted somebody access there for an
+// unrelated reason. And a bound ledger could never empty, so a repointed bot was refused forever.
+//
+// What is NOT retired matters as much as what is. A member whose removal failed still holds the
+// access, so their record keeps naming the target and the sweep keeps trying. A channel that was
+// skipped whole (unreadable, or carrying a denial the command refused to touch) is retired for nobody.
+// Only what was actually taken back stops being tracked.
+export function retireTargetTransform({
+  mode,
+  ids,
+  failedMembers = new Set(),
+  failedPairs = new Set(),
+  skippedChannels = new Set(),
+} = {}) {
+  const retired = (ids ?? []).map(String);
+  return (record, userId) => {
+    const u = String(userId);
+    if (mode === "role") {
+      if (failedMembers.has(u)) return record;
+      return record?.mode === "role" && retired.includes(String(record.roleId)) ? null : record;
+    }
+    if (record?.mode !== "channel") return record;
+    const clearedHere = retired.filter((c) => !skippedChannels.has(c) && !failedPairs.has(`${c}/${u}`));
+    if (clearedHere.length === 0) return record;
+    const left = (record.channels ?? []).filter((c) => !clearedHere.includes(String(c)));
+    if (left.length === (record.channels ?? []).length) return record; // named none of them
+    // A record with no channels left is not a valid record, so the row goes rather than being left in
+    // a shape that would fail validation on the next load.
+    return left.length ? { ...record, channels: left } : null;
+  };
+}
+
 // The three permission bits this bot manages on a private channel.
 export const MANAGED_BITS = ["ViewChannel", "SendMessages", "ReadMessageHistory"];
 

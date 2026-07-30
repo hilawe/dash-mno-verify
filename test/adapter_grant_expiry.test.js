@@ -875,3 +875,69 @@ test("a legacy JSON import reaches the same fail-closed path as rows already in 
     // origin is unknowable, so they are not assumed local.
     assert.throws(() => mk({ file: f, scope: "guildA", importFrom: json }), /not bound to any scope/);
   }));
+
+// The guard that refuses a repoint has to have an exit that correct operation reaches, or it is a trap
+// rather than a guard. An operator who decommissions the old place properly ends up with an empty
+// ledger, and an empty ledger has no live access to forget, so it rebinds.
+test("an emptied ledger rebinds to a new scope, so the documented recovery can finish", async () =>
+  scopeDir(async ({ mk, rec, file }) => {
+    const f = file("a.db");
+    const old = mk({ file: f, scope: "guildA" });
+    await old.grant("u1", rec(9999));
+    old.close();
+
+    assert.throws(() => mk({ file: f, scope: "guildB" }), /still holds 1 grant/,
+      "while the grant is there the repoint is refused");
+
+    // What a decommission does: take the access back on the platform, then stop tracking it.
+    const settling = mk({ file: f, scope: "guildA" });
+    const out = settling.retireAll(() => null);
+    assert.deepEqual(
+      { deleted: out.deleted, remaining: out.remaining },
+      { deleted: 1, remaining: 0 },
+      "retiring the last target empties the ledger",
+    );
+    settling.close();
+
+    const moved = mk({ file: f, scope: "guildB" });
+    assert.equal(moved.scope(), "guildB", "the emptied ledger rebound instead of refusing forever");
+    moved.close();
+  }));
+
+test("retireAll narrows, deletes, and leaves records alone in one pass", async () =>
+  scopeDir(async ({ mk, rec, file }) => {
+    const l = mk({ file: file("r.db"), scope: "g" });
+    await l.grant("keep", rec(9999));
+    await l.grant("narrow", { expiresAt: 9999, mode: "channel", channels: ["c1", "c2"] });
+    await l.grant("drop", { expiresAt: 9999, mode: "channel", channels: ["c2"] });
+
+    const out = l.retireAll((record, userId) => {
+      if (userId === "keep") return record;
+      const left = record.channels.filter((c) => c !== "c2");
+      return left.length ? { ...record, channels: left } : null;
+    });
+
+    assert.deepEqual({ changed: out.changed, deleted: out.deleted, remaining: out.remaining },
+      { changed: 1, deleted: 1, remaining: 2 });
+    assert.deepEqual(l.get("narrow").channels, ["c1"], "the retired channel is gone and the other stays");
+    assert.deepEqual(l.get("keep").channels, ["c1"], "a record the transform returned unchanged is untouched");
+    assert.equal(l.has("drop"), false, "a record left with no target at all is gone from the ledger");
+    l.close();
+  }));
+
+test("a retirement that would leave an invalid record changes nothing at all", async () =>
+  scopeDir(async ({ mk, rec, file }) => {
+    const f = file("bad.db");
+    const l = mk({ file: f, scope: "g", validate: (r) => Boolean(r) && Number.isFinite(r.expiresAt) });
+    await l.grant("u1", rec(9999));
+    await l.grant("u2", rec(9999));
+
+    assert.throws(
+      () => l.retireAll((record, userId) => (userId === "u2" ? { ...record, expiresAt: NaN } : null)),
+      /invalid record/,
+    );
+    // u1 was transformed to null BEFORE u2 failed, so if the transaction did not roll back it would
+    // already be gone. This assertion is the whole point of the test.
+    assert.equal(l.size(), 2, "the rollback put back the row the failing pass had already deleted");
+    l.close();
+  }));

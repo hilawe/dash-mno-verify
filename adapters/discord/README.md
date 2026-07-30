@@ -30,6 +30,20 @@ npm run discord:decommission -- channel:111,222            # preview, changes no
 npm run discord:decommission -- channel:111,222 --apply    # actually removes
 ```
 
+Stop the bot before running it with `--apply`. The command updates the ledger once Discord has been
+changed, and the single-writer lock will refuse it while the bot holds the database.
+
+**It stops tracking whatever actually came back, and only that.** A ledger row is not history to the
+sweep, which treats every row as revocation work still owed, so a retired channel left in a record
+would have its permission bits cleared a second time when that record expired, possibly long after the
+channel was repurposed and somebody had been given access there for an unrelated reason. Anything that
+did not come back stays tracked: a member whose removal failed keeps naming the target, and a channel
+skipped whole is retired for nobody. The ledger is only ever updated after Discord, so the order fails
+in the safe direction, leaving a row the sweep will retry rather than live access nothing is watching.
+
+Emptying the ledger this way is also how you finish a repoint. A ledger holding nothing has no live
+access to forget, so it rebinds by itself when you point the bot at another server.
+
 The bot does print a warning naming an outstanding target when it starts, but **that warning is best
 effort and its absence proves nothing.** It can only see targets that surviving ledger rows still name,
 so an old channel holding access that predates the ledger, or whose rows have since expired and been

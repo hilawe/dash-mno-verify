@@ -461,8 +461,13 @@ async function reconcileGuild() {
   if (foreign.length) {
     throw new Error(
       `the ledger holds grants for guild(s) ${[...new Set(foreign.map((f) => f.guildId))].join(", ")}, ` +
-        `but this bot serves ${GUILD_ID}. That access is still live and unreachable from here. Point the ` +
-        `bot back and run npm run discord:decommission, or clear it by hand, before serving a new guild.`,
+        `but this bot serves ${GUILD_ID}. That access is still live and unreachable from here.\n` +
+        `  Point DISCORD_GUILD_ID back at the old guild, stop this bot, and for each target it names ` +
+        `run:\n` +
+        `    npm run discord:decommission -- <target>            # preview\n` +
+        `    npm run discord:decommission -- <target> --apply    # remove, and stop tracking it\n` +
+        `  The command retires the rows it clears, so once nothing is left the ledger rebinds by itself ` +
+        `and this bot starts against ${GUILD_ID}.`,
     );
   }
   const targets = await usableTargets(guild);

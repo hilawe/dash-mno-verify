@@ -229,6 +229,11 @@ export class GrantLedger {
       ),
       // Conditional on the revision the caller read. See the sweep for why.
       del: this.#db.prepare("DELETE FROM grants WHERE user_id=? AND rev=?"),
+      // Unconditional, for the offline retirement only. Every online deletion goes through `del` and
+      // its revision check, because a concurrent grant must not be deleted by a stale sweep. A
+      // retirement runs with the exclusive lock held and no adapter running, so there is no concurrent
+      // writer whose revision could matter.
+      delAny: this.#db.prepare("DELETE FROM grants WHERE user_id=?"),
       count: this.#db.prepare("SELECT COUNT(*) AS n FROM grants"),
       readMeta: this.#db.prepare("SELECT v FROM meta WHERE k=?"),
       // MAX, not a plain assignment. Another process may already have observed a later time, and a
@@ -282,12 +287,84 @@ export class GrantLedger {
   #refuseForeignScope(scope) {
     const bound = this.scope();
     if (bound === null || scope === null || String(bound) === String(scope)) return;
+    // An EMPTY bound ledger is rebound rather than refused, and that is the difference between a guard
+    // and a trap. The refusal exists to stop live access being forgotten, so with no grants left there
+    // is nothing to forget and nothing to protect. Refusing anyway made the documented recovery
+    // impossible to complete: an operator who decommissioned the old place correctly still could not
+    // start anywhere else, because the binding outlived the grants it was protecting and no sweep could
+    // clear it. The guard has to have an exit that ordinary correct operation reaches.
+    const rows = this.#stmt.count.get().n;
+    if (rows === 0) {
+      this.#stmt.setMeta.run("scope", String(scope));
+      this.log(
+        `${this.file} was bound to ${bound} and holds no grants, so it has been rebound to ${scope}. ` +
+          `Nothing was tracked against ${bound} any more.`,
+      );
+      return;
+    }
     throw new Error(
-      `refusing to start: ${this.file} is bound to ${bound}, but this adapter is configured for ` +
-        `${scope}. The grants in it name access that is still live in ${bound} and cannot be reached ` +
-        `from here, so sweeping them would delete the only record of it. Point the adapter back at ` +
-        `${bound} and decommission there, or configure a different ledger file for ${scope}.`,
+      `refusing to start: ${this.file} is bound to ${bound} and still holds ${rows} grant(s), but this ` +
+        `adapter is configured for ${scope}. Those grants name access that is live in ${bound} and ` +
+        `unreachable from here, so sweeping them would delete the only record of it. Point the adapter ` +
+        `back at ${bound}, take the access back there, and let the ledger empty. The ledger rebinds by ` +
+        `itself once it holds nothing. Alternatively configure a different ledger file for ${scope} and ` +
+        `keep this one until ${bound} is settled.`,
     );
+  }
+
+  // Rewrite every record through `transform`, in one transaction, for an offline retirement.
+  //
+  // A decommission takes access back on the platform and then has to say so here, because the ledger's
+  // rows are not history: the sweep treats every row as revocation work that is still owed. Leaving a
+  // retired target in a record meant the sweep would clear those permission bits AGAIN when the record
+  // finally expired, long after the channel had been repurposed, removing access an operator had since
+  // granted for an unrelated reason. And leaving whole rows behind meant a bound ledger never emptied,
+  // so the scope guard above could never release.
+  //
+  // `transform(record, userId)` returns a replacement record, or null to drop the row, or the record
+  // it was given to leave it alone. Returning a record that does not validate aborts the whole
+  // retirement, because a partially rewritten ledger is worse than an untouched one.
+  //
+  // This is deliberately NOT on the per-member queue. It is an offline operation: the exclusive lock
+  // means the adapter cannot be running against this file while it happens, which is the property that
+  // makes a single transaction over every row safe.
+  retireAll(transform) {
+    const rows = this.#stmt.all.all();
+    let changed = 0;
+    let deleted = 0;
+    this.#db.exec("BEGIN IMMEDIATE");
+    try {
+      for (const row of rows) {
+        const userId = row.user_id;
+        const before = this.#parse(userId, row.record);
+        const after = transform(before, userId);
+        if (after === before) continue;
+        if (after === null) {
+          this.#stmt.delAny.run(userId);
+          deleted += 1;
+          continue;
+        }
+        if (!this.validate(after)) {
+          throw new Error(
+            `retirement would leave ${userId} with an invalid record (${JSON.stringify(after)}). ` +
+              `Nothing was changed.`,
+          );
+        }
+        this.#stmt.put.run(
+          userId,
+          Math.floor(after.expiresAt),
+          JSON.stringify(after),
+          this.now(),
+          this.#stmt.nextRev.get().rev,
+        );
+        changed += 1;
+      }
+      this.#db.exec("COMMIT");
+    } catch (e) {
+      this.#db.exec("ROLLBACK");
+      throw e;
+    }
+    return { changed, deleted, remaining: this.size() };
   }
 
   // Bind an unbound database, but only when it is safe to do so without asking.

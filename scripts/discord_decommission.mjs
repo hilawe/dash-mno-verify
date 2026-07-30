@@ -21,18 +21,32 @@
 // For a command whose whole purpose is removing access in bulk, the destructive path is the one that
 // has to be asked for explicitly.
 //
-// It reads the same environment as the bot. It never touches the ledger, because the ledger is the
-// record of what was granted and a decommission is not a reason to forget that history.
+// It reads the same environment as the bot, INCLUDING the ledger, which it updates once Discord has
+// been changed and only for the access that actually came back.
+//
+// It used to leave the ledger alone, on the reasoning that a decommission is not a reason to forget
+// history. That reasoning was wrong about what a ledger row is. The sweep does not read rows as
+// history, it reads every one of them as revocation work still owed, and two failures came out of the
+// mismatch. A retired channel stayed in the record until it expired, so the sweep cleared those bits a
+// second time, possibly long after the channel was repurposed and somebody had been given access there
+// for an unrelated reason: a command whose purpose is removing access ended up removing the wrong
+// access later. And a ledger bound to a guild could never empty, so a bot repointed elsewhere was
+// refused forever with no way to finish the recovery the refusal itself recommended.
+//
+// The bot must not be running against the same ledger file while this happens. The single-writer lock
+// enforces that rather than trusting it.
 import process from "node:process";
 import { Client, GatewayIntentBits, OverwriteType } from "discord.js";
 // isGone is IMPORTED, not copied. This file had its own numeric-only copy while the bot's had learned
 // discord.js's string codes, so the same error was "already gone" in one file and a hard failure in the
 // other. A duplicated predicate is how a fix reaches one site and misses its twin.
 import {
+  GrantLedger,
   parseTargetKey,
   isGone,
   memberDenialsOnGatedChannel,
   roleDenialsAcrossChannels,
+  retireTargetTransform,
 } from "../adapters/discord/grant_ledger.js";
 // The same guarded mutations the bot uses. The per-channel and per-role preflights below still run,
 // because an operator deserves to be told the whole target is unsafe before anything is touched, but
@@ -42,6 +56,10 @@ import { clearMemberOverwrite, removeRole, isDenialConflict } from "../adapters/
 
 const TOKEN = process.env.DISCORD_TOKEN;
 const GUILD_ID = process.env.DISCORD_GUILD_ID;
+// The same ledger the bot uses. It is opened only when --apply is given and only AFTER Discord has
+// been changed, because a preview must not touch it and a retirement must never run ahead of the
+// removal it is recording.
+const GRANTS_DB = process.env.DISCORD_GRANTS_DB ?? "adapters/discord/grants.db";
 const args = process.argv.slice(2);
 // Reject anything unrecognised rather than ignoring it. Silently dropping an option the operator
 // believed in is how a mistyped safety flag becomes a live deletion, and silently dropping an extra
@@ -109,6 +127,12 @@ const client = new Client({
 client.once("ready", async () => {
   const removed = [];
   const failed = [];
+  // What must NOT be retired from the ledger, tracked precisely rather than as one flag, so a single
+  // stuck member does not keep an entire target tracked and a single cleared member does not let a
+  // stuck one be forgotten.
+  const failedMembers = new Set(); // role mode: this member still holds the role
+  const failedPairs = new Set(); // channel mode: "channelId/userId" still holds that channel
+  const skippedChannels = new Set(); // channel mode: nothing on this channel was touched at all
   try {
     const guild = await client.guilds.fetch(GUILD_ID);
     // Name the guild before touching anything. A command that removes access in bulk should say which
@@ -166,6 +190,7 @@ client.once("ready", async () => {
         } catch (e) {
           if (isGone(e)) continue; // the member or role went away; nothing left to take back
           failed.push(m.id);
+          failedMembers.add(String(m.id));
           console.error(
             isDenialConflict(e)
               ? `[decommission] REFUSED for ${m.id}: ${e.message} Nothing was changed for this member.`
@@ -188,6 +213,7 @@ client.once("ready", async () => {
             // A typo looks identical to a deleted channel here, and a manual destructive command must
             // not report success for a target it never found. Fail, so the operator checks the id.
             failed.push(`${chId}/*`);
+            skippedChannels.add(String(chId));
             console.error(
               `[decommission] channel ${chId} is not in ${guild.name} (${guild.id}). If you meant a ` +
                 `deleted channel there is nothing to clear; otherwise check the id. Nothing was changed ` +
@@ -196,6 +222,7 @@ client.once("ready", async () => {
             continue;
           }
           failed.push(`${chId}/*`);
+          skippedChannels.add(String(chId));
           console.error(`[decommission] could not read channel ${chId}: ${e.message}`);
           continue;
         }
@@ -208,6 +235,7 @@ client.once("ready", async () => {
         const denied = memberDenialsOnGatedChannel(members);
         if (denied.length) {
           failed.push(`${chId}/*`);
+          skippedChannels.add(String(chId));
           console.error(
             `[decommission] channel ${chId} SKIPPED: ${denied.map((d) => `${d.id} is denied ${d.deny.join("/")}`).join(", ")}. ` +
               `Clearing those would GRANT access through a role-level allow. Remove the member overwrite ` +
@@ -228,6 +256,7 @@ client.once("ready", async () => {
           } catch (e) {
             if (isGone(e)) continue; // already gone
             failed.push(`${chId}/${ow.id}`);
+            failedPairs.add(`${chId}/${ow.id}`);
             console.error(
               isDenialConflict(e)
                 ? `[decommission] REFUSED ${ow.id} on ${chId}: ${e.message} Nothing was changed for them.`
@@ -243,10 +272,72 @@ client.once("ready", async () => {
     // who created it. Any OTHER permission on that overwrite is left alone, so this is narrower than
     // "clear the overwrite". That trade is right HERE, at the moment you deliberately decommission a
     // target, and wrong for a bot to make on its own at every restart, which an earlier design did.
+    // STOP TRACKING WHAT CAME BACK, and only that.
+    //
+    // This runs after Discord, never before, because a row retired ahead of a removal that then failed
+    // would leave live access with nothing watching it. The two cannot be one transaction, so the order
+    // is chosen to fail in the safe direction: a retirement that does not happen leaves a row the sweep
+    // will retry, while a removal that does not happen leaves a row that still names it.
+    if (!dryRun && removed.length) {
+      try {
+        const ledger = new GrantLedger({
+          file: GRANTS_DB,
+          scope: GUILD_ID,
+          // This command never grants and never revokes through the ledger. It has already done its
+          // Discord work directly, and these exist only to satisfy the constructor, so they throw
+          // rather than quietly doing something if a future change ever reaches them.
+          apply: async () => {
+            throw new Error("the decommission command does not grant");
+          },
+          revoke: async () => {
+            throw new Error("the decommission command does not revoke through the ledger");
+          },
+          log: (m) => console.error("[decommission]", m),
+        });
+        let result;
+        try {
+          result = ledger.retireAll(
+            retireTargetTransform({
+              mode: target.mode,
+              ids: target.ids,
+              failedMembers,
+              failedPairs,
+              skippedChannels,
+            }),
+          );
+        } finally {
+          ledger.close();
+        }
+        console.log(
+          `[decommission] ledger: ${result.changed} record(s) no longer name ${targetArg}, ` +
+            `${result.deleted} record(s) removed entirely, ${result.remaining} still tracked`,
+        );
+        if (result.remaining === 0) {
+          console.log(
+            `[decommission] the ledger holds nothing now, so it will rebind by itself if you point the ` +
+              `bot at a different server.`,
+          );
+        }
+      } catch (e) {
+        failed.push("the ledger");
+        console.error(
+          `[decommission] Discord access was taken back, but the ledger was NOT updated: ${e.message}\n` +
+            `  Those rows still name ${targetArg}, so a later sweep will try to clear those permission ` +
+            `bits again. Fix the cause and run this command again; both halves are safe to repeat.\n` +
+            `  If the ledger is locked, the bot is still running against ${GRANTS_DB}. Stop it first.`,
+        );
+      }
+    }
+
     console.log(
       `[decommission] ${dryRun ? "would take" : "took"} access back from ${removed.length} member(s) on ${targetArg}` +
         `${failed.length ? `, ${failed.length} failed` : ""}` +
-        `${dryRun && removed.length ? ". Nothing was changed; re-run with --apply to do it." : ""}`,
+        `${
+          dryRun && removed.length
+            ? ". Nothing was changed. Re-run with --apply to do it, which also stops the ledger " +
+              "tracking whatever comes back, so no later sweep clears those bits a second time."
+            : ""
+        }`,
     );
     if (failed.length) {
       console.error(

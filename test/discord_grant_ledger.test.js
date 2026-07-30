@@ -17,6 +17,7 @@ import {
   foreignGuildRecords,
   isGone,
   isNotOurs,
+  retireTargetTransform,
 } from "../adapters/discord/grant_ledger.js";
 
 // The grant ledger is what makes Discord-side access durable and correctly revoked. These pin the
@@ -590,4 +591,59 @@ test("isNotOurs and isGone say different things, because conflating them deleted
   assert.equal(isNotOurs({ code: 10003 }), false);
   assert.equal(isGone({ code: 50013 }), false, "Missing Permissions is a real failure, not absence");
   assert.equal(isNotOurs({ code: 50013 }), false);
+});
+
+// ---- retiring a decommissioned target ---------------------------------------------------------------
+//
+// A decommission takes access back on Discord and then has to say so here, because the sweep does not
+// read a row as history. It reads every row as revocation work still owed, so a retired channel left in
+// a record gets its permission bits cleared a SECOND time when that record finally expires, possibly
+// long after the channel was repurposed and somebody was given access there for an unrelated reason.
+// What must not be retired matters as much as what must: whatever did not actually come back stays
+// tracked.
+
+test("retiring a channel narrows the records that name it and drops the ones left with nothing", () => {
+  const t = retireTargetTransform({ mode: "channel", ids: ["c1"] });
+  assert.deepEqual(
+    t({ expiresAt: 9, mode: "channel", channels: ["c1", "c2"] }, "u1"),
+    { expiresAt: 9, mode: "channel", channels: ["c2"] },
+    "a member who also holds another channel keeps that one",
+  );
+  assert.equal(
+    t({ expiresAt: 9, mode: "channel", channels: ["c1"] }, "u1"),
+    null,
+    "a record with nothing left is dropped rather than left invalid",
+  );
+});
+
+test("a member whose removal failed keeps naming the target, so the sweep keeps trying", () => {
+  const t = retireTargetTransform({
+    mode: "channel",
+    ids: ["c1"],
+    failedPairs: new Set(["c1/stuck"]),
+  });
+  const held = { expiresAt: 9, mode: "channel", channels: ["c1"] };
+  assert.equal(t(held, "stuck"), held, "the record is returned unchanged, not narrowed and not dropped");
+  assert.equal(t({ expiresAt: 9, mode: "channel", channels: ["c1"] }, "cleared"), null,
+    "one stuck member does not keep the target tracked for everybody else");
+});
+
+test("a channel skipped whole is retired for nobody, even members with no failure of their own", () => {
+  const t = retireTargetTransform({ mode: "channel", ids: ["c1", "c2"], skippedChannels: new Set(["c1"]) });
+  assert.deepEqual(
+    t({ expiresAt: 9, mode: "channel", channels: ["c1", "c2"] }, "u1"),
+    { expiresAt: 9, mode: "channel", channels: ["c1"] },
+    "c2 was cleared and is retired, c1 was never touched and stays tracked",
+  );
+});
+
+test("retiring a role drops the records naming it and leaves every other record alone", () => {
+  const t = retireTargetTransform({ mode: "role", ids: ["r1"], failedMembers: new Set(["stuck"]) });
+  assert.equal(t({ expiresAt: 9, mode: "role", roleId: "r1" }, "u1"), null);
+  const other = { expiresAt: 9, mode: "role", roleId: "r2" };
+  assert.equal(t(other, "u1"), other, "a different role is not this decommission's business");
+  const stuck = { expiresAt: 9, mode: "role", roleId: "r1" };
+  assert.equal(t(stuck, "stuck"), stuck, "a member who still holds the role stays tracked");
+  const chan = { expiresAt: 9, mode: "channel", channels: ["c1"] };
+  assert.equal(t(chan, "u1"), chan, "a channel record is untouched by a role decommission");
 });
