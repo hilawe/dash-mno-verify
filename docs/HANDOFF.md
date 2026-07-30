@@ -5,6 +5,156 @@ counts and supersedes everything below it. Historical sections are append-only a
 only marked superseded. Read this first when picking the project back up, then `TODO.md` for the full
 prioritized punch list.
 
+## CURRENT STATE, 2026-07-29
+
+`main` at `f482028`, pushed, clean tree, 285 tests green (`npm test`, about two and a half minutes).
+Node 22.13 or newer. Read this section, then `TODO.md`.
+
+### Where the project is
+
+Unchanged in substance from the sections below. Anonymous zero-knowledge proof of masternode control,
+gating a private community. Oracle reads the deterministic masternode list and publishes a Merkle root,
+a platform-neutral gateway verifies proofs and issues short access grants, four adapters apply them.
+Working prototype, validated on real mainnet data, NOT audited. Do not gate anything of value.
+
+Everything this session touched is the DISCORD ADAPTER and the shared adapter grant ledger. The gateway,
+circuits, provers, and oracle are as the sections below describe, apart from one oracle item noted in the
+punch list.
+
+### What changed this session
+
+The adapter grant ledger moved from a JSON file rewritten in full behind one global promise queue to a
+per-row SQLite store (`node:sqlite`, no npm dependency). Then the Discord access-application code was
+rewritten repeatedly under review pressure. Eight review rounds, eight rejections, all folded.
+
+The ledger, settled and reviewed clean:
+
+- `DatabaseSync` is synchronous, so an observation and its durable write are the same instant. That
+  deletes the defect shape four earlier rounds kept finding, where state was updated in memory, the
+  durable write was enqueued behind the operation doing the updating, and a decision reached the caller
+  in between.
+- Per-member locking, not one global queue. One member's slow platform call blocks nobody.
+- Single-writer enforced by `PRAGMA locking_mode=EXCLUSIVE`. Refused a second opener 90/90 under six-way
+  concurrency, independently confirmed by a reviewer including with the holder suspended.
+- One clock sample per decision. `#observeClock()` returns it; nothing re-samples.
+- Revisions from a database-wide counter, never reused, seeded above existing rows on upgrade.
+- Legacy JSON adopted once in a transaction, source renamed `.migrated` only after it commits.
+
+### THE DISCORD PERMISSION PROBLEM, read this before touching that adapter
+
+This consumed most of the session and produced eight rejections. The lesson is not a bug list, it is a
+shape.
+
+**Discord permissions are a surface other people edit concurrently, and there is no compare-and-set.**
+Every attempt to have the bot reason carefully about permissions it did not set produced a defect worse
+than the one it fixed:
+
+- Attempt 1: clear all three managed bits to `null`. But `null` removes the DENY as well as the allow,
+  so revoking access from a member an admin had explicitly excluded lifted the exclusion and a
+  role-level allow let them in. **Removal granted access.** Survived six rounds because everyone,
+  including me, kept asking whether removal removes and never whether it could grant.
+- Attempt 2: preserve denials by reading the overwrite first. That is a read-modify-write against a
+  CACHE, so a denial the cache had not seen was wiped by the code written to protect it. Also refusing
+  to grant over a denial made the ledger's uncertain-apply cleanup strip the member's pre-existing
+  access, so declining to grant took access away.
+- Attempt 3, current: **the bot owns the per-member overwrite slot on a gated channel.** It refuses to
+  touch one carrying a denial, quarantines that channel, and says so. Exclusions are expressed with
+  role-level denies. Clearing is unconditional, valid only because of that refusal.
+
+**The guard must sit at the mutation, not at startup.** A startup gate covers the current, reachable
+target of one process. `revokeAccess` acts on whatever the record names. The decommission command is a
+separate process on a target the bot no longer manages. All four reviewers found that gap independently.
+
+**Residual, documented not solved.** The per-mutation check reads a cached overwrite, so a denial set
+moments earlier can still be cleared. This cannot be closed. The claim is narrow on purpose: the bot
+refuses to touch a conflict it can SEE.
+
+**Role mode must be monotonic.** Any denied bit on any channel refuses startup, not just the three
+managed ones. A role denying `Connect` inverts voice access exactly as one denying `ViewChannel` inverts
+text. Adding such a role removes access; removing it grants.
+
+**One ledger serves one guild.** Records carry `guildId`. `isNotOurs` is deliberately separate from
+`isGone`, because "cannot act here" is not "nothing to act on": conflating them let a repoint delete the
+records of access still live in the old server.
+
+**Channel mode is the default** because a Discord role is visible on the profile card and so discloses
+who holds a masternode, which is the fact the proof protects. Role mode warns. Any deployment with a
+role id and no explicit `DISCORD_GRANT_MODE` is refused until it states one.
+
+**Bulk removal is a command, not startup behaviour.** `npm run discord:decommission -- <target>`,
+preview by default, `--apply` to act, contradictory flags refused. Three rounds of trying to make this
+automatic produced a blocker every time, because the program was deciding to delete access from a
+reconstruction of an earlier configuration. Startup only REPORTS stale targets, and that report is best
+effort: it sees only targets surviving ledger rows still name, so its absence proves nothing. Operators
+decommission on every repoint.
+
+### HOW TO RUN REVIEWS ON THIS PROJECT, the most transferable thing learned
+
+Framing changed the results more than the code did.
+
+1. **Never frame a packet as "confirm these fixes".** A round framed that way had two model families
+   both return APPROVE on code containing a reproducible blocker that was in the file they were given.
+   One examined the exact broken case and reasoned it away in writing.
+2. **Tell reviewers to hunt TWINS.** Every round found a fix applied where the previous reviewer pointed
+   with the identical shape surviving nearby. Naming that pattern in the packet started producing those
+   findings directly.
+3. **Ask whether an operation can do the OPPOSITE of its purpose.** This single question found the worst
+   defect in the component's history after six rounds had missed it. Generalise it: can revoking grant,
+   can granting remove, can a guard cause a larger failure than it reports, can reporting-only code
+   mutate, can refusing to start be worse than starting.
+4. **Ask whether a SIMPLIFICATION quietly removed a guarantee.** Deleted code cannot be reviewed by
+   reading what remains.
+5. **Ask reviewers to separate what they READ from what they could only INFER.** Packet reviewers cannot
+   run `discord.js`; both wrote confident completeness claims about exactly that. Given the split, they
+   used it honestly.
+6. **The executing reviewer does the load-bearing work here.** Every correct finding came with a
+   reproduction; every wrong finding, and every missed blocker, came from reasoning alone.
+7. **Check that a pasted review describes code that still exists.** Two rounds were partly wasted on
+   reviews of superseded commits. Grep the packet for the identifiers the fix introduced before trusting
+   it, and rebuild packets from the current commit every time. Delete stale packets from `~/Downloads`.
+8. **Watch for identical reviews.** One round produced two byte-identical "independent" reviews. Two
+   families do not write identical prose; that is one data point, not two.
+
+### Gotchas that cost real time
+
+- `node --check` passes on a temporal-dead-zone error. Import the module to catch initialization order.
+- `await new Promise(() => {})` does NOT keep Node's event loop alive. A test holder using it exited with
+  code 13, released a lock, and produced a false blocker I committed and then withdrew. `kill(pid, 0)`
+  succeeds on an unreaped zombie, so it reported that holder "alive".
+- An edit can silently fail to match and leave the file unchanged. I reported a test fix as landed when
+  it had not applied. Read the file back; do not trust the edit.
+- `typeof [] === "object"`, so an array slipped a marker schema check.
+- 53 tests bind loopback and fail with `EPERM` in review sandboxes. Not real failures.
+- `an aged-out root is dropped at request time even between refresh ticks` is a slow, timing-sensitive
+  gateway test that flakes occasionally. Passed on re-run at 7 to 9 seconds.
+- Sixteen tests were found across these rounds whose names claimed coverage their assertions did not
+  provide, several of them mine. When writing a test for a crash, terminate something. When writing one
+  for ordering, record the sequence.
+
+### Punch list, in order
+
+1. **A fresh round on `f482028`.** Eight rounds, eight rejections, and the last one's fixes have not been
+   reviewed. Build packets from the current commit; use the framing above.
+2. **A periodic re-check of the current target**, not only at startup. A startup pass is a snapshot, so
+   an effect Discord applies after it runs waits for the next restart. Cheap in channel mode.
+3. **Confirm the `dash-cli` read buffer against a real node.** `MNO_CLI_MAX_BUFFER` (64 MB) was reasoned
+   from the 1 MB default, never observed failing. One oracle run against a full node settles it.
+4. **The three smaller items**: prevention rather than recovery for an implausible forward clock jump, a
+   model-based crash harness that interrupts at every write boundary, and deciding what mixed
+   `hashVersion` gateways in one cluster should do.
+5. **Direct node mode** and **the durable privacy-preserving Platform claim**. These two are what
+   actually gate real use, and neither has been started.
+6. **An audit.** Still none. Do not gate anything of value.
+
+### Breaking changes for any existing deployment
+
+- Adapter ledgers are SQLite: `DISCORD_GRANTS_DB`, `TELEGRAM_GRANT_LEDGER_DB`, `MATRIX_GRANT_LEDGER_DB`.
+  The old variables now name the JSON file to import once.
+- Matrix and Telegram refuse a ledger record with no room or chat id.
+- Discord defaults to channel mode; a role id with no explicit `DISCORD_GRANT_MODE` refuses to start.
+- Discord refuses to start on a role carrying any deny overwrite, or on ledger records from another guild.
+- Keep adapter ledgers on local storage. SQLite locking is unreliable on network filesystems.
+
 ## CURRENT STATE, 2026-07-26 (after the third review round)
 
 277 tests green, nothing skipped. `main` is pushed.
