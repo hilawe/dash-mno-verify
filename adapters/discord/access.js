@@ -18,7 +18,12 @@ import { grantMemberOverwrite, clearMemberOverwrite, isDenialConflict } from "./
 const RETRY_DELAYS_MS = [250, 1000];
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
-export function makeAccess({ getGuild, guildId, log = () => {} }) {
+export function makeAccess({ getGuild, guildId, managedChannels = null, log = () => {} }) {
+  // The channels this bot grants through NOW. Repair is confined to them, because a record can name a
+  // channel the configuration has since dropped, and reapplying there would restore access on a target
+  // the startup pass has just finished warning it no longer manages. Null means unrestricted, which is
+  // only for callers that have no configured set, and no adapter passes null.
+  const managed = managedChannels === null ? null : new Set(managedChannels.map(String));
   // Apply the access a grant record describes. Every channel is attempted independently and real
   // failures are collected, so one bad channel cannot abandon the rest. Under the old bare loop a retry
   // always restarted at the failing channel, so a member never received the channels behind it. Same
@@ -179,9 +184,16 @@ export function makeAccess({ getGuild, guildId, log = () => {} }) {
   // Returns the channels it actually repaired, so a caller can say whether it did anything.
   async function repairAccess(userId, record) {
     if (record?.mode !== "channel") return [];
+    // Defence in depth. The caller already refuses a foreign record, and repair is the one operation
+    // that GRANTS from a stored record rather than from a fresh proof, so it checks again itself.
+    if (record.guildId && String(record.guildId) !== String(guildId)) return [];
     const guild = await getGuild();
     const repaired = [];
     for (const chId of record.channels ?? []) {
+      // Only channels this bot grants through now. A record naming a dropped channel is exactly the
+      // stale target the startup pass reports and refuses to act on, and repair must not be the one
+      // path that quietly does.
+      if (managed !== null && !managed.has(String(chId))) continue;
       let ch;
       try {
         ch = await guild.channels.fetch(chId);

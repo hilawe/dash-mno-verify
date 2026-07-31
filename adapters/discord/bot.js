@@ -118,6 +118,7 @@ const getGuild = async () => (guildRef ??= await client.guilds.fetch(GUILD_ID));
 const { applyAccess, revokeAccess, repairAccess } = makeAccess({
   getGuild,
   guildId: GUILD_ID,
+  managedChannels: GRANT_CHANNEL_IDS,
   log: (m) => console.warn("[discord]", m),
 });
 
@@ -164,10 +165,22 @@ const ledger = new GrantLedger({
 // read and no request.
 async function repairLiveGrants() {
   let repaired = 0;
-  for (const [userId, record] of ledger.entries()) {
-    if (!ledger.live(userId)) continue;
+  // Only the ACCOUNT is taken from this snapshot. The record it carries is deliberately discarded,
+  // because the repair below rereads the current one inside the member's own lock.
+  for (const [userId] of ledger.entries()) {
     try {
-      repaired += (await repairAccess(userId, record)).length;
+      // admitIfLive takes the per-member queue, rereads the row inside it, and judges expiry against
+      // the persisted clock sample, so the record handed to the repair is the one that is true at the
+      // moment of the mutation.
+      //
+      // The first version passed the snapshot straight to the mutation, outside the queue. A renewal
+      // could then replace the row with a new target and revoke the old one while a repair was in
+      // flight on the old, after which the repair reapplied it and nothing tracked it. Untracked live
+      // access is the single failure this ledger exists to prevent, and reaching around its queue is
+      // how it comes back.
+      await ledger.admitIfLive(userId, async (record) => {
+        repaired += (await repairAccess(userId, record)).length;
+      });
     } catch (e) {
       console.error(`[discord] repair failed for ${userId}: ${e.message}`);
     }
