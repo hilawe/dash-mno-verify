@@ -73,8 +73,12 @@ environment variables.
 
 ## Known blockers and where work is tracked
 
-The adversarial review of 2026-06-26 is the source of truth, committed at
-`REVIEW_FINDINGS_dash-mno-verify_2026-06-26.md` (and `.pdf`). The prioritized remediation list is in
+The adversarial review of 2026-06-26 is the source of truth for the gateway and circuit blockers,
+committed at `REVIEW_FINDINGS_dash-mno-verify_2026-06-26.md` (and `.pdf`). Later rounds that covered
+the Discord adapter and the shared grant ledger are committed alongside it, most recently
+`REVIEW_FINDINGS_dash-mno-verify_discord_round10_2026-07-31.md`. Every finding in those adapter rounds
+is folded; they are kept as the record of what was wrong and why, which is what the handoff points back
+to. The prioritized remediation list is in
 `TODO.md`. The headline open blockers are account binding (B1, the proof binds to the nonce, not the
 requesting account) and context-scoped members roots (B2, one registration grants every community in
 a season). Both change the committed proving and verification keys, so they need a re-setup and the
