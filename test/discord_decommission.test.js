@@ -1,0 +1,149 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { OverwriteType, PermissionsBitField } from "discord.js";
+
+import { runDecommission } from "../adapters/discord/decommission.js";
+import { GrantLedger } from "../adapters/discord/grant_ledger.js";
+
+// The decommission pass used to live inside a script that logs in to Discord at import, so no test
+// could reach it, and four separate defects survived two review rounds there. Each test below pins one
+// of them and fails against the previous behaviour.
+
+const bits = (...n) => new PermissionsBitField(n);
+const ow = (id, deny = []) => ({ id, type: OverwriteType.Member, allow: bits(), deny: bits(...deny) });
+const gone = () => Object.assign(new Error("Unknown Channel"), { status: 404 });
+
+function fakeGuild({ channels = {}, roles = {}, members = [] } = {}) {
+  const edits = [];
+  const roleOps = [];
+  return {
+    edits,
+    roleOps,
+    guild: {
+      id: "g1",
+      name: "Test",
+      roles: { fetch: async (id) => roles[id] ?? null },
+      members: { fetch: async () => new Map(members.map((m) => [m.id, m])) },
+      channels: {
+        fetch: async (id) => {
+          if (id === undefined) return new Map(); // the guild-wide scan the role preflight does
+          const list = channels[id];
+          if (!list) throw gone();
+          return {
+            id,
+            permissionOverwrites: {
+              cache: new Map(list.map((o) => [o.id, o])),
+              edit: async (userId, patch) => edits.push({ channel: id, userId, patch }),
+            },
+          };
+        },
+      },
+    },
+  };
+}
+
+const member = (id, roleIds, roleOps) => ({
+  id,
+  roles: {
+    cache: { has: (r) => roleIds.includes(r) },
+    remove: async (r) => roleOps.push([id, r]),
+  },
+});
+
+function withLedger(records, fn) {
+  const dir = mkdtempSync(join(tmpdir(), "mno-dc-"));
+  const ledger = new GrantLedger({
+    exclusive: false,
+    file: join(dir, "grants.db"),
+    scope: "g1",
+    apply: async () => {},
+    revoke: async () => {},
+    now: () => 1000,
+    log: () => {},
+  });
+  return (async () => {
+    for (const [id, rec] of Object.entries(records)) await ledger.grant(id, rec);
+    return await fn(ledger);
+  })().finally(() => {
+    ledger.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+}
+
+const chanRec = (channels) => ({ expiresAt: 9999, mode: "channel", guildId: "g1", channels });
+const roleRec = (roleId) => ({ expiresAt: 9999, mode: "role", guildId: "g1", roleId });
+
+test("a role with zero holders still retires its ledger rows", async () => {
+  // THE BLOCKER. Retirement was gated on `removed.length`, so a run that removed nobody skipped the
+  // ledger entirely and exited zero. A role removed by hand, or a second run after a successful first
+  // one, both land here. The rows survived, the bot refused to start on them forever, and the command
+  // reported success every time, which is a guard whose documented exit could not be reached by doing
+  // the right thing.
+  const { guild, roleOps } = fakeGuild({ roles: { r1: { id: "r1", name: "MNO" } }, members: [] });
+  await withLedger({ u1: roleRec("r1") }, async (ledger) => {
+    assert.equal(ledger.has("u1"), true);
+    const { failed } = await runDecommission({
+      guild, target: { mode: "role", ids: ["r1"] }, targetArg: "role:r1",
+      dryRun: false, ledger, botUserId: "bot",
+    });
+    assert.deepEqual(roleOps, [], "nobody held it, so nothing was removed");
+    assert.deepEqual(failed, [], "and that is not a failure");
+    assert.equal(ledger.has("u1"), false, "the row is retired anyway, which is the whole fix");
+  });
+});
+
+test("a deleted channel can be retired with an explicit assertion, and not without one", async () => {
+  const target = { mode: "channel", ids: ["dead"] };
+  // Default: refuses, because a typo looks identical to a deleted channel from here.
+  await withLedger({ u1: chanRec(["dead"]) }, async (ledger) => {
+    const { failed } = await runDecommission({
+      guild: fakeGuild({}).guild, target, targetArg: "channel:dead",
+      dryRun: false, ledger, botUserId: "bot",
+    });
+    assert.deepEqual(failed, ["dead/*"], "an unfound target is not silently treated as success");
+    assert.equal(ledger.has("u1"), true, "so its row stays tracked");
+  });
+  // With the assertion: retired, which is the exit that did not exist.
+  await withLedger({ u1: chanRec(["dead"]) }, async (ledger) => {
+    const { failed } = await runDecommission({
+      guild: fakeGuild({}).guild, target, targetArg: "channel:dead",
+      dryRun: false, confirmGone: true, ledger, botUserId: "bot",
+    });
+    assert.deepEqual(failed, []);
+    assert.equal(ledger.has("u1"), false, "a deleted channel holds no access, so nothing needs tracking");
+  });
+});
+
+test("one denied member does not stop every clean member on the channel being cleared", async () => {
+  // The twin of the case test/discord_permissions.test.js asserts for the mutation helper: a denial on
+  // one member must not block another. That reasoning reached the helper and not this preflight, which
+  // skipped the whole channel and stranded every unrelated holder's stale access.
+  const { guild, edits } = fakeGuild({ channels: { c1: [ow("denied", ["ViewChannel"]), ow("clean")] } });
+  await withLedger({ denied: chanRec(["c1"]), clean: chanRec(["c1"]) }, async (ledger) => {
+    const { removed, failed } = await runDecommission({
+      guild, target: { mode: "channel", ids: ["c1"] }, targetArg: "channel:c1",
+      dryRun: false, ledger, botUserId: "bot",
+    });
+    assert.deepEqual(edits.map((e) => e.userId), ["clean"], "the clean member is cleared");
+    assert.deepEqual(removed, ["c1/clean"]);
+    assert.deepEqual(failed, ["c1/denied"], "and only the excluded member is reported as not cleared");
+    assert.equal(ledger.has("clean"), false, "cleared, so no longer tracked");
+    assert.equal(ledger.has("denied"), true, "refused, so still tracked");
+  });
+});
+
+test("a preview changes nothing on Discord and nothing in the ledger", async () => {
+  const { guild, edits } = fakeGuild({ channels: { c1: [ow("u1")] } });
+  await withLedger({ u1: chanRec(["c1"]) }, async (ledger) => {
+    const { removed } = await runDecommission({
+      guild, target: { mode: "channel", ids: ["c1"] }, targetArg: "channel:c1",
+      dryRun: true, ledger, botUserId: "bot",
+    });
+    assert.deepEqual(removed, ["c1/u1"], "it still reports what it would do");
+    assert.deepEqual(edits, [], "but sends nothing");
+    assert.equal(ledger.has("u1"), true, "and retires nothing");
+  });
+});

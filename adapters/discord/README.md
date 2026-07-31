@@ -32,8 +32,22 @@ npm run discord:decommission -- channel:111,222            # preview, changes no
 npm run discord:decommission -- channel:111,222 --apply    # actually removes
 ```
 
-Stop the bot before running it with `--apply`. The command updates the ledger once Discord has been
-changed, and the single-writer lock will refuse it while the bot holds the database.
+Stop the bot before running it with `--apply`. The command takes the ledger's single-writer lock
+BEFORE it logs in to Discord, so it refuses to start at all while the bot holds the database. That
+ordering matters: taking the lock afterwards protected the ledger write and not the Discord work, so a
+live bot could re-grant a member the command had just cleared while the command reported the access
+taken back. A preview takes no lock, so it never competes with a running bot.
+
+**A target that no longer exists needs `--confirm-target-gone`.** A deleted channel or role holds no
+access, but from here a typo looks exactly the same, so the command refuses by default rather than
+reporting success for something it never found. Refusing on its own left no way to finish, because a
+deleted target can never come back, its rows were kept forever, and the guild binding could never
+empty. Adding `--apply --confirm-target-gone` asserts the target really is gone and retires its rows.
+The flag does nothing without `--apply` and is refused on its own, so it cannot look like it acted.
+
+**One excluded member does not stop the rest.** If somebody on the channel carries a denial, they are
+left alone and named, and every other member is still cleared. Their row stays tracked and everyone
+else's is retired.
 
 **It stops tracking whatever actually came back, and only that.** A ledger row is not history to the
 sweep, which treats every row as revocation work still owed, so a retired channel left in a record
