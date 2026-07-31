@@ -1,0 +1,151 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { OverwriteType, PermissionsBitField } from "discord.js";
+
+import { makeAccess } from "../adapters/discord/access.js";
+import { GrantLedger } from "../adapters/discord/grant_ledger.js";
+
+// THE COMPOSITION, which is where the defect was and which nothing could reach before.
+//
+// The ledger compensates a failed first grant by revoking the whole record. That is right when a write
+// may have landed and wrong when the apply refused a precondition and sent nothing, because
+// compensating a refusal clears access the member already held, so declining to grant takes access
+// away. DenialConflict carries `mutated: false` for exactly that, and applyAccess used to wrap it in a
+// plain aggregate Error, which erased the flag before the ledger ever saw it. Two commits described
+// that flag as the thing making the refusal safe while it was dead code.
+//
+// Neither half is wrong on its own. Only the pair is, which is why these functions had to leave
+// bot.js: that file logs in to Discord at import, so no test could drive them.
+
+const bits = (...n) => new PermissionsBitField(n);
+const overwrite = (id, deny = [], allow = []) => ({
+  id,
+  type: OverwriteType.Member,
+  allow: bits(...allow),
+  deny: bits(...deny),
+});
+
+// A fake guild recording every permission edit, so the assertions are about calls made to Discord
+// rather than about which error came back.
+function fakeGuild(channels) {
+  const edits = [];
+  return {
+    edits,
+    guild: {
+      channels: {
+        fetch: async (id) => {
+          const ch = channels[id];
+          if (!ch) throw Object.assign(new Error("Unknown Channel"), { status: 404 });
+          return {
+            id,
+            permissionOverwrites: {
+              cache: new Map(ch.map((o) => [o.id, o])),
+              edit: async (userId, patch) => {
+                edits.push({ channel: id, userId, patch });
+              },
+            },
+          };
+        },
+      },
+    },
+  };
+}
+
+function withLedger(guild, fn) {
+  const dir = mkdtempSync(join(tmpdir(), "mno-access-"));
+  const { applyAccess, revokeAccess } = makeAccess({
+    getGuild: async () => guild,
+    guildId: "g1",
+    log: () => {},
+  });
+  const ledger = new GrantLedger({
+    exclusive: false,
+    file: join(dir, "grants.db"),
+    scope: "g1",
+    apply: applyAccess,
+    revoke: revokeAccess,
+    now: () => 1000,
+    log: () => {},
+  });
+  return Promise.resolve(fn(ledger))
+    .finally(() => {
+      ledger.close();
+      rmSync(dir, { recursive: true, force: true });
+    });
+}
+
+const rec = (channels) => ({ expiresAt: 9999, mode: "channel", guildId: "g1", channels });
+
+test("a grant refused on one channel does not clear the sibling channel it just granted", async () => {
+  // The reproduction, and the reason the ledger must be told nothing-was-sent apart from something-
+  // may-have-been. c1 is clean and c2 carries an administrator's exclusion.
+  const { guild, edits } = fakeGuild({ c1: [], c2: [overwrite("u1", ["ViewChannel"])] });
+  await withLedger(guild, async (ledger) => {
+    await assert.rejects(() => ledger.grant("u1", rec(["c1", "c2"])), /could not grant/);
+
+    // One write went out, to the clean channel. The compensation is allowed to take it back, because
+    // something did reach Discord. What must NOT happen is the ledger keeping a live record afterwards.
+    const clears = edits.filter((e) => e.patch.ViewChannel === null);
+    assert.equal(edits.some((e) => e.channel === "c2"), false, "the denied channel was never written to");
+    assert.equal(
+      ledger.has("u1"),
+      false,
+      "a record surviving a completed compensation is a live grant with no access behind it, and " +
+        "nothing repairs that: reconciliation only removes overwrites, it never creates one",
+    );
+    assert.ok(clears.length <= 1, "the clean channel is cleared at most once");
+  });
+});
+
+test("a grant refused on EVERY channel sends nothing and is not compensated", async () => {
+  // The case that made an earlier refusal worse than the bug it fixed. Nothing reached Discord, so
+  // there is nothing to take back, and compensating anyway cleared access the member already held.
+  const { guild, edits } = fakeGuild({ c1: [overwrite("u1", ["ViewChannel"])] });
+  await withLedger(guild, async (ledger) => {
+    await assert.rejects(() => ledger.grant("u1", rec(["c1"])), /could not grant/);
+    assert.deepEqual(edits, [], "not one write, neither the grant nor a compensating clear");
+    assert.equal(ledger.has("u1"), false, "and no record claiming access that does not exist");
+  });
+});
+
+test("a clean grant applies every channel and keeps its record", async () => {
+  const { guild, edits } = fakeGuild({ c1: [], c2: [] });
+  await withLedger(guild, async (ledger) => {
+    await ledger.grant("u1", rec(["c1", "c2"]));
+    assert.deepEqual(edits.map((e) => e.channel), ["c1", "c2"]);
+    assert.equal(edits.every((e) => e.patch.ViewChannel === true), true);
+    assert.equal(ledger.has("u1"), true);
+  });
+});
+
+test("revoking past a member's denial clears the clean channel and leaves the denied one alone", async () => {
+  // The twin of reconcileGuild's clear helper, which skipped a refusal while this path counted it as a
+  // failure. A member carrying a denial holds no access to take back, so treating the refusal as a
+  // failure made revokeAccess throw, which kept the record and made the sweep retry it every interval
+  // for the life of the deployment.
+  const { guild, edits } = fakeGuild({ c1: [], c2: [overwrite("u1", ["ViewChannel"])] });
+  const { revokeAccess } = makeAccess({ getGuild: async () => guild, guildId: "g1", log: () => {} });
+
+  await revokeAccess("u1", rec(["c1", "c2"])); // must RESOLVE, not throw
+
+  assert.deepEqual(
+    edits.map((e) => e.channel),
+    ["c1"],
+    "the clean channel is cleared and the denied one is never written to",
+  );
+  assert.equal(edits[0].patch.ViewChannel, null, "cleared to inherit");
+});
+
+test("a revoke that genuinely fails still throws, so the record is kept and retried", async () => {
+  // The other side of the same decision. Skipping a refusal must not turn into swallowing a real
+  // failure, which would drop the record while the access was still live.
+  const { guild } = fakeGuild({ c1: [] });
+  guild.channels.fetch = async () => {
+    throw Object.assign(new Error("Discord is down"), { status: 500 });
+  };
+  const { revokeAccess } = makeAccess({ getGuild: async () => guild, guildId: "g1", log: () => {} });
+  await assert.rejects(() => revokeAccess("u1", rec(["c1"])), /could not revoke/);
+});

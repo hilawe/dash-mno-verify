@@ -602,9 +602,36 @@ export class GrantLedger {
       } catch (e) {
         // The stored record covers every target that could be live now: a first grant's uncertain new
         // access, or on a renewal the prior carried-forward targets (still live) plus any partial new
-        // ones, since the orphaned old targets were revoked above. Leave it so the sweep covers it. On
-        // a first grant there is no prior access, so also best-effort revoke the uncertain new access.
-        if (!prev) await this.revoke(userId, record).catch(() => {});
+        // ones, since the orphaned old targets were revoked above. On a renewal, leave it and let the
+        // sweep cover it.
+        if (prev) throw e;
+
+        // A FIRST grant, where three separate outcomes were previously collapsed into one.
+        //
+        // `e.mutated === false` is the apply saying nothing reached the platform at all, which is what
+        // a pure precondition refusal looks like. Compensating that used to clear the member's access
+        // anyway, so declining to grant took access away, and that defect is the reason an earlier
+        // refusal was deleted rather than repaired. The flag existed to prevent it and never reached
+        // this decision, because the caller wrapped the refusal in an ordinary error. Now it does.
+        if (e?.mutated === false) {
+          // Nothing was applied, so the row promises access that does not exist. Leaving it made the
+          // ledger claim a target was authorized while the member held nothing, and the sweep would
+          // not repair that because a live record looks fine to it.
+          this.#stmt.delAny.run(String(userId));
+          throw e;
+        }
+
+        // Something may have reached the platform. Take it back, and only if that succeeds completely
+        // drop the row, because a row surviving a successful compensation is a live record with no
+        // access behind it, which nothing repairs. If the compensation itself fails, the row stays so
+        // the sweep keeps trying.
+        try {
+          await this.revoke(userId, record);
+          this.#stmt.delAny.run(String(userId));
+        } catch {
+          // Deliberately swallowed. The original apply failure is the one the caller needs, and the
+          // record surviving is the correct outcome of a failed compensation.
+        }
         throw e;
       }
     });

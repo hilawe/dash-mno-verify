@@ -111,15 +111,43 @@ test("a grant and a revoke for the same user do not interleave", async () => {
   assert.equal(l.has("u1"), true); // the fresh grant wins
 });
 
-// A failed apply may have partially granted, so the record must be kept (so the sweep cleans it up),
-// and the bot best-effort revokes the uncertain access now. Never leave live access untracked.
-test("a failed first grant keeps a record and best-effort revokes", async () => {
+// A FAILED FIRST GRANT HAS THREE OUTCOMES, and collapsing them into one caused two separate defects.
+//
+// This was one test asserting the record is always kept and the revoke always runs. That is right for
+// exactly one of the three cases. Compensating an apply that sent nothing cleared access the member
+// already held, so declining to grant took access away, and that is why an earlier denial refusal was
+// deleted rather than repaired. Keeping the record after a compensation that SUCCEEDED left a live
+// record with no access behind it, which the sweep will not repair because a live record looks fine to
+// it, and nothing else creates a missing overwrite.
+const refusal = (msg) => Object.assign(new Error(msg), { mutated: false });
+
+test("a first grant that sent nothing is not compensated, and leaves no record behind", async () => {
+  const file = tmpFile();
+  const revoked = [];
+  const l = new GrantLedger({ exclusive: false, file, apply: () => Promise.reject(refusal("denied")), revoke: (u) => (revoked.push(u), noop()), now: () => 100 });
+  await assert.rejects(l.grant("u1", rec(200)), /denied/);
+  assert.deepEqual(revoked, [], "compensating a refusal is what used to strip pre-existing access");
+  assert.equal(l.has("u1"), false, "no access was applied, so a record claiming it would be a lie");
+  assert.equal("u1" in onDisk(file), false);
+});
+
+test("a first grant whose compensation succeeds leaves no record, because no access survives it", async () => {
   const file = tmpFile();
   const revoked = [];
   const l = new GrantLedger({ exclusive: false, file, apply: () => Promise.reject(new Error("discord down")), revoke: (u) => (revoked.push(u), noop()), now: () => 100 });
   await assert.rejects(l.grant("u1", rec(200)), /discord down/);
-  assert.equal(l.has("u1"), true);
+  assert.deepEqual(revoked, ["u1"], "an uncertain apply is still compensated");
+  assert.equal(l.has("u1"), false);
+  assert.equal("u1" in onDisk(file), false);
+});
+
+test("a first grant whose compensation FAILS keeps the record, so the sweep keeps trying", async () => {
+  const file = tmpFile();
+  const revoked = [];
+  const l = new GrantLedger({ exclusive: false, file, apply: () => Promise.reject(new Error("discord down")), revoke: (u) => (revoked.push(u), Promise.reject(new Error("still down"))), now: () => 100 });
+  await assert.rejects(l.grant("u1", rec(200)), /discord down/, "the apply failure is what the caller is told, not the compensation failure");
   assert.deepEqual(revoked, ["u1"]);
+  assert.equal(l.has("u1"), true, "access may be live, so it must stay tracked");
   assert.equal("u1" in onDisk(file), true);
 });
 
