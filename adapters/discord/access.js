@@ -8,8 +8,15 @@
 // can be written.
 //
 // `getGuild` and `guildId` are injected. Nothing here reads the environment.
-import { isGone, isNotOurs } from "./grant_ledger.js";
+import { OverwriteType } from "discord.js";
+import { isGone, isNotOurs, managedState, MANAGED_BITS } from "./grant_ledger.js";
 import { grantMemberOverwrite, clearMemberOverwrite, isDenialConflict } from "./permissions.js";
+
+// One short retry inside the request, because a member who has just verified should not wait a whole
+// sweep interval for a rate limit or a brief 5xx to clear. A refusal is never retried: it is a
+// decision, not a blip, and retrying it would just be a slower refusal.
+const RETRY_DELAYS_MS = [250, 1000];
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export function makeAccess({ getGuild, guildId, log = () => {} }) {
   // Apply the access a grant record describes. Every channel is attempted independently and real
@@ -45,15 +52,27 @@ export function makeAccess({ getGuild, guildId, log = () => {} }) {
     let applied = false;
     let onlyRefusals = true;
     for (const chId of record.channels) {
-      try {
-        const ch = await guild.channels.fetch(chId);
-        await grantMemberOverwrite(ch, userId);
-        applied = true;
-      } catch (e) {
-        failures.push(`${chId}: ${e.message}`);
+      let lastErr = null;
+      for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt += 1) {
+        try {
+          const ch = await guild.channels.fetch(chId);
+          await grantMemberOverwrite(ch, userId);
+          applied = true;
+          lastErr = null;
+          break;
+        } catch (e) {
+          lastErr = e;
+          // A refusal is a decision. Retrying it produces the same answer more slowly, and the member
+          // is excluded either way.
+          if (isDenialConflict(e)) break;
+          if (attempt < RETRY_DELAYS_MS.length) await wait(RETRY_DELAYS_MS[attempt]);
+        }
+      }
+      if (lastErr) {
+        failures.push(`${chId}: ${lastErr.message}`);
         // A fetch failure or a network error is NOT a refusal. Its outcome is unknown, so it counts as
-        // possibly-mutated and the conservative compensation still runs.
-        if (!isDenialConflict(e)) onlyRefusals = false;
+        // possibly-mutated, which keeps the record so reconciliation can repair it.
+        if (!isDenialConflict(lastErr)) onlyRefusals = false;
       }
     }
     if (failures.length) {
@@ -143,5 +162,50 @@ export function makeAccess({ getGuild, guildId, log = () => {} }) {
     }
   }
 
-  return { applyAccess, revokeAccess };
+  // CONVERGENCE IN THE OTHER DIRECTION, which is the half that did not exist.
+  //
+  // Reconciliation removed overwrites from people with no live grant and never created one for a
+  // person who had a live grant and no access. That gap was reachable and had no way out. The gateway
+  // spends the nullifier when it verifies, and the challenge is one-time, so a member whose apply
+  // failed after a successful verification could not prove again in that epoch. They were told to run
+  // /verify again, which cannot work, and nothing else would ever fix it. They stayed verified,
+  // recorded, and locked out until expiry.
+  //
+  // Reapplying from the record is not new authority in substance, only in direction. The record was
+  // written after a verified proof, it is bound to this guild, and it expires on its own, so a repair
+  // can never grant more than the member proved or for longer than they proved it. It goes through the
+  // same guarded grant, so it still cannot override an administrator's exclusion.
+  //
+  // Returns the channels it actually repaired, so a caller can say whether it did anything.
+  async function repairAccess(userId, record) {
+    if (record?.mode !== "channel") return [];
+    const guild = await getGuild();
+    const repaired = [];
+    for (const chId of record.channels ?? []) {
+      let ch;
+      try {
+        ch = await guild.channels.fetch(chId);
+      } catch (e) {
+        if (isGone(e) || isNotOurs(e)) continue; // nothing to repair on a channel we cannot reach
+        continue; // a blip; the next pass tries again rather than failing the whole sweep
+      }
+      const own = [...ch.permissionOverwrites.cache.values()].find(
+        (o) => o.type === OverwriteType.Member && String(o.id) === String(userId),
+      );
+      // Present and already allowing all three managed bits means there is nothing to do. Anything
+      // else, including a missing overwrite or a partial one, is repaired.
+      if (own && MANAGED_BITS.every((b) => managedState(own).allow.includes(b))) continue;
+      try {
+        await grantMemberOverwrite(ch, userId);
+        repaired.push(chId);
+      } catch (e) {
+        // A refusal here is correct and permanent: the member is excluded, so the repair must not
+        // insist. Anything else is left for the next pass.
+        log(`could not reapply ${userId} on ${chId}: ${e.message}`);
+      }
+    }
+    return repaired;
+  }
+
+  return { applyAccess, revokeAccess, repairAccess };
 }

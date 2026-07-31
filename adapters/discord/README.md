@@ -16,6 +16,17 @@ The verification conversation itself is always private, since `/verify` and `/su
 
 The bot runs a sweep (`DISCORD_SWEEP_SECONDS`, default 300) that removes a member's access once their epoch grant lapses and they have not re-verified, so access tracks current masternode control rather than being permanent once granted. It persists its grant ledger to a SQLite database (`DISCORD_GRANTS_DB`, default `adapters/discord/grants.db`, which holds user ids, is mode 0600, and is gitignored), so access is still revoked after a restart, and it sweeps once at startup. An existing JSON ledger at `DISCORD_GRANTS_FILE` is migrated into it on first start and then renamed with a `.migrated` suffix.
 
+**Reconciliation converges in both directions.** It takes access back from anyone holding it without a
+live grant, and it reapplies access that a live record says should exist and Discord does not have.
+The second half exists because the gateway spends the nullifier when it verifies and the challenge is
+one-time, so a member whose access failed to apply after a successful verification cannot prove again
+until the next epoch. Telling them to run `/verify` again could not work, and nothing else would ever
+fix it, so they stayed verified, recorded, and locked out. Reapplying from the record grants nothing
+extra: the record was written after a verified proof, it is bound to this guild, it expires on its
+own, and the reapply goes through the same guarded grant, so it cannot override an exclusion. It runs
+on the sweep schedule, so the wait is bounded by `DISCORD_SWEEP_SECONDS` rather than by the next
+restart, and it is idempotent, so a member whose access is intact costs one cached read and no request.
+
 **Every startup, before its first sweep, the bot checks the target it manages now.** It finds everyone
 holding access there with no live matching grant and takes that access back. This is not a one-time
 upgrade step: it runs every time, because the case it exists for is a bot stopped between Discord

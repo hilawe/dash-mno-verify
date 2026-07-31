@@ -131,23 +131,20 @@ test("a first grant that sent nothing is not compensated, and leaves no record b
   assert.equal("u1" in onDisk(file), false);
 });
 
-test("a first grant whose compensation succeeds leaves no record, because no access survives it", async () => {
+test("a transient first grant keeps its record and is NOT compensated, so a repair can reapply it", async () => {
+  // This asserted the opposite a few commits ago, and the reason it changed is that a repair path now
+  // exists. Without one, a kept record was a live grant with no access behind it and nothing that
+  // would ever fix it, so revoking and dropping the row was the least-wrong option. With
+  // reconciliation converging in both directions, the record is the authority that repairs the access,
+  // and the proof that earned it cannot be spent twice in an epoch, so throwing it away locks the
+  // member out until expiry. Compensating is wrong for a second reason too: it clears the channels
+  // that DID succeed, which the repair would only put back.
   const file = tmpFile();
   const revoked = [];
-  const l = new GrantLedger({ exclusive: false, file, apply: () => Promise.reject(new Error("discord down")), revoke: (u) => (revoked.push(u), noop()), now: () => 100 });
+  const l = new GrantLedger({ exclusive: false, file, apply: () => Promise.reject(new Error("discord down")), revoke: (u) => (revoked.push(u), noop()), now: () => 100, log: () => {} });
   await assert.rejects(l.grant("u1", rec(200)), /discord down/);
-  assert.deepEqual(revoked, ["u1"], "an uncertain apply is still compensated");
-  assert.equal(l.has("u1"), false);
-  assert.equal("u1" in onDisk(file), false);
-});
-
-test("a first grant whose compensation FAILS keeps the record, so the sweep keeps trying", async () => {
-  const file = tmpFile();
-  const revoked = [];
-  const l = new GrantLedger({ exclusive: false, file, apply: () => Promise.reject(new Error("discord down")), revoke: (u) => (revoked.push(u), Promise.reject(new Error("still down"))), now: () => 100 });
-  await assert.rejects(l.grant("u1", rec(200)), /discord down/, "the apply failure is what the caller is told, not the compensation failure");
-  assert.deepEqual(revoked, ["u1"]);
-  assert.equal(l.has("u1"), true, "access may be live, so it must stay tracked");
+  assert.deepEqual(revoked, [], "no compensating revoke, because the repair pass reapplies instead");
+  assert.equal(l.has("u1"), true, "the record survives, and it is what the repair reads");
   assert.equal("u1" in onDisk(file), true);
 });
 

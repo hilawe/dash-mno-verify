@@ -612,32 +612,34 @@ export class GrantLedger {
         // sweep cover it.
         if (prev) throw e;
 
-        // A FIRST grant, where three separate outcomes were previously collapsed into one.
+        // A FIRST grant, and what happens next depends on whether anything reached the platform.
         //
-        // `e.mutated === false` is the apply saying nothing reached the platform at all, which is what
-        // a pure precondition refusal looks like. Compensating that used to clear the member's access
-        // anyway, so declining to grant took access away, and that defect is the reason an earlier
-        // refusal was deleted rather than repaired. The flag existed to prevent it and never reached
-        // this decision, because the caller wrapped the refusal in an ordinary error. Now it does.
+        // `e.mutated === false` is the apply saying nothing was sent at all, which is what a pure
+        // precondition refusal looks like. Compensating that used to clear the member's access anyway,
+        // so declining to grant took access away, and that defect is why an earlier refusal was
+        // deleted rather than repaired. The row goes too: nothing was applied, so a row promising
+        // access would be a lie, and the member cannot be granted while the exclusion stands.
         if (e?.mutated === false) {
-          // Nothing was applied, so the row promises access that does not exist. Leaving it made the
-          // ledger claim a target was authorized while the member held nothing, and the sweep would
-          // not repair that because a live record looks fine to it.
           this.#stmt.delAny.run(String(userId));
           throw e;
         }
 
-        // Something may have reached the platform. Take it back, and only if that succeeds completely
-        // drop the row, because a row surviving a successful compensation is a live record with no
-        // access behind it, which nothing repairs. If the compensation itself fails, the row stays so
-        // the sweep keeps trying.
-        try {
-          await this.revoke(userId, record);
-          this.#stmt.delAny.run(String(userId));
-        } catch {
-          // Deliberately swallowed. The original apply failure is the one the caller needs, and the
-          // record surviving is the correct outcome of a failed compensation.
-        }
+        // Anything else is a transient or uncertain failure, and the record is KEPT with no
+        // compensating revoke.
+        //
+        // This is the opposite of what it did a few commits ago, and the reason is that a repair path
+        // now exists. Without one, a kept record was a live grant with no access behind it and nothing
+        // that would ever fix it, so revoking and dropping the row was the least-wrong option. With
+        // reconciliation converging in both directions, the record is the authority that repairs the
+        // access, so throwing it away destroys the only evidence the member earned it, and the proof
+        // that earned it cannot be spent twice in an epoch.
+        //
+        // Compensating is now actively wrong as well. It clears the channels that DID succeed, which
+        // is the sibling-stripping defect, and the repair would only put them back.
+        this.log(
+          `${userId} is recorded but their access did not fully apply (${e.message}). The record is ` +
+            `kept and reconciliation will reapply it.`,
+        );
         throw e;
       }
     });
@@ -739,6 +741,14 @@ export class GrantLedger {
   // has granted through before, which a pass over the current target alone cannot see.
   all() {
     return this.#stmt.all.all().map((row) => this.#parse(row.user_id, row.record));
+  }
+
+  // Every record WITH the account it belongs to. `all()` drops the id, which is fine for the callers
+  // that only inspect record contents and useless for anything that has to act on a member. The repair
+  // pass needs both, and reaching for `all()` there would have silently iterated records it could not
+  // attribute.
+  entries() {
+    return this.#stmt.all.all().map((row) => [row.user_id, this.#parse(row.user_id, row.record)]);
   }
 
   size() {

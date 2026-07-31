@@ -115,7 +115,7 @@ const getGuild = async () => (guildRef ??= await client.guilds.fetch(GUILD_ID));
 // The two ledger-driven operations live in access.js so tests can drive them. This file logs in to
 // Discord at import, so nothing inside it was ever reachable from a test, which is why the
 // apply-and-compensate composition went unverified for two rounds.
-const { applyAccess, revokeAccess } = makeAccess({
+const { applyAccess, revokeAccess, repairAccess } = makeAccess({
   getGuild,
   guildId: GUILD_ID,
   log: (m) => console.warn("[discord]", m),
@@ -152,8 +152,32 @@ const ledger = new GrantLedger({
 // Revoke lapsed grants, then DM the affected members. The ledger does the revoking and persistence;
 // the DM is a Discord concern, so it stays here. Runs at startup as well as on the timer, so a grant that lapsed
 // while the bot was down is cleared promptly.
+// Reapply access that a live record says should exist and Discord does not have.
+//
+// The gap this closes: the gateway spends the nullifier when it verifies and the challenge is
+// one-time, so a member whose apply failed after a successful verification could not prove again in
+// that epoch. Nothing created a missing overwrite from a live record, so they stayed verified,
+// recorded, and locked out until expiry, while being told to run /verify again, which cannot work.
+//
+// Runs on the same schedule as the sweep, so the wait is bounded by DISCORD_SWEEP_SECONDS rather than
+// by the next restart. Idempotent: a member whose overwrite is present and complete costs one cached
+// read and no request.
+async function repairLiveGrants() {
+  let repaired = 0;
+  for (const [userId, record] of ledger.entries()) {
+    if (!ledger.live(userId)) continue;
+    try {
+      repaired += (await repairAccess(userId, record)).length;
+    } catch (e) {
+      console.error(`[discord] repair failed for ${userId}: ${e.message}`);
+    }
+  }
+  if (repaired) console.log(`[discord] reapplied access on ${repaired} channel(s) from live records`);
+}
+
 async function sweepAndNotify() {
   const revoked = await ledger.sweep();
+  await repairLiveGrants().catch((e) => console.error("[discord] repair pass failed:", e.message));
   for (const userId of revoked) {
     try {
       const u = await client.users.fetch(userId);
@@ -498,7 +522,14 @@ async function handleInteraction(i) {
       });
     } catch (e) {
       console.error("[discord] grant failed:", e.message);
-      return i.editReply("Verified, but granting access did not complete. Run `/verify` again to retry.");
+      // NOT "run /verify again", which cannot work: the challenge is one-time and the nullifier is
+      // spent for this epoch, so a second proof from the same voting key is refused. The verification
+      // stands, the record is kept, and the repair pass reapplies it on the sweep schedule.
+      return i.editReply(
+        "Verified. Applying your access did not complete just now, which is usually temporary. Your " +
+          "verification still counts and it will be applied automatically within a few minutes. There " +
+          "is no need to verify again, and doing so will not help until the next epoch.",
+      );
     }
     const until = new Date(out.expiresAt * 1000).toISOString().replace("T", " ").slice(0, 16);
     const where = "access to the masternode channel";

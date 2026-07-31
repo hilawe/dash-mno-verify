@@ -79,24 +79,20 @@ function withLedger(guild, fn) {
 
 const rec = (channels) => ({ expiresAt: 9999, mode: "channel", guildId: "g1", channels });
 
-test("a grant refused on one channel does not clear the sibling channel it just granted", async () => {
-  // The reproduction, and the reason the ledger must be told nothing-was-sent apart from something-
-  // may-have-been. c1 is clean and c2 carries an administrator's exclusion.
+test("a grant refused on one channel leaves the sibling channel granted, and keeps the record", async () => {
+  // The reproduction. c1 is clean and c2 carries an administrator's exclusion. The clean channel is
+  // granted and must STAY granted: it used to be cleared again immediately by the ledger compensating
+  // the whole record, so a member finished verification with no access on a healthy channel.
   const { guild, edits } = fakeGuild({ c1: [], c2: [overwrite("u1", ["ViewChannel"])] });
   await withLedger(guild, async (ledger) => {
     await assert.rejects(() => ledger.grant("u1", rec(["c1", "c2"])), /could not grant/);
 
-    // One write went out, to the clean channel. The compensation is allowed to take it back, because
-    // something did reach Discord. What must NOT happen is the ledger keeping a live record afterwards.
-    const clears = edits.filter((e) => e.patch.ViewChannel === null);
-    assert.equal(edits.some((e) => e.channel === "c2"), false, "the denied channel was never written to");
-    assert.equal(
-      ledger.has("u1"),
-      false,
-      "a record surviving a completed compensation is a live grant with no access behind it, and " +
-        "nothing repairs that: reconciliation only removes overwrites, it never creates one",
+    assert.deepEqual(
+      edits.map((e) => ({ channel: e.channel, view: e.patch.ViewChannel })),
+      [{ channel: "c1", view: true }],
+      "one write, the grant on the clean channel. No write to the denied one and no clearing afterwards",
     );
-    assert.ok(clears.length <= 1, "the clean channel is cleared at most once");
+    assert.equal(ledger.has("u1"), true, "the record is kept, so the repair pass can finish the job");
   });
 });
 
@@ -148,4 +144,75 @@ test("a revoke that genuinely fails still throws, so the record is kept and retr
   };
   const { revokeAccess } = makeAccess({ getGuild: async () => guild, guildId: "g1", log: () => {} });
   await assert.rejects(() => revokeAccess("u1", rec(["c1"])), /could not revoke/);
+});
+
+// THE LOCKOUT, and the repair that ends it.
+//
+// The gateway spends the nullifier when it verifies and the challenge is one-time, so a member whose
+// apply failed after a successful verification cannot prove again in that epoch. Nothing created a
+// missing overwrite from a live record, so they stayed verified, recorded, and locked out until
+// expiry, while being told to run /verify again, which cannot work.
+test("a member left with a live record and no access is repaired from the record", async () => {
+  const { guild, edits } = fakeGuild({ c1: [] });
+  // The apply fails the way a transient Discord problem does.
+  let broken = true;
+  const realFetch = guild.channels.fetch;
+  guild.channels.fetch = async (id) => {
+    if (broken) throw Object.assign(new Error("Service Unavailable"), { status: 503 });
+    return realFetch(id);
+  };
+
+  await withLedger(guild, async (ledger) => {
+    await assert.rejects(() => ledger.grant("u1", rec(["c1"])), /could not grant/);
+    assert.deepEqual(edits, [], "nothing was applied");
+    assert.equal(ledger.has("u1"), true, "but the verification is recorded, which is what saves them");
+    assert.equal(ledger.live("u1"), true);
+
+    // Discord recovers. The repair pass runs on the sweep schedule.
+    broken = false;
+    const { repairAccess } = makeAccess({ getGuild: async () => guild, guildId: "g1", log: () => {} });
+    const repaired = await repairAccess("u1", ledger.get("u1"));
+
+    assert.deepEqual(repaired, ["c1"]);
+    assert.deepEqual(
+      edits.map((e) => ({ channel: e.channel, view: e.patch.ViewChannel })),
+      [{ channel: "c1", view: true }],
+      "the access the member already proved is applied, without spending another proof",
+    );
+  });
+});
+
+test("the repair is idempotent, so a healthy member costs no Discord write", async () => {
+  const { guild, edits } = fakeGuild({
+    c1: [
+      {
+        id: "u1",
+        type: OverwriteType.Member,
+        allow: bits("ViewChannel", "SendMessages", "ReadMessageHistory"),
+        deny: bits(),
+      },
+    ],
+  });
+  const { repairAccess } = makeAccess({ getGuild: async () => guild, guildId: "g1", log: () => {} });
+  assert.deepEqual(await repairAccess("u1", rec(["c1"])), [], "already complete, nothing to do");
+  assert.deepEqual(edits, [], "and no request sent");
+});
+
+test("the repair refuses to reapply over an administrator's exclusion", async () => {
+  // A repair must not become a way to override an exclusion. It goes through the same guarded grant.
+  const { guild, edits } = fakeGuild({ c1: [overwrite("u1", ["ViewChannel"])] });
+  const { repairAccess } = makeAccess({ getGuild: async () => guild, guildId: "g1", log: () => {} });
+  assert.deepEqual(await repairAccess("u1", rec(["c1"])), [], "refused, so nothing repaired");
+  assert.deepEqual(edits, [], "and nothing written");
+});
+
+test("the repair reapplies a PARTIAL overwrite, not just a missing one", async () => {
+  // A half-applied overwrite is the shape a crash mid-edit leaves. Present but incomplete must count
+  // as needing repair, or the member keeps a fraction of what they proved.
+  const { guild, edits } = fakeGuild({
+    c1: [{ id: "u1", type: OverwriteType.Member, allow: bits("ViewChannel"), deny: bits() }],
+  });
+  const { repairAccess } = makeAccess({ getGuild: async () => guild, guildId: "g1", log: () => {} });
+  assert.deepEqual(await repairAccess("u1", rec(["c1"])), ["c1"]);
+  assert.equal(edits.length, 1);
 });
