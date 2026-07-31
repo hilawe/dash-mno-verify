@@ -12,7 +12,7 @@ Role mode has been REMOVED. It assigned a server role, which was easier to set u
 
 If an earlier deployment granted a role, that access is still live and still disclosing. The bot refuses to start while any role grant remains in the ledger and names it. Clear it with `npm run discord:decommission -- role:<id> --apply`, which still exists for exactly this. Removing a mode must not strand the access it granted.
 
-The verification conversation itself is always private, since `/verify` and `/submit` use ephemeral replies that only the member sees. The grant is the only step that can be public, which is why `channel` mode exists.
+The verification conversation itself is always private, since `/verify` and `/submit` use ephemeral replies that only the member sees. The grant is the only step that could ever have been public, which is why the disclosing alternative was removed rather than left as an option.
 
 The bot runs a sweep (`DISCORD_SWEEP_SECONDS`, default 300) that removes a member's access once their epoch grant lapses and they have not re-verified, so access tracks current masternode control rather than being permanent once granted. It persists its grant ledger to a SQLite database (`DISCORD_GRANTS_DB`, default `adapters/discord/grants.db`, which holds user ids, is mode 0600, and is gitignored), so access is still revoked after a restart, and it sweeps once at startup. An existing JSON ledger at `DISCORD_GRANTS_FILE` is migrated into it on first start and then renamed with a `.migrated` suffix.
 
@@ -112,6 +112,12 @@ rewriting permissions that you are editing at the same time. Express an exclusio
 deny instead, or simply do not grant. Two earlier versions tried to be clever here and each produced a
 worse defect than the one it fixed.
 
+A residual worth stating on the role path. If the role you are decommissioning carries a deny, the
+command refuses, and the way to clear that refusal is to remove the deny overwrite first. Doing so
+grants the previously denied permission to everyone still holding the role, for as long as it takes to
+then remove the role. That window is real and unavoidable, since Discord offers no way to do both at
+once. Plan for it, or take the role away by hand knowing what it restores.
+
 **A role being decommissioned must only ever ADD permissions.** The bot never grants a role, but the
 decommission command can still take an old one back, and removing a role that DENIES something hands
 that permission back, so a command whose purpose is taking access away would grant it. If the role
@@ -137,8 +143,10 @@ against that floor rather than the raw reading. So if the host clock jumps far f
 corrected, new grants are refused until real time passes the recorded mark, and the refusal says so
 and names the two times. That is the same shape as the gateway's own clock guard, and the same
 tradeoff: refusing is visible and recoverable, while granting access the ledger already considers
-expired is neither. Keep the host on NTP. Starting once with the clock reset drops the floor, and it
-is the deliberate override, so only use it once you know the host's time is right.
+expired is neither. Keep the host on NTP. Starting once with `DISCORD_RESET_CLOCK=1` drops the floor, and it is the
+deliberate override, so only use it once you know the host's time is right. That variable was missing
+until now: the recovery was documented and reached no branch any Discord configuration could take, so
+a large enough jump closed admissions with no way back.
 
 The bot needs no privileged intent at all. Per-user channel overwrites arrive with the ordinary
 Guilds intent, and SERVER MEMBERS was only ever needed by role mode, which is gone. `npm run discord:decommission` asks for the intent only when the target you name is

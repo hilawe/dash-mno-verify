@@ -138,6 +138,12 @@ const ledger = new GrantLedger({
   importFrom: LEGACY_GRANTS_FILE,
   scope: GUILD_ID,
   adoptScope: process.env.DISCORD_LEDGER_ADOPT_GUILD_ID ?? null,
+  // The clock floor's escape hatch, which the README described and this adapter never wired. Matrix
+  // and Telegram both pass their own. Without it a large enough forward clock jump, once recorded,
+  // refused every new grant until real time caught up, and the documented recovery reached no branch
+  // any Discord configuration could take. A guard whose exit exists only in the documentation is a
+  // guard with no exit.
+  resetClock: process.env.DISCORD_RESET_CLOCK === "1",
   apply: applyAccess,
   revoke: revokeAccess,
   log: (m) => console.error("[discord]", m),

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -25,7 +25,14 @@ function storedMark(file) {
 // ledger extracted from the Discord adapter. Telegram additionally decides admission from the ledger,
 // because its invite link is public by nature and only the approval binds access to an account.
 
-function withLedger(fn, { now } = {}) {
+// AWAITS the callback, for the same reason scopeDir below does. This one was the ORIGINAL fixture and
+// it kept the defect after its sibling was fixed and commented: a synchronous function returning the
+// callback's promise runs its finally at the first await, so the directory was removed while every
+// test built on it was still running. They then operated on an unlinked handle, which happens to work
+// on this platform and would not everywhere, so the tests appeared to exercise a durable file they had
+// already deleted. Fixing one fixture, writing a comment about why it mattered, and leaving its twin
+// fifteen lines away is the exact shape this component keeps producing.
+async function withLedger(fn, { now } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "mno-grant-"));
   const applied = [];
   const revoked = [];
@@ -37,8 +44,9 @@ function withLedger(fn, { now } = {}) {
     now: now ?? (() => clock.t),
   });
   try {
-    return fn({ ledger, applied, revoked, clock, dir });
+    return await fn({ ledger, applied, revoked, clock, dir });
   } finally {
+    ledger.close();
     rmSync(dir, { recursive: true, force: true });
   }
 }
@@ -974,4 +982,42 @@ test("a grant is refused when the durable floor is past its deadline, even when 
     await l.grant("u2", { expiresAt: 20000, mode: "channel", channels: ["c1"] });
     assert.deepEqual(applied, ["u2"]);
     l.close();
+  }));
+
+// An empty database bound elsewhere used to be rebound BEFORE the legacy import ran, so the import
+// then brought in rows of unknown origin and the adoption guard never fired. The comment on the
+// binding says imported rows meet the same rule as rows already present, and that was true of every
+// path except this one.
+test("a pending legacy import counts as rows, so an empty foreign ledger is not rebound around it", async () =>
+  scopeDir(async ({ mk, rec, file }) => {
+    const db = file("bound.db");
+    const json = file("legacy.json");
+
+    // An empty database, bound to guildA.
+    const first = mk({ file: db, scope: "guildA" });
+    assert.equal(first.scope(), "guildA");
+    assert.equal(first.size(), 0, "empty, which is what used to make the rebind look safe");
+    first.close();
+
+    writeFileSync(json, JSON.stringify({ grants: { u1: rec(9999) } }));
+
+    // Opening for guildB with that import pending must NOT quietly rebind and adopt.
+    assert.throws(
+      () => mk({ file: db, scope: "guildB", importFrom: json }),
+      /still holds 1 grant/,
+      "the pending import is counted, so the foreign-scope refusal fires",
+    );
+
+    // And the refusal must not have consumed the operator's file.
+    assert.equal(existsSync(json), true, "the legacy file was peeked at, not moved aside");
+    assert.equal(existsSync(`${json}.migrated`), false);
+  }));
+
+test("an empty ledger with no pending import still rebinds, so the recovery is not blocked", async () =>
+  scopeDir(async ({ mk, file }) => {
+    const db = file("bound.db");
+    mk({ file: db, scope: "guildA" }).close();
+    const moved = mk({ file: db, scope: "guildB" });
+    assert.equal(moved.scope(), "guildB", "genuinely empty still rebinds");
+    moved.close();
   }));

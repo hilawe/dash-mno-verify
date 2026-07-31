@@ -250,7 +250,7 @@ export class GrantLedger {
     // A mismatch is checked BEFORE the import, because the import renames the source file once it
     // commits and an operator who pointed the adapter at the wrong place should not have their legacy
     // file moved as a side effect of the attempt.
-    this.#refuseForeignScope(scope);
+    this.#refuseForeignScope(scope, importFrom);
     this.#importLegacy(importFrom);
     // Binding happens AFTER the import, so rows adopted from a legacy JSON file are judged by the same
     // rule as rows already in the database. A fresh ledger binds silently. A ledger that already holds
@@ -284,7 +284,7 @@ export class GrantLedger {
   // A database bound to somewhere else describes access this process cannot reach. Sweeping it would
   // revoke against the wrong place, get an already-gone answer, and delete the only record of live
   // access. Refuse, and say what to do about it.
-  #refuseForeignScope(scope) {
+  #refuseForeignScope(scope, importFrom) {
     const bound = this.scope();
     if (bound === null || scope === null || String(bound) === String(scope)) return;
     // An EMPTY bound ledger is rebound rather than refused, and that is the difference between a guard
@@ -293,7 +293,13 @@ export class GrantLedger {
     // impossible to complete: an operator who decommissioned the old place correctly still could not
     // start anywhere else, because the binding outlived the grants it was protecting and no sweep could
     // clear it. The guard has to have an exit that ordinary correct operation reaches.
-    const rows = this.#stmt.count.get().n;
+    // Rows ALREADY here, plus rows a pending legacy import is about to add. Counting only the former
+    // was a hole: an empty database bound to somewhere else was rebound here, the import then brought
+    // in rows of unknown origin, and #bindScope saw a scope already set and never asked the operator
+    // where those rows came from. The comment on #bindScope says imported rows meet the same rule as
+    // rows already present, and that was true of every path except this one. The pending file is only
+    // PEEKED at, never consumed, so a refusal below does not move the operator's file aside.
+    const rows = this.#stmt.count.get().n + this.#pendingLegacyCount(importFrom);
     if (rows === 0) {
       this.#stmt.setMeta.run("scope", String(scope));
       this.log(
@@ -800,6 +806,24 @@ export class GrantLedger {
   // transaction, so an interrupted migration leaves the database untouched rather than half-adopted,
   // and the JSON is only renamed aside after that transaction commits. A malformed record fails the
   // migration for the same reason it fails a load: adopting it as empty would strand live access.
+  // How many grants a pending legacy import would add, without importing or touching the file. Zero
+  // when there is nothing to import, when the database already holds rows, or when this file has
+  // already been adopted, which mirrors #importLegacy's own early exits so the two cannot disagree.
+  #pendingLegacyCount(importFrom) {
+    if (!importFrom || !existsSync(importFrom)) return 0;
+    if (this.#stmt.count.get().n > 0 || this.#stmt.readMeta.get("importedFrom") !== undefined) return 0;
+    try {
+      const obj = JSON.parse(readFileSync(importFrom, "utf8"));
+      const grants = (obj?.grants && typeof obj.grants === "object" ? obj.grants : obj) ?? {};
+      return Object.keys(grants).length;
+    } catch {
+      // Malformed. #importLegacy raises the real error with the real message a moment later, and
+      // guessing zero here would let a foreign rebind slip through on an unreadable file, so treat it
+      // as "there is something there".
+      return 1;
+    }
+  }
+
   #importLegacy(importFrom) {
     if (!importFrom || !existsSync(importFrom)) return;
     if (this.#stmt.count.get().n > 0 || this.#stmt.readMeta.get("importedFrom") !== undefined) return;

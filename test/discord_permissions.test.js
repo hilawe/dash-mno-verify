@@ -162,57 +162,104 @@ test("a refusal is distinguishable from a failure, and says nothing was sent", a
 
 // ---- nothing else may mutate permissions ------------------------------------------------------------
 
-test("no Discord source file mutates permissions outside adapters/discord/permissions.js", () => {
-  // The structural half, and the reason the tests above are a claim about the adapter rather than about
-  // four functions. If the only way to change a permission is through a function that always checks
-  // first, then every permission change checks first, including ones written after this test.
+// Strip comments before scanning. This codebase describes these calls at length, and describing one is
+// not making one. Strings are left alone: a mutation hidden in a string still needs a call to reach
+// Discord, and that call is what the rule below sees.
+function stripComments(src) {
+  return src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "");
+}
+
+function discordSources(dir, out = []) {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) discordSources(full, out);
+    else if (/\.(js|mjs)$/.test(entry.name)) out.push(full);
+  }
+  return out;
+}
+
+test("outside permissions.js, the mutating Discord APIs are only ever read", () => {
+  // THE RULE, inverted from what it was.
   //
-  // This is the twin defect turned into an assertion. Eight rounds were spent adding a check at the
-  // site a reviewer named while the identical mutation survived a few lines away, and no behavioural
-  // test catches that, because the unguarded site is the one nobody thought to write a test for.
+  // The previous version hunted for known mutation spellings, and all three round 10 reviewers listed
+  // the same evasions: optional chaining, bracket notation, aliasing the receiver to a variable, a call
+  // split across lines, and a nested directory the scan never entered. A checker that enumerates the
+  // ways to break a rule will always be shorter than the list of ways to break it.
+  //
+  // So this does not look for mutations. It asserts that every mention of a mutation-capable object
+  // outside permissions.js is IMMEDIATELY a read of its cache, and nothing else. `.edit(`, `["edit"]`,
+  // `?.edit(`, a newline before the call, and `const p = ch.permissionOverwrites` all fail the same
+  // way, because none of them is followed by `.cache`. Aliasing fails precisely because the alias is
+  // the point at which the object escapes.
+  //
+  // This is still a text rule and not a parser, so it is a boundary check rather than a proof. What it
+  // no longer does is enumerate spellings.
   const here = dirname(fileURLToPath(import.meta.url));
-  const roots = [join(here, "..", "adapters", "discord"), join(here, "..", "scripts")];
-  const RAW_MUTATIONS = [
-    /permissionOverwrites\s*\.\s*edit\s*\(/,
-    /permissionOverwrites\s*\.\s*create\s*\(/,
-    /permissionOverwrites\s*\.\s*delete\s*\(/,
-    /permissionOverwrites\s*\.\s*set\s*\(/,
-    // The receiver form discord.js actually uses, `<member>.roles.add(...)`. A bare `roles.add(...)`
-    // is matched by neither, deliberately: staleTargets keeps a local Set named `roles`, and the first
-    // run of this test flagged its insertion. The narrower pattern is a strong guard rather than a
-    // proof, since assigning `member.roles` to a variable first would slip past it. That is a
-    // contrived shape rather than one this code reaches for, and the behavioural tests above cover
-    // what the operations do once called.
-    /\.\s*roles\s*\.\s*add\s*\(/,
-    /\.\s*roles\s*\.\s*remove\s*\(/,
+  const files = [
+    ...discordSources(join(here, "..", "adapters", "discord")),
+    ...discordSources(join(here, "..", "scripts")).filter((f) => /discord_/.test(f)),
+  ].filter((f) => !f.endsWith("permissions.js"));
+
+  assert.ok(files.length >= 4, `expected to scan the Discord sources, found ${files.length}`);
+
+  // The allowed continuations are READS, named positively. `.cache` is the local view and `.fetch(`
+  // asks Discord for one. Everything else fails, including every mutation verb on either object and
+  // every way of taking a reference to it, without this having to know what those verbs are called.
+  const READ_ONLY = String.raw`\s*\??\.\s*(cache\b|fetch\s*\()`;
+  const RULES = [
+    { name: "permissionOverwrites", all: /permissionOverwrites/g, read: new RegExp(`permissionOverwrites${READ_ONLY}`, "g") },
+    // The lookbehind keeps a spread out of it. `[...roles]` on a local Set is not a member's role
+    // collection, and the previous version of this test flagged exactly that.
+    { name: ".roles", all: /(?<!\.)\.\s*roles\b/g, read: new RegExp(String.raw`(?<!\.)\.\s*roles${READ_ONLY}`, "g") },
   ];
 
   const offenders = [];
-  let scanned = 0;
-  for (const root of roots) {
-    for (const name of readdirSync(root)) {
-      if (!/\.(js|mjs)$/.test(name)) continue;
-      const path = join(root, name);
-      // The one file allowed to mutate, and only Discord scripts are in scope here.
-      if (name === "permissions.js") continue;
-      if (root.endsWith("scripts") && !name.startsWith("discord_")) continue;
-      scanned += 1;
-      const src = readFileSync(path, "utf8");
-      for (const [i, line] of src.split("\n").entries()) {
-        // Comments describe the history of these calls at length, and describing one is not making one.
-        if (/^\s*(\/\/|\*|\/\*)/.test(line)) continue;
-        for (const re of RAW_MUTATIONS) {
-          if (re.test(line)) offenders.push(`${name}:${i + 1}: ${line.trim()}`);
-        }
+  for (const file of files) {
+    const src = stripComments(readFileSync(file, "utf8"));
+    for (const rule of RULES) {
+      const total = (src.match(rule.all) ?? []).length;
+      const reads = (src.match(rule.read) ?? []).length;
+      if (total > reads) {
+        offenders.push(`${file.split("/").slice(-2).join("/")}: ${total - reads} use(s) of ${rule.name} that are not a .cache read`);
       }
     }
   }
 
-  assert.ok(scanned >= 3, `expected to scan the Discord sources, only saw ${scanned} file(s)`);
   assert.deepEqual(
     offenders,
     [],
     "every permission change must go through adapters/discord/permissions.js, which carries the " +
-      "denial check with it. A raw call here is how the check reached one caller and missed five.",
+      "denial check with it. Reading .cache is fine. Anything else, including taking a reference to " +
+      "the object, is how the check reached one caller and missed five.",
   );
+});
+
+test("the boundary rule actually rejects the evasions reviewers listed", () => {
+  // A checker nobody has tried to break is a checker nobody knows the strength of. Each fixture below
+  // is a spelling that passed the previous version.
+  const READ_ONLY = String.raw`\s*\??\.\s*(cache\b|fetch\s*\()`;
+  const rule = { all: /permissionOverwrites/g, read: new RegExp(`permissionOverwrites${READ_ONLY}`, "g") };
+  const violates = (src) => {
+    const stripped = stripComments(src);
+    return (stripped.match(rule.all) ?? []).length > (stripped.match(rule.read) ?? []).length;
+  };
+
+  for (const [label, src] of [
+    ["plain call", "ch.permissionOverwrites.edit(id, p);"],
+    ["optional chaining", "ch.permissionOverwrites?.edit(id, p);"],
+    ["bracket notation", 'ch.permissionOverwrites["edit"](id, p);'],
+    ["aliased receiver", "const p = ch.permissionOverwrites;\np.edit(id, x);"],
+    ["split across lines", "ch.permissionOverwrites\n  .edit(id, p);"],
+    ["code after a block comment", "/* note */ ch.permissionOverwrites.edit(id, p);"],
+  ]) {
+    assert.equal(violates(src), true, `should be rejected: ${label}`);
+  }
+
+  for (const [label, src] of [
+    ["cache read", "[...ch.permissionOverwrites.cache.values()]"],
+    ["optional cache read", "ch.permissionOverwrites?.cache?.values()"],
+    ["a comment describing a call", "// ch.permissionOverwrites.edit(id, p) is what this replaced"],
+  ]) {
+    assert.equal(violates(src), false, `should be accepted: ${label}`);
+  }
 });
