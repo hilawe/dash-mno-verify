@@ -9,7 +9,7 @@ import {
   ACCESS,
   ACCESS_CLEARED,
   grantMemberOverwrite,
-  clearMemberOverwrite,
+  clearManagedAllows,
   removeRole,
   DenialConflict,
   isDenialConflict,
@@ -97,13 +97,48 @@ test("granting over a member denial refuses and sends nothing", async () => {
   assert.deepEqual(edits, [], "an excluded member must not be granted access by re-verifying");
 });
 
-test("clearing a member denial refuses and sends nothing", async () => {
-  // Clearing a member-level deny lets a role-level allow through, so the removal grants. This is the
-  // defect that survived six rounds because everyone asked whether removal removes and nobody asked
-  // whether it could grant.
-  const { ch, edits } = channelWith([memberOverwrite("u1", ["ViewChannel"])]);
-  await assert.rejects(() => clearMemberOverwrite(ch, "u1"), isDenialConflict);
-  assert.deepEqual(edits, []);
+test("clearing takes back only what is ALLOWED, and never touches a deny", async () => {
+  // The third design for taking access back. Attempt 1 nulled all three bits, which cleared an
+  // administrator's deny as well and let a role-level allow through, so removal granted. Attempt 2
+  // merged the whole overwrite, which is read-modify-write against a cache. Attempt 3 refused to touch
+  // an overwrite carrying any denial, which left the allow in place permanently and jammed the row.
+  //
+  // This computes the patch from the bits currently allowed, so a deny is never in it.
+  const mixed = {
+    id: "u1",
+    type: OverwriteType.Member,
+    allow: bits("ViewChannel", "ReadMessageHistory"),
+    deny: bits("SendMessages"),
+  };
+  const { ch, edits } = channelWith([mixed]);
+  const cleared = await clearManagedAllows(ch, "u1");
+
+  assert.deepEqual(cleared.sort(), ["ReadMessageHistory", "ViewChannel"]);
+  assert.equal(edits.length, 1);
+  assert.deepEqual(
+    edits[0][1],
+    { ViewChannel: null, ReadMessageHistory: null },
+    "only the allowed bits, and SendMessages is absent so its deny is left exactly as it was",
+  );
+  assert.equal("SendMessages" in edits[0][1], false, "a deny bit is never written and never cleared");
+});
+
+test("clearing a fully denied member sends nothing, because there is nothing to take back", async () => {
+  const total = {
+    id: "u1",
+    type: OverwriteType.Member,
+    allow: bits(),
+    deny: bits("ViewChannel", "SendMessages", "ReadMessageHistory"),
+  };
+  const { ch, edits } = channelWith([total]);
+  assert.deepEqual(await clearManagedAllows(ch, "u1"), []);
+  assert.deepEqual(edits, [], "no request, so an excluded member cannot jam the caller either");
+});
+
+test("clearing a clean member takes back all three managed bits", async () => {
+  const { ch, edits } = channelWith([memberOverwrite("u1", [], ["ViewChannel", "SendMessages", "ReadMessageHistory"])]);
+  assert.deepEqual((await clearManagedAllows(ch, "u1")).sort(), ["ReadMessageHistory", "SendMessages", "ViewChannel"]);
+  assert.deepEqual(edits[0][1], { ViewChannel: null, SendMessages: null, ReadMessageHistory: null });
 });
 
 test("a denial on a DIFFERENT member does not block this member", async () => {
@@ -114,13 +149,6 @@ test("a denial on a DIFFERENT member does not block this member", async () => {
   assert.equal(edits.length, 1);
   assert.deepEqual(edits[0][1], ACCESS, "the three managed bits are set to allow");
   assert.deepEqual(edits[0][2], { type: OverwriteType.Member }, "explicit type, so a raw id resolves after a restart");
-});
-
-test("a clean overwrite is cleared to inherit, not deleted and not denied", async () => {
-  const { ch, edits } = channelWith([memberOverwrite("u1", [], ["ViewChannel"])]);
-  await clearMemberOverwrite(ch, "u1");
-  assert.deepEqual(edits[0][1], ACCESS_CLEARED);
-  assert.deepEqual(Object.values(ACCESS_CLEARED), [null, null, null], "inherit, so no denial is manufactured");
 });
 
 test("removing a role that denies ANY bit refuses, not only the three managed ones", async () => {

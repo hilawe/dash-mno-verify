@@ -122,7 +122,9 @@ test("revoking past a member's denial clears the clean channel and leaves the de
   // failure. A member carrying a denial holds no access to take back, so treating the refusal as a
   // failure made revokeAccess throw, which kept the record and made the sweep retry it every interval
   // for the life of the deployment.
-  const { guild, edits } = fakeGuild({ c1: [], c2: [overwrite("u1", ["ViewChannel"])] });
+  const clean = { id: "u1", type: OverwriteType.Member, allow: bits("ViewChannel", "SendMessages", "ReadMessageHistory"), deny: bits() };
+  const fullyDenied = { id: "u1", type: OverwriteType.Member, allow: bits(), deny: bits("ViewChannel") };
+  const { guild, edits } = fakeGuild({ c1: [clean], c2: [fullyDenied] });
   const { revokeAccess } = makeAccess({ getGuild: async () => guild, guildId: "g1", log: () => {} });
 
   await revokeAccess("u1", rec(["c1", "c2"])); // must RESOLVE, not throw
@@ -130,9 +132,10 @@ test("revoking past a member's denial clears the clean channel and leaves the de
   assert.deepEqual(
     edits.map((e) => e.channel),
     ["c1"],
-    "the clean channel is cleared and the denied one is never written to",
+    "the clean channel's allows are taken back, and the fully denied one has nothing to take back",
   );
   assert.equal(edits[0].patch.ViewChannel, null, "cleared to inherit");
+  assert.equal("ViewChannel" in (edits[0].patch ?? {}), true);
 });
 
 test("a revoke that genuinely fails throws, rather than being swallowed as a refusal", async () => {
@@ -249,11 +252,11 @@ test("repair refuses a record belonging to another guild", async () => {
   assert.deepEqual(edits, [], "repair grants from a stored record, so it checks the guild itself too");
 });
 
-test("a MIXED denial keeps the record, because the member can still see the channel", async () => {
-  // The case I noticed while writing the refusal skip and decided the ownership rule covered. It does
-  // not. An overwrite that denies SendMessages while allowing ViewChannel is a member who can still
-  // read a private channel, and skipping it as "nothing to take back" let the sweep report success and
-  // delete the row while that visibility stayed forever.
+test("a MIXED denial has its ALLOWS taken back, and its deny left exactly alone", async () => {
+  // Three designs converge here. Refusing to touch this overwrite left the member able to read a
+  // private channel forever and jammed the row every sweep. Nulling all three would have cleared the
+  // administrator's deny and let a role-level allow through. Clearing only what is allowed does
+  // neither.
   const mixed = {
     id: "u1",
     type: OverwriteType.Member,
@@ -263,13 +266,14 @@ test("a MIXED denial keeps the record, because the member can still see the chan
   const { guild, edits } = fakeGuild({ c1: [mixed] });
   const { revokeAccess } = makeAccess({ getGuild: async () => guild, guildId: "g1", log: () => {} });
 
-  await assert.rejects(() => revokeAccess("u1", rec(["c1"])), /still ALLOWED ViewChannel/);
-  assert.deepEqual(edits, [], "the overwrite is still not touched, which is the design");
+  await revokeAccess("u1", rec(["c1"])); // resolves, so the row can be dropped and the sweep completes
+
+  assert.equal(edits.length, 1);
+  assert.deepEqual(Object.keys(edits[0].patch).sort(), ["ReadMessageHistory", "ViewChannel"]);
+  assert.equal("SendMessages" in edits[0].patch, false, "the deny is never written and never cleared");
 });
 
-test("a TOTAL denial is still skipped, so the sweep does not wedge on an excluded member", async () => {
-  // The other side. If nothing is allowed, there is genuinely nothing to take back, and treating that
-  // as a failure kept the record and made the sweep retry it every interval forever.
+test("a TOTAL denial sends nothing, so an excluded member cannot jam the sweep", async () => {
   const total = {
     id: "u1",
     type: OverwriteType.Member,
@@ -278,6 +282,6 @@ test("a TOTAL denial is still skipped, so the sweep does not wedge on an exclude
   };
   const { guild, edits } = fakeGuild({ c1: [total] });
   const { revokeAccess } = makeAccess({ getGuild: async () => guild, guildId: "g1", log: () => {} });
-  await revokeAccess("u1", rec(["c1"])); // resolves
-  assert.deepEqual(edits, []);
+  await revokeAccess("u1", rec(["c1"]));
+  assert.deepEqual(edits, [], "nothing allowed, so nothing to take back");
 });

@@ -10,7 +10,7 @@
 // `getGuild` and `guildId` are injected. Nothing here reads the environment.
 import { OverwriteType } from "discord.js";
 import { isGone, isNotOurs, managedState, MANAGED_BITS } from "./grant_ledger.js";
-import { grantMemberOverwrite, clearMemberOverwrite, isDenialConflict, retainedManagedAllows } from "./permissions.js";
+import { grantMemberOverwrite, clearManagedAllows, isDenialConflict } from "./permissions.js";
 
 // One short retry inside the request, because a member who has just verified should not wait a whole
 // sweep interval for a rate limit or a brief 5xx to clear. A refusal is never retried: it is a
@@ -139,32 +139,12 @@ export function makeAccess({ getGuild, guildId, managedChannels = null, log = ()
           continue;
         }
         try {
-          await clearMemberOverwrite(ch, userId);
+          // Clears only the bits currently allowed, so it removes what this bot granted and never
+          // touches a deny. There is no refusal on this path any more, which is the point: refusing to
+          // clear left the allow in place forever and jammed the row, and judging "nothing remains"
+          // from explicit allows alone missed access inherited from a role.
+          await clearManagedAllows(ch, userId);
         } catch (e) {
-          // A refusal is not a failure here, and this is the twin of the same decision in
-          // reconcileGuild's clear helper, which had it and this did not. A member carrying a denial
-          // holds no access on that channel, so there is nothing to take back and leaving their
-          // overwrite alone is the correct outcome. Counting it as a failure kept the record forever and
-          // the sweep retried it every interval for the life of the deployment, which is a guard causing
-          // a larger failure than the one it reports.
-          if (isDenialConflict(e)) {
-            // A refusal only means "nothing to take back" when the denial covers everything. A mixed
-            // overwrite, allowing ViewChannel while denying SendMessages, leaves the member able to
-            // SEE a private channel, and skipping it let the sweep report success and delete the row
-            // while that visibility stayed forever. I noticed this case while writing the skip and
-            // decided the ownership rule covered it. It does not.
-            const kept = retainedManagedAllows(ch, userId);
-            if (kept.length) {
-              failures.push(
-                `${chId}: ${userId} is denied some bits but still ALLOWED ${kept.join(", ")}, so access ` +
-                  `remains and this bot will not touch the overwrite. Resolve it by hand; the record ` +
-                  `is kept so the access stays tracked.`,
-              );
-              continue;
-            }
-            log(`left ${userId} alone on ${chId} while revoking, nothing remains allowed: ${e.message}`);
-            continue;
-          }
           if (!isGone(e)) failures.push(`${chId}: ${e.message}`);
         }
       }

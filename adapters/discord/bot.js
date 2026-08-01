@@ -35,7 +35,7 @@ import {
 // Every Discord permission mutation goes through these, and each one performs its own denial check
 // immediately before acting. Nine rounds of adding the check at the site a reviewer named, and leaving
 // its twin unguarded a few lines away, is what this import exists to end.
-import { clearMemberOverwrite, isDenialConflict, retainedManagedAllows } from "./permissions.js";
+import { clearManagedAllows, isDenialConflict } from "./permissions.js";
 import { makeAccess } from "./access.js";
 
 const TOKEN = process.env.DISCORD_TOKEN;
@@ -374,7 +374,7 @@ async function reconcileGuild() {
   // failure. Counting it as a failure aborted the whole pass, and because the pass runs before the
   // sweep and its timer are installed, one departed member stopped every OTHER member's expired grant
   // from ever being revoked until a clean restart.
-  const clear = async (userId, undo, conflictKept = null) => {
+  const clear = async (userId, undo) => {
     try {
       await undo();
       removed.push(userId);
@@ -386,24 +386,8 @@ async function reconcileGuild() {
       // and turn one deliberately excluded member into a server-wide outage: the same "guard causes a
       // larger failure than it reports" shape this component keeps producing.
       if (isDenialConflict(e)) {
-        // THE TWIN of the same question in revokeAccess, and it needs the same check even though the
-        // answer differs. A refusal means "nothing to take back" only when the denial covers
-        // everything. A mixed overwrite leaves the member able to see a private channel with no live
-        // grant, and reporting a clean pass over that is how untracked access becomes invisible.
-        //
-        // Unlike the sweep there is no record to keep here, because this member has no live grant, so
-        // the loudest honest thing available is naming them. It must not fail the pass: that closes
-        // admissions for the whole server over one member, which is the larger-failure shape this
-        // component keeps producing.
-        const kept = conflictKept?.(userId);
-        if (kept && kept.length) {
-          console.error(
-            `[discord] ${userId} has NO live grant and is still ALLOWED ${kept.join(", ")} on a gated ` +
-              `channel, behind a denial this bot will not touch. Their access is real and nothing ` +
-              `tracks it. Clear that overwrite by hand.`,
-          );
-          return;
-        }
+        // Kept only because a future clear path could still refuse. The current one cannot: it clears
+        // the bits that are allowed and never touches a deny, so there is nothing left to refuse.
         console.warn(`[discord] left ${userId} alone during reconciliation: ${e.message}`);
         return;
       }
@@ -430,11 +414,7 @@ async function reconcileGuild() {
         // administrator can add a denial while it runs. Clearing that denial lets a role-level allow
         // through, so the pass whose whole purpose is taking access back would hand it out. All four
         // round 9 reviewers found this one.
-        await clear(
-          id,
-          () => clearMemberOverwrite(ch, id),
-          (uid) => retainedManagedAllows(ch, uid),
-        );
+        await clear(id, () => clearManagedAllows(ch, id));
       }
     }
   }

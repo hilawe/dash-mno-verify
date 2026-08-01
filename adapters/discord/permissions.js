@@ -118,9 +118,41 @@ export async function grantMemberOverwrite(ch, userId) {
   await ch.permissionOverwrites.edit(userId, ACCESS, { type: OverwriteType.Member });
 }
 
-export async function clearMemberOverwrite(ch, userId) {
-  assertNoMemberDenial(ch, userId, "clearing the managed bits");
-  await ch.permissionOverwrites.edit(userId, ACCESS_CLEARED, { type: OverwriteType.Member });
+// CLEAR ONLY WHAT IS ALLOWED. Never write a deny bit, and never clear one.
+//
+// This is the third design for taking access back, and it is worth saying exactly how it differs,
+// because the first two were each worse than the bug they fixed and this one has to not be.
+//
+//   Attempt 1 set all three managed bits to null. That cleared an administrator's DENY as well as the
+//   allow, so removing access lifted an exclusion and a role-level allow let the excluded member in.
+//   Removal granted.
+//
+//   Attempt 2 read the overwrite and wrote back a merged version. That is read-modify-write against a
+//   cache on a surface other people edit, so a denial the cache had not seen was destroyed by the code
+//   written to protect it.
+//
+//   Attempt 3 refused to touch any overwrite carrying a denial at all. That looked safe and was not.
+//   A member allowed ViewChannel and denied SendMessages kept seeing the channel forever, because the
+//   bot would not clear the allow and the row jammed the sweep every interval. And judging "nothing
+//   remains" from explicit allows alone missed access inherited from a role, so the opposite case
+//   deleted the row while the member could still see the channel.
+//
+// This one computes the patch from the bits that are CURRENTLY ALLOWED and sets only those to null.
+// A deny bit is never in that set, so it is never written and never cleared, which is what attempt 1
+// got wrong. It is not a merge of the whole overwrite, which is what attempt 2 got wrong. And it
+// actually removes the access rather than declining to, which is what attempt 3 got wrong.
+//
+// The residual is the one this project already accepts and documents: the allow set is read from the
+// cache, so a bit that is really a deny and is stale in the cache as an allow would be cleared. That
+// is the same compare-and-set gap as everywhere else, and it is not made worse here.
+//
+// Returns the bits it cleared, so a caller can say whether there was anything to take back.
+export async function clearManagedAllows(ch, userId) {
+  const allowed = retainedManagedAllows(ch, userId);
+  if (allowed.length === 0) return []; // nothing this bot granted is in effect here
+  const patch = Object.fromEntries(allowed.map((bit) => [bit, null]));
+  await ch.permissionOverwrites.edit(userId, patch, { type: OverwriteType.Member });
+  return allowed;
 }
 
 export async function removeRole(guild, member, roleId) {

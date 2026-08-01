@@ -11,11 +11,12 @@
 import { OverwriteType } from "discord.js";
 import {
   isGone,
+  managedState,
   memberDenialsOnGatedChannel,
   roleDenialsAcrossChannels,
   retireTargetTransform,
 } from "./grant_ledger.js";
-import { clearMemberOverwrite, removeRole, isDenialConflict } from "./permissions.js";
+import { clearManagedAllows, removeRole, isDenialConflict } from "./permissions.js";
 
 export async function runDecommission({
   guild,
@@ -172,8 +173,9 @@ export async function runDecommission({
       // must not happen, where a denial on one member must not block another: that reasoning reached
       // the mutation helper and stopped there.
       //
-      // The denial is still honoured. clearMemberOverwrite refuses that member and only that member,
-      // and the refusal lands in failedPairs so their row stays tracked.
+      // The denial is still honoured, and now it is honoured by clearing only what is allowed rather
+      // than by refusing. Refusing left the allow in place forever and kept the row, so a member who
+      // was partially denied held that access permanently and jammed every later sweep.
       const denied = memberDenialsOnGatedChannel(members);
       if (denied.length) {
         warn(
@@ -186,8 +188,11 @@ export async function runDecommission({
       // members are left alone and then count every one of them in `removed`, so the preview and the
       // apply disagreed about the same channel. A destructive command's preview is the only thing an
       // operator checks before running it for real.
-      const deniedIds = new Set(denied.map((d) => String(d.id)));
-      const holders = dryRun ? members.filter((m) => !deniedIds.has(String(m.id))) : members;
+      // Preview must predict apply exactly. It used to exclude DENIED members, which was right while
+      // the clear refused them and is wrong now that it clears whatever is allowed: a partially denied
+      // member does get their allows taken back. The condition that matches apply is "has something
+      // allowed to take back", so both paths use the same predicate.
+      const holders = dryRun ? members.filter((m) => managedState(m).allow.length > 0) : members;
       log(`[decommission] channel ${chId}: ${holders.length} per-member overwrite(s)`);
       for (const ow of holders) {
         if (dryRun) {
@@ -195,7 +200,7 @@ export async function runDecommission({
           continue;
         }
         try {
-          await clearMemberOverwrite(ch, ow.id);
+          await clearManagedAllows(ch, ow.id);
           removed.push(`${chId}/${ow.id}`);
         } catch (e) {
           if (isGone(e)) continue; // already gone

@@ -13,7 +13,15 @@ import { GrantLedger } from "../adapters/discord/grant_ledger.js";
 // of them and fails against the previous behaviour.
 
 const bits = (...n) => new PermissionsBitField(n);
-const ow = (id, deny = []) => ({ id, type: OverwriteType.Member, allow: bits(), deny: bits(...deny) });
+// An overwrite the bot would have created: the three managed bits allowed, unless a deny is named,
+// in which case the denied bits move to the deny side. That distinction now matters, because clearing
+// takes back what is ALLOWED rather than nulling everything.
+const ow = (id, deny = []) => ({
+  id,
+  type: OverwriteType.Member,
+  allow: bits(...["ViewChannel", "SendMessages", "ReadMessageHistory"].filter((b) => !deny.includes(b))),
+  deny: bits(...deny),
+});
 const gone = () => Object.assign(new Error("Unknown Channel"), { status: 404 });
 
 function fakeGuild({ channels = {}, roles = {}, members = [] } = {}) {
@@ -127,11 +135,16 @@ test("one denied member does not stop every clean member on the channel being cl
       guild, target: { mode: "channel", ids: ["c1"] }, targetArg: "channel:c1",
       dryRun: false, ledger, botUserId: "bot",
     });
-    assert.deepEqual(edits.map((e) => e.userId), ["clean"], "the clean member is cleared");
-    assert.deepEqual(removed, ["c1/clean"]);
-    assert.deepEqual(failed, ["c1/denied"], "and only the excluded member is reported as not cleared");
-    assert.equal(ledger.has("clean"), false, "cleared, so no longer tracked");
-    assert.equal(ledger.has("denied"), true, "refused, so still tracked");
+    // Both members are handled, and the partially denied one keeps its deny. Clearing only what is
+    // allowed means an exclusion is never lifted AND the access is actually taken back, which the
+    // refuse-to-touch design failed to do: it left the allow in place permanently.
+    assert.deepEqual(edits.map((e) => e.userId).sort(), ["clean", "denied"]);
+    const deniedEdit = edits.find((e) => e.userId === "denied");
+    assert.equal("ViewChannel" in deniedEdit.patch, false, "the denied bit is left exactly as it was");
+    assert.deepEqual(removed.sort(), ["c1/clean", "c1/denied"]);
+    assert.deepEqual(failed, []);
+    assert.equal(ledger.has("clean"), false);
+    assert.equal(ledger.has("denied"), false, "their remaining allows were taken back, so nothing is owed");
   });
 });
 
@@ -189,22 +202,23 @@ test("a genuinely absent role is still retired with the assertion", async () => 
   });
 });
 
-test("preview does not claim it would clear a member it will refuse", async () => {
-  // The preview and the apply must agree about the same channel. It used to warn that denied members
-  // are left alone and then count every one of them as would-be-removed.
+test("preview predicts exactly the set apply takes back", async () => {
+  // A destructive command's preview is the only thing an operator checks before running it for real,
+  // so it has to predict apply, not approximate it. Both now use the same question: does this member
+  // have anything ALLOWED to take back.
   const { guild, edits } = fakeGuild({ channels: { c1: [ow("denied", ["ViewChannel"]), ow("clean")] } });
   await withLedger({ denied: chanRec(["c1"]), clean: chanRec(["c1"]) }, async (ledger) => {
     const preview = await runDecommission({
       guild, target: { mode: "channel", ids: ["c1"] }, targetArg: "channel:c1",
       dryRun: true, ledger, botUserId: "bot",
     });
-    assert.deepEqual(preview.removed, ["c1/clean"], "only the member it would actually clear");
+    assert.deepEqual(preview.removed.sort(), ["c1/clean", "c1/denied"], "everyone with something to take back");
     assert.deepEqual(edits, [], "and a preview still sends nothing");
 
     const applied = await runDecommission({
       guild, target: { mode: "channel", ids: ["c1"] }, targetArg: "channel:c1",
       dryRun: false, ledger, botUserId: "bot",
     });
-    assert.deepEqual(applied.removed, preview.removed, "the preview matched what apply did");
+    assert.deepEqual(applied.removed.sort(), preview.removed.sort(), "the same set, however each is ordered");
   });
 });
