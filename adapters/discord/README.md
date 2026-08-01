@@ -44,7 +44,11 @@ npm run discord:decommission -- channel:111,222 --apply    # actually removes
 ```
 
 Stop the bot before running it with `--apply`. The command takes the ledger's single-writer lock
-BEFORE it logs in to Discord, so it refuses to start at all while the bot holds the database. That
+BEFORE it logs in to Discord, so it refuses to start at all while the bot holds the database. It reads
+the same legacy JSON ledger the bot does, so a target it retires cannot come back on the next import,
+and it can open a ledger bound to a different server, because it is the documented way out of that
+refusal and being blocked by the guard it exists to clear would be a deadlock. It never changes the
+binding and it never sweeps. That
 ordering matters: taking the lock afterwards protected the ledger write and not the Discord work, so a
 live bot could re-grant a member the command had just cleared while the command reported the access
 taken back. A preview takes no lock, so it never competes with a running bot.

@@ -1021,3 +1021,40 @@ test("an empty ledger with no pending import still rebinds, so the recovery is n
     assert.equal(moved.scope(), "guildB", "genuinely empty still rebinds");
     moved.close();
   }));
+
+test("the cleanup escape opens a foreign-bound ledger without rebinding it", async () =>
+  scopeDir(async ({ mk, rec, file }) => {
+    const f = file("bound.db");
+    const first = mk({ file: f, scope: "guildA" });
+    await first.grant("u1", rec(9999));
+    first.close();
+
+    // The deadlock this exists to break: the startup guard tells the operator to point at the other
+    // guild and decommission there, and the ledger then refuses to open for it.
+    assert.throws(() => mk({ file: f, scope: "guildC" }), /bound to guildA/);
+
+    const cleanup = mk({ file: f, scope: "guildC", allowForeignScope: true });
+    assert.equal(cleanup.size(), 1, "it can see the rows it is there to retire");
+    assert.equal(cleanup.scope(), "guildA", "and the binding is NOT changed by passing through it");
+    cleanup.close();
+
+    // The strict refusal is still strict for everything else.
+    assert.throws(() => mk({ file: f, scope: "guildC" }), /bound to guildA/);
+  }));
+
+test("a refused first grant removes the row it wrote", async () =>
+  scopeDir(async ({ mk, file }) => {
+    // Narrow on purpose. This pins that the refusal path still removes its own row after being changed
+    // from an unconditional delete to a revision-checked one. It does NOT pin the concurrency property
+    // that change was made for, because that needs two processes racing a write on a filesystem where
+    // the exclusive lock does not hold, which this suite cannot arrange. The name says only what is
+    // asserted.
+    const l = mk({
+      file: file("rev.db"),
+      scope: "g",
+      apply: () => Promise.reject(Object.assign(new Error("refused"), { mutated: false })),
+    });
+    await assert.rejects(l.grant("u1", { expiresAt: 9999, mode: "channel", channels: ["c1"] }), /refused/);
+    assert.equal(l.has("u1"), false);
+    l.close();
+  }));

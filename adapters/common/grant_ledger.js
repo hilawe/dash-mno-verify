@@ -125,6 +125,18 @@ export class GrantLedger {
     // inside the process. It must equal `scope`, so a mistyped value refuses rather than adopting the
     // rows into the wrong place.
     adoptScope = null,
+    // The cleanup tool's way past the scope refusal, and nothing else's.
+    //
+    // The refusal exists to stop a repointed ADAPTER sweeping rows for a place it cannot reach, which
+    // would delete the only record of live access. It caught the decommission command too, and that
+    // produced a deadlock: the startup guard told the operator to point at the old guild and
+    // decommission there, and the ledger then refused to open for the old guild because the database
+    // was bound to the new one. Neither guard could be satisfied, and a guard whose documented exit is
+    // blocked by another guard is worse than no guard.
+    //
+    // Safe for this caller specifically, because decommission does not sweep. It acts on one target an
+    // operator named, previews by default, and needs --apply to change anything. It is loud when used.
+    allowForeignScope = false,
     putFn = null,
     // TEST SEAM. `exclusive: false` disables the single-writer lock, and exists only so tests can open
     // a second connection while a ledger is live. No adapter spreads operator configuration into these
@@ -151,7 +163,7 @@ export class GrantLedger {
     // open on the way out would mean the operator cannot open the database to fix the very thing the
     // error just told them to fix. Close it, then rethrow the original.
     try {
-      this.#open({ file, exclusive, importFrom, resetClock, scope, adoptScope });
+      this.#open({ file, exclusive, importFrom, resetClock, scope, adoptScope, allowForeignScope });
     } catch (e) {
       try {
         this.#db.close();
@@ -162,7 +174,7 @@ export class GrantLedger {
     }
   }
 
-  #open({ file, exclusive, importFrom, resetClock, scope, adoptScope }) {
+  #open({ file, exclusive, importFrom, resetClock, scope, adoptScope, allowForeignScope }) {
     // Narrow the file BEFORE enabling write-ahead logging: SQLite creates the sibling -wal and -shm
     // files from the database file's own mode, so doing this afterwards leaves those two holding the
     // same rows at the default mode. The ledger pairs platform accounts with the access they hold,
@@ -250,7 +262,7 @@ export class GrantLedger {
     // A mismatch is checked BEFORE the import, because the import renames the source file once it
     // commits and an operator who pointed the adapter at the wrong place should not have their legacy
     // file moved as a side effect of the attempt.
-    this.#refuseForeignScope(scope, importFrom);
+    this.#refuseForeignScope(scope, importFrom, allowForeignScope);
     this.#importLegacy(importFrom);
     // Binding happens AFTER the import, so rows adopted from a legacy JSON file are judged by the same
     // rule as rows already in the database. A fresh ledger binds silently. A ledger that already holds
@@ -284,9 +296,17 @@ export class GrantLedger {
   // A database bound to somewhere else describes access this process cannot reach. Sweeping it would
   // revoke against the wrong place, get an already-gone answer, and delete the only record of live
   // access. Refuse, and say what to do about it.
-  #refuseForeignScope(scope, importFrom) {
+  #refuseForeignScope(scope, importFrom, allowForeignScope = false) {
     const bound = this.scope();
     if (bound === null || scope === null || String(bound) === String(scope)) return;
+    if (allowForeignScope) {
+      this.log(
+        `${this.file} is bound to ${bound} and this process is configured for ${scope}. Continuing ` +
+          `anyway because this is the cleanup tool, which acts only on the target it was given. The ` +
+          `binding is NOT changed.`,
+      );
+      return;
+    }
     // An EMPTY bound ledger is rebound rather than refused, and that is the difference between a guard
     // and a trap. The refusal exists to stop live access being forgotten, so with no grants left there
     // is nothing to forget and nothing to protect. Refusing anyway made the documented recovery
@@ -620,7 +640,16 @@ export class GrantLedger {
         // deleted rather than repaired. The row goes too: nothing was applied, so a row promising
         // access would be a lie, and the member cannot be granted while the exclusion stands.
         if (e?.mutated === false) {
-          this.#stmt.delAny.run(String(userId));
+          // CONDITIONAL on the revision this call wrote, not unconditional. delAny exists for the
+          // offline retirement, where no other writer can exist, and its own comment says every online
+          // deletion goes through the revision check because a concurrent grant must not be deleted by
+          // a stale caller. This is an online path and it was using delAny anyway.
+          //
+          // The exclusive lock normally makes that impossible. On a network filesystem it does not,
+          // and that is the exact case the revision check was added for, so the one place that skipped
+          // it was the place a second process could do harm.
+          const written = this.#stmt.get.get(String(userId));
+          if (written !== undefined) this.#stmt.del.run(String(userId), written.rev);
           throw e;
         }
 

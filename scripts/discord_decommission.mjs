@@ -53,6 +53,11 @@ const GUILD_ID = process.env.DISCORD_GUILD_ID;
 // been changed, because a preview must not touch it and a retirement must never run ahead of the
 // removal it is recording.
 const GRANTS_DB = process.env.DISCORD_GRANTS_DB ?? "adapters/discord/grants.db";
+// The SAME legacy file the bot reads. This command used to open the database without it, so it could
+// retire every row it found and report success while the real records sat in the JSON, and the next
+// bot start imported them straight back. A cleanup tool that the thing it cleans up can undo is not a
+// cleanup tool.
+const LEGACY_GRANTS_FILE = process.env.DISCORD_GRANTS_FILE ?? "adapters/discord/grants.json";
 const args = process.argv.slice(2);
 // Reject anything unrecognised rather than ignoring it. Silently dropping an option the operator
 // believed in is how a mistyped safety flag becomes a live deletion, and silently dropping an extra
@@ -137,7 +142,12 @@ if (apply) {
   try {
     ledger = new GrantLedger({
       file: GRANTS_DB,
+      importFrom: LEGACY_GRANTS_FILE,
       scope: GUILD_ID,
+      adoptScope: process.env.DISCORD_LEDGER_ADOPT_GUILD_ID ?? null,
+      // Decommission is the documented way out of a foreign-scope refusal, so it must not be stopped
+      // by that same refusal. It acts only on the target it was given and never sweeps.
+      allowForeignScope: true,
       // This command never grants and never revokes through the ledger. It does its Discord work
       // directly, and these exist only to satisfy the constructor, so they throw rather than quietly
       // doing something if a future change ever reaches them.

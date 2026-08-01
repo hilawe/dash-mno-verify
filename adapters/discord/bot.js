@@ -305,15 +305,25 @@ async function usableTargets(guild) {
       // which is exactly the inversion the readiness split fixed for unreachable channels and left in
       // place for denials. One conflicting member must not stop everyone else's expired access being
       // revoked.
+      // QUARANTINED FOR ADMISSIONS, NOT FOR CLEANUP. It used to be dropped from the usable set
+      // entirely, so reconciliation never visited it, so a member holding a stale overwrite there with
+      // no ledger row was invisible to the one pass that exists to find exactly that. That is the twin
+      // of the whole-channel skip already removed from the decommission command, surviving in the
+      // startup path.
+      //
+      // Visiting it is safe now for a reason that was not true before: clearing takes back only what
+      // is allowed and never touches a deny, so the conflicted member simply has nothing to clear and
+      // everybody else on the channel is cleaned up normally.
       conflicted.push(chId);
+      usable.push(chId);
       console.error(
         `[discord] channel ${chId} is QUARANTINED: per-member overwrites DENY ` +
           `${[...new Set(offenders.flatMap((o) => o.deny))].join(", ")} for ` +
           `${offenders.map((o) => o.id).join(", ")}. Per-member overwrites on a gated channel belong to ` +
           `this bot, and it will not fight whoever set those: clearing one would grant that member ` +
           `access through a role-level allow. Express the exclusion with a role-level deny, or remove ` +
-          `the member overwrite. Admissions stay closed and this channel is left alone; cleanup of ` +
-          `other channels continues.`,
+          `the member overwrite. Admissions stay closed. Cleanup on this channel still runs and takes ` +
+          `back only what is allowed, so the denial is left exactly as it is.`,
       );
       continue;
     }
@@ -325,7 +335,10 @@ async function usableTargets(guild) {
       ready: false,
       why: [
         unreachable.length ? `channel(s) ${unreachable.join(", ")} are missing from ${guild.name} (${guild.id})` : "",
-        conflicted.length ? `channel(s) ${conflicted.join(", ")} have conflicting per-member denials` : "",
+        conflicted.length
+          ? `channel(s) ${conflicted.join(", ")} have conflicting per-member denials, so admissions are ` +
+            `closed while cleanup there continues`
+          : "",
       ]
         .filter(Boolean)
         .join("; "),
