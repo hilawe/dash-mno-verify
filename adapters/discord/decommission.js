@@ -223,11 +223,16 @@ export async function runDecommission({
       // members are left alone and then count every one of them in `removed`, so the preview and the
       // apply disagreed about the same channel. A destructive command's preview is the only thing an
       // operator checks before running it for real.
-      // Preview must predict apply exactly. It used to exclude DENIED members, which was right while
-      // the clear refused them and is wrong now that it clears whatever is allowed: a partially denied
-      // member does get their allows taken back. The condition that matches apply is "has something
-      // allowed to take back", so both paths use the same predicate.
-      const holders = dryRun ? members.filter((m) => managedState(m).allow.length > 0) : members;
+      // ONE predicate, both arms. The previous version applied the filter only to the preview, so
+      // apply walked every member overwrite and reported members it had made no request for. A
+      // fully-denied member has nothing allowed, so clearManagedAllows issues no request, yet apply
+      // still counted them as taken back. Preview said one thing and apply reported another, which is
+      // the same divergence as before in the opposite direction, and the comment claiming both paths
+      // used the same predicate was true of only one of them.
+      //
+      // Members with nothing allowed are still RETIRED by the transform, correctly: there is nothing
+      // of the bot's left on that channel for them.
+      const holders = members.filter((m) => managedState(m).allow.length > 0);
       log(`[decommission] channel ${chId}: ${holders.length} per-member overwrite(s)`);
       for (const ow of holders) {
         if (dryRun) {

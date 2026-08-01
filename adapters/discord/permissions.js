@@ -61,9 +61,14 @@ export function retainedManagedAllows(ch, userId) {
 
 // Refuse if this member's own overwrite on this channel carries a denial on any managed bit.
 //
-// Clearing a member-level deny lets a role-level allow through, so the clear grants. Setting the
-// managed bits to true overrides an exclusion an administrator set by hand. Both directions are the
-// same conflict, which is why one predicate guards both mutations rather than each getting its own.
+// GRANT ONLY. The clear path stopped calling this when it became "take back what is allowed", because
+// there is nothing left for it to refuse: clearing never writes a deny and never lifts one. This
+// comment claimed one predicate guarded both mutations, which stopped being true at that change and
+// is corrected here rather than in another round.
+//
+// What it still does is stop a grant writing an allow over an administrator's member-level deny. That
+// is worth doing and is not an exclusion guarantee: see the note above the mutations for why this
+// adapter cannot enforce an exclusion at all.
 function assertNoMemberDenial(ch, userId, what) {
   const offenders = memberDenialsOnGatedChannel(
     [...ch.permissionOverwrites.cache.values()].filter(

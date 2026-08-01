@@ -213,6 +213,8 @@ test("preview predicts exactly the set apply takes back", async () => {
       dryRun: true, ledger, botUserId: "bot",
     });
     assert.deepEqual(preview.removed.sort(), ["c1/clean", "c1/denied"], "everyone with something to take back");
+    // A member with NOTHING allowed is in neither list, because apply makes no request for them. The
+    // earlier version filtered only the preview, so apply reported members it never touched.
     assert.deepEqual(edits, [], "and a preview still sends nothing");
 
     const applied = await runDecommission({
@@ -306,4 +308,32 @@ test("an unlabelled legacy row is judged by the ledger's bound scope, not the cu
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("a fully denied member is reported by neither preview nor apply, and is still retired", async () => {
+  // Nothing of the bot's remains on that channel for them, so clearManagedAllows makes no request. The
+  // preview filter used to apply only to the dry run, so apply counted them as taken back while having
+  // done nothing. They are retired either way: there is nothing left to track.
+  const fullyDenied = {
+    id: "denied",
+    type: OverwriteType.Member,
+    allow: bits(),
+    deny: bits("ViewChannel", "SendMessages", "ReadMessageHistory"),
+  };
+  const { guild, edits } = fakeGuild({ channels: { c1: [fullyDenied, ow("clean")] } });
+  await withLedger({ denied: chanRec(["c1"]), clean: chanRec(["c1"]) }, async (ledger) => {
+    const preview = await runDecommission({
+      guild, target: { mode: "channel", ids: ["c1"] }, targetArg: "channel:c1",
+      dryRun: true, ledger, botUserId: "bot",
+    });
+    const applied = await runDecommission({
+      guild, target: { mode: "channel", ids: ["c1"] }, targetArg: "channel:c1",
+      dryRun: false, ledger, botUserId: "bot",
+    });
+
+    assert.deepEqual(preview.removed, ["c1/clean"]);
+    assert.deepEqual(applied.removed, preview.removed, "apply reports exactly what preview promised");
+    assert.deepEqual(edits.map((e) => e.userId), ["clean"], "and only made the one request");
+    assert.equal(ledger.has("denied"), false, "retired anyway, because nothing of the bot's is left");
+  });
 });
