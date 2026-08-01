@@ -739,3 +739,45 @@ test("a renewal that changes target covers both while the old one is being revok
   );
   assert.deepEqual(l.get("u1").channels.sort(), ["b", "c"], "and settles on the new set");
 });
+
+test("a failed orphan revoke restores the prior record, so the old target keeps its own deadline", async () => {
+  // The covering row carries the NEW deadline. Leaving it after a failed orphan revoke extended the
+  // orphaned channel's life to that deadline: the access was still live, the row claimed a later
+  // expiry than it was ever granted for, and the sweep never fired at the original time so nothing
+  // retried the revoke. A fix for a renewal stranding access ended up extending it.
+  const file = tmpFile();
+  let failRevoke = false;
+  const l = new GrantLedger({
+    exclusive: false,
+    repairs: true,
+    file,
+    apply: () => noop(),
+    revoke: () => (failRevoke ? Promise.reject(new Error("revoke down")) : noop()),
+    now: () => 100,
+    log: () => {},
+  });
+
+  await l.grant("u1", { expiresAt: 200, mode: "channel", channels: ["old"] });
+  failRevoke = true;
+  await assert.rejects(
+    l.grant("u1", { expiresAt: 999, mode: "channel", channels: ["new"] }),
+    /could not migrate/,
+  );
+
+  const row = l.get("u1");
+  assert.deepEqual(row.channels, ["old"], "only the target that is actually live");
+  assert.equal(row.expiresAt, 200, "with its ORIGINAL deadline, not the abandoned renewal's");
+});
+
+test("a successful migrate still settles on the new record and deadline", async () => {
+  const file = tmpFile();
+  const l = new GrantLedger({
+    exclusive: false, repairs: true, file,
+    apply: () => noop(), revoke: () => noop(), now: () => 100, log: () => {},
+  });
+  await l.grant("u1", { expiresAt: 200, mode: "channel", channels: ["old"] });
+  await l.grant("u1", { expiresAt: 999, mode: "channel", channels: ["new"] });
+  const row = l.get("u1");
+  assert.deepEqual(row.channels, ["new"]);
+  assert.equal(row.expiresAt, 999, "the covering row is transient, not the end state");
+});

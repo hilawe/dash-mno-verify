@@ -668,6 +668,26 @@ export class GrantLedger {
         try {
           await this.revoke(userId, orphan);
         } catch (e) {
+          // PUT THE PRIOR RECORD BACK before giving up, when a covering row was written.
+          //
+          // The covering row carries the NEW deadline, because that is the deadline of the grant it is
+          // mostly about. Leaving it after a failed orphan revoke extended the orphaned target's life
+          // to that deadline: the old access is still live, the row now says it expires later than it
+          // was ever granted for, and the sweep does not fire at the original time, so nothing retries
+          // the revoke. A fix for a renewal stranding access ended up extending it instead.
+          //
+          // Restoring `prev` is exactly right for this case. The renewal is abandoned, so the member
+          // holds only what they held before, the row names it with its ORIGINAL deadline, and the
+          // sweep takes it back on time. That is also what this path did before the covering record
+          // existed, and the older behaviour was correct here.
+          if (cover) {
+            try {
+              this.#put(userId, prev);
+            } catch {
+              // The covering row survives, which over-claims rather than under-claims and is the safe
+              // direction. The migrate failure below is what the caller needs to hear.
+            }
+          }
           throw new Error(`could not migrate the prior grant: ${e.message}`);
         }
       }
