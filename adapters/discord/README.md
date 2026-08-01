@@ -93,9 +93,8 @@ dropped, because a startup check cannot cover a mutation that happens later or i
 Every permission change the bot makes goes through one module that carries the check with it, so there
 is no way to add a mutation that skips it.
 
-**Exclude somebody with a ROLE-LEVEL deny, not a member-level one.** This is a requirement, not a
-preference, and it is the honest version of a claim this README made too strongly for several
-versions.
+**This bot cannot currently enforce an exclusion, and there is no Discord-side way to arrange one.**
+Read this before relying on any permission you set by hand.
 
 `discord.js` has no partial update for a permission entry. Its `edit()` reads the existing entry from
 its own cache, rebuilds both the allow and deny bitfields, and sends them whole. Discord offers no
@@ -103,9 +102,15 @@ compare-and-set. So a member-level deny that the bot's cache has not seen is des
 the bot makes to that member's entry, whichever bits it is trying to set. No amount of care in the bot
 changes that, and three designs were tried before the library was read closely enough to know it.
 
-A role-level deny is safe, for a reason you can check rather than take on trust: this bot writes only
-member-type overwrites, at two calls in `adapters/discord/permissions.js`, so it never edits a role
-entry and the rewrite can never reach one.
+A role-level deny is not an answer either, and an earlier version of this README wrongly said it was.
+The bot does not edit role entries, which is true and beside the point: Discord applies a member
+overwrite's ALLOW last, after every role deny and role allow, so the member-level allow this bot
+writes simply outranks the exclusion. The role entry survives intact and has no effect on the member
+the bot just admitted.
+
+So an operator currently has no way to keep a specific person out of a gated channel while this bot is
+granting access to it. Any real exclusion has to be owned by the bot and checked before it grants.
+That does not exist yet.
 
 What the bot does do is refresh the channel immediately before every check and every change, so the
 window between reading and writing is milliseconds rather than however old the cache happened to be.

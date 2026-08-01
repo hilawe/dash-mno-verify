@@ -28,15 +28,27 @@ overwrite, whichever bits are named. All three attempts at this rule share that 
 The project's documented residual is therefore narrower than the truth. It is not only that the CHECK
 reads a cached view. Every WRITE rewrites the whole overwrite from a cached view.
 
-**That question is now answered, and the answer is written into the code, the README, and CLAUDE.md.**
-A member-level deny is NOT a supported exclusion and the bot may destroy one. A ROLE-LEVEL deny is
-supported, and it is safe for a checkable reason rather than a hoped-for one: the bot writes only
-member-type overwrites, at two calls in `adapters/discord/permissions.js`, so it never edits a role
-entry and the rewrite cannot reach one. Both mutations now refresh the channel immediately before
-deciding and writing, which shrinks the member-level window to milliseconds without closing it.
+**THE ADAPTER CANNOT ENFORCE AN EXCLUSION AT ALL. Two facts combine, both verified in the installed
+`discord.js` 14.26.4 source.**
 
-Do not attempt a fourth design that claims to preserve a member-level deny. Three have failed and the
-library makes the fourth impossible. If a third write is ever added, revisit this first.
+- A member-level deny is not protectable. `edit()` rebuilds both bitfields from its cache and sends
+  them whole, so a deny the cache has not seen is destroyed by any change the bot makes to that entry.
+- A role-level deny does not exclude anybody the bot grants to. `GuildChannel.memberPermissions`
+  applies the member overwrite's ALLOW last, after every role deny and role allow, so the bot's grant
+  outranks the exclusion. The role entry survives untouched and has no effect.
+
+I claimed for several hours, in this file, the README, and CLAUDE.md, that role-level denies were the
+supported safe mechanism. That was WRONG, and a reviewer caught it the same day. The mistake was
+confusing "the bot does not edit the role entry" with "the role entry still has effect". All three
+documents are corrected. Do not restore that claim.
+
+A real exclusion has to be OWNED BY THE BOT and checked as part of admission, before it grants, rather
+than expressed in Discord permissions and hoped to survive. That does not exist yet, and building it
+is the open design decision. Until then the honest statement is that an operator cannot keep a
+specific person out of a gated channel while this bot is granting access to it.
+
+Both mutations do refresh the channel immediately before deciding and writing, which shrinks the
+member-level window to milliseconds. That is worth keeping and is not an exclusion mechanism.
 
 The other two NOT RESOLVED items are `allowForeignScope`, which bypasses the binding without requiring
 the target rows to belong to the configured guild (reproduced: it retired a guild A role row while

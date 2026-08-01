@@ -51,13 +51,23 @@ environment variables.
 
 ## Security invariants (do not weaken without a clear reason)
 
-- Discord exclusions must be expressed with a ROLE-LEVEL deny. `discord.js` has no partial update for
-  a permission entry: `edit()` rebuilds both bitfields from its own cache and sends them whole, and
-  Discord has no compare-and-set, so a member-level deny the cache has not seen is destroyed by any
-  change the bot makes to that member's entry. Role-level denies are safe because the bot writes only
-  member-type overwrites, at two calls in `adapters/discord/permissions.js`. Do not add a third write
-  without revisiting this, and do not attempt a fourth design that claims to preserve a member-level
-  deny. Three have failed.
+- THE DISCORD ADAPTER CANNOT CURRENTLY ENFORCE AN EXCLUSION, and no Discord-native mechanism fixes
+  that. Two independent facts combine, both verified in the installed `discord.js` 14.26.4 source:
+  - A member-level deny is not protectable. `permissionOverwrites.edit()` rebuilds both bitfields from
+    its own cache and sends them whole, and Discord has no compare-and-set, so a deny the cache has
+    not seen is destroyed by any change the bot makes to that member's entry.
+  - A role-level deny does not exclude anybody the bot grants to. `GuildChannel.memberPermissions`
+    applies the member overwrite's ALLOW last, after role denies and role allows, so the bot's own
+    grant overrides the exclusion. The role entry survives untouched and is simply outranked.
+
+  An earlier version of this file claimed role-level denies were the supported, safe mechanism. That
+  was wrong, and the mistake was confusing "the bot does not edit the role entry" with "the role entry
+  still has effect". Do not restore that claim.
+
+  Any real exclusion has to be OWNED BY THE BOT and checked as part of admission, before it grants,
+  rather than expressed in Discord permissions and hoped to survive. Until that exists, the honest
+  statement is that an operator cannot exclude an individual from a gated channel while this bot is
+  granting access to it.
 
 - The verifier runs all policy checks before the cryptographic check and hard-fails on an invalid
   proof. The `expected` values are ones the gateway chose or knows, never values read from the proof.

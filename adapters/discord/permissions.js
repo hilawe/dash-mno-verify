@@ -127,11 +127,16 @@ function assertRoleOnlyAdds(guild, roleId, what) {
 // same read-modify-write, written out longhand), and refusing to touch an entry carrying any denial
 // (which left the access in place forever and still misread inherited allows).
 //
-// THE GUARANTEE IS THEREFORE NARROW AND EXPLICIT: a member-level deny is NOT a supported way to
-// exclude somebody from a gated channel, and this bot may destroy one. A ROLE-LEVEL deny is the
-// supported way, and it is safe here for a reason that is checkable rather than hoped for: this bot
-// writes ONLY member-type overwrites, at the two calls below, so it never edits a role entry and the
-// merge can never reach one.
+// THERE IS CURRENTLY NO WORKING EXCLUSION, and that is the honest statement. A member-level deny is
+// not protectable, for the reason above. A ROLE-LEVEL deny is not an answer either, though a previous
+// version of this comment said it was: this bot does not edit role entries, which is true and beside
+// the point, because `GuildChannel.memberPermissions` applies the member overwrite's ALLOW last, after
+// every role deny and role allow. The allow written below outranks the exclusion, which survives
+// intact and has no effect. Confusing "does not edit the role entry" with "the role entry still has
+// effect" is exactly the mistake that produced the wrong claim.
+//
+// A real exclusion has to be owned by this bot and checked as part of admission, before it grants. It
+// does not exist yet, and nothing below should be read as providing one.
 //
 // The refresh below shrinks the window for the member-level case from "whenever the cache last
 // updated" to the moment before the write. It does not close it, and nothing can.
