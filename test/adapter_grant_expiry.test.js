@@ -1084,3 +1084,85 @@ test("a refused first grant removes the row it wrote", async () =>
     assert.equal(l.has("u1"), false);
     l.close();
   }));
+
+test("a refused grant deletes only the row it wrote, never a replacement", async () =>
+  scopeDir(async ({ mk, file }) => {
+    // The regression this pins, reproduced with a REAL second writer rather than a stand-in. The
+    // refusal path used to reread the revision AFTER awaiting the failed apply, so it read whatever
+    // row existed at that moment. Another process landing a fresh grant in between had that row
+    // deleted instead, so a successful grant vanished and its access became permanent and untracked,
+    // which is exactly what the revision check exists to prevent.
+    const f = file("rev.db");
+    const rec = { expiresAt: 9999, mode: "channel", channels: ["c1"] };
+
+    // A second connection on the same database, standing in for the second process the revision check
+    // exists for. exclusive is off for both, which is the test seam that allows this at all.
+    const other = mk({ file: f, scope: "g", apply: async () => {} });
+
+    let raced = false;
+    const l = mk({
+      file: f,
+      scope: "g",
+      apply: async () => {
+        if (!raced) {
+          raced = true;
+          await other.grant("u1", rec); // a fresh, successful grant at a NEW revision
+        }
+        throw Object.assign(new Error("refused"), { mutated: false });
+      },
+    });
+
+    await assert.rejects(l.grant("u1", rec), /refused/);
+    assert.equal(raced, true, "the second writer really did land during the apply");
+    assert.equal(
+      other.has("u1"),
+      true,
+      "the replacement row survives, because the conditional delete named a revision that is no longer there",
+    );
+    l.close();
+    other.close();
+  }));
+
+test("an adapter with no covering record keeps the PRIOR row across the orphan revoke", async () => {
+  // Matrix and Telegram records name exactly one room or chat, so there is nowhere to put a second
+  // target and no covering record exists. A default that returned the new record instead claimed to
+  // cover the old target when it did not, and the ordering then wrote the new target BEFORE the old
+  // one was revoked, leaving that access live with nothing naming it. Worse than the ordering it
+  // replaced, in two adapters, from a change made for a third.
+  const dir = mkdtempSync(join(tmpdir(), "mno-grant-"));
+  const file = join(dir, "grants.json");
+  try {
+    const seen = [];
+    const ledger = new GrantLedger({
+      exclusive: false,
+      file,
+      apply: async () => {},
+      // Observe the durable row at the moment the orphaned room is being taken back.
+      revoke: async (u) => seen.push(onDiskRoom(file, u)),
+      validate: (r) => Boolean(r) && Number.isFinite(r.expiresAt) && Boolean(r.roomId),
+      orphaned: (prev, next) => (String(prev.roomId) === String(next.roomId) ? null : prev),
+      now: () => 1000,
+    });
+    await ledger.grant("u1", { expiresAt: 2000, roomId: "!old:hs" });
+    await ledger.grant("u1", { expiresAt: 2000, roomId: "!new:hs" });
+
+    assert.deepEqual(
+      seen,
+      ["!old:hs"],
+      "while the old room is being taken back the row still names it, not the new one",
+    );
+    ledger.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+function onDiskRoom(file, userId) {
+  const db = new DatabaseSync(file);
+  try {
+    const row = db.prepare("SELECT record FROM grants WHERE user_id=?").get(userId);
+    return row === undefined ? null : JSON.parse(row.record).roomId;
+  } finally {
+    db.close();
+  }
+}

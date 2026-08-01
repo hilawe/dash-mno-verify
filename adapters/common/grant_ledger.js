@@ -106,10 +106,16 @@ export class GrantLedger {
     revoke,
     validate = (r) => Boolean(r) && Number.isFinite(r.expiresAt),
     orphaned = () => null,
-    // The record that covers BOTH the new grant and the prior targets it orphans, used for the moment
-    // between revoking the old and committing the new. The default keeps the new record alone, which
-    // is right for an adapter whose renewal has nothing to migrate.
-    covering = (record) => record,
+    // A record that covers BOTH the new grant and the prior targets it orphans, or NULL when this
+    // adapter's record shape cannot express one.
+    //
+    // The default is null on purpose, and it must stay null. An adapter whose record names exactly one
+    // room or chat, as Matrix and Telegram do, has nowhere to put a second target, so there is no
+    // covering record to write. Returning the new record instead would be a claim that it covers the
+    // old target when it does not, and the ordering below would then write the new target BEFORE the
+    // old one is revoked, leaving that access live with nothing naming it. That is worse than the
+    // ordering it replaced, and it is what a default of `record` did to two adapters.
+    covering = () => null,
     now = () => Math.floor(Date.now() / 1000),
     resetClock = false,
     log = () => {},
@@ -488,16 +494,24 @@ export class GrantLedger {
     for (const row of this.#stmt.all.all()) this.#parse(row.user_id, row.record);
   }
 
+  // Returns the revision it allocated. A caller that may need to undo this write has to hold that
+  // number ACROSS its platform call, because rereading it afterwards reads whatever is there then,
+  // which may be a different row written by someone else.
   #put(userId, record) {
-    const write = () =>
-      this.#stmt.put.run(
+    let rev = null;
+    const write = () => {
+      rev = this.#stmt.nextRev.get().rev;
+      return this.#stmt.put.run(
         String(userId),
         Number(record.expiresAt),
         JSON.stringify(record),
         this.now(), // the injected clock, so no wall-clock read exists outside #observeClock
-        this.#stmt.nextRev.get().rev,
+        rev,
       );
-    return this.putFn ? this.putFn(write, userId, record) : write();
+    };
+    if (this.putFn) this.putFn(write, userId, record);
+    else write();
+    return rev;
   }
 
   // ---- the guarded clock -------------------------------------------------------------------------
@@ -628,10 +642,17 @@ export class GrantLedger {
       // repair pass can finish the job without spending another proof.
       const orphan = prev ? this.orphaned(prev, record) : null;
       if (orphan) {
-        try {
-          this.#put(userId, this.covering(record, orphan));
-        } catch (e) {
-          throw new Error(`could not persist grant: ${e.message}`);
+        // Only when this adapter can actually express a record covering both. When it cannot, the
+        // PRIOR row is left exactly where it is across the revoke, which still names the old target,
+        // so the row remains a superset of what is live. That is the older ordering and it is correct
+        // for them: what it costs is the repairability the covering record buys, not the invariant.
+        const cover = this.covering(record, orphan);
+        if (cover) {
+          try {
+            this.#put(userId, cover);
+          } catch (e) {
+            throw new Error(`could not persist grant: ${e.message}`);
+          }
         }
         try {
           await this.revoke(userId, orphan);
@@ -640,8 +661,14 @@ export class GrantLedger {
         }
       }
 
+      // The revision THIS call wrote, captured before the platform call below. The refusal path used
+      // to reread it afterwards, which reads whatever row exists at that moment: a concurrent process
+      // could have written a fresh grant in between, and the reread then deleted that row instead. A
+      // successful grant vanished and its access became permanent and untracked, which is the exact
+      // outcome the revision check exists to prevent, produced by the code added to enforce it.
+      let writtenRev = null;
       try {
-        this.#put(userId, record);
+        writtenRev = this.#put(userId, record);
       } catch (e) {
         // A single statement either committed or it did not, so there is nothing to roll back. On a
         // renewal the covering row above survives, which still names the new targets, so the member is
@@ -673,8 +700,10 @@ export class GrantLedger {
           // The exclusive lock normally makes that impossible. On a network filesystem it does not,
           // and that is the exact case the revision check was added for, so the one place that skipped
           // it was the place a second process could do harm.
-          const written = this.#stmt.get.get(String(userId));
-          if (written !== undefined) this.#stmt.del.run(String(userId), written.rev);
+          // Conditional on the revision captured BEFORE the apply. If anything replaced the row while
+          // the platform call was in flight, the revision no longer matches and this deletes nothing,
+          // which is the entire point.
+          if (writtenRev !== null) this.#stmt.del.run(String(userId), writtenRev);
           throw e;
         }
 
