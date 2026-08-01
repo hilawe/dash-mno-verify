@@ -10,6 +10,39 @@ prioritized punch list.
 `main` at `b4b4da1`, pushed, 338 tests green (`npm test`, about two and a half minutes). Node 22.13 or
 newer. Read this section, then `TODO.md`. Everything below is superseded.
 
+### STOP HERE. THE CLEAR PATH IS OPEN AND NEEDS A RETHINK, NOT A PATCH
+
+The round 11 confirmation is in and it is the first thing to read. `main` is at `56876d2` and three of
+its findings are NOT RESOLVED, deliberately left for a fresh start.
+
+**discord.js `edit()` is a read-modify-write against the cache, inside the library.**
+`PermissionOverwriteManager.edit()` looks up the existing overwrite in the CACHE and passes it to
+`PermissionOverwrites.resolveOverwriteOptions`, which rebuilds both bitfields and sends them whole.
+Verified in the installed 14.26.4 source.
+
+So the central claim of the current design, that naming only allowed bits means a deny is never
+written or cleared, is FALSE AT THE WIRE LEVEL. The deny bitfield is always transmitted, rebuilt from
+whatever the cache held. A denial added since the cache was populated is wiped by any edit on that
+overwrite, whichever bits are named. All three attempts at this rule share that defect.
+
+The project's documented residual is therefore narrower than the truth. It is not only that the CHECK
+reads a cached view. Every WRITE rewrites the whole overwrite from a cached view.
+
+The open question, and it is a design and honesty question before it is a code one: can this adapter
+claim to protect an administrator's exclusion at all, given every write it makes rebuilds the entry
+from a cache it does not control? Answer that before writing a fourth version. Do not patch the
+predicate again.
+
+The other two NOT RESOLVED items are `allowForeignScope`, which bypasses the binding without requiring
+the target rows to belong to the configured guild (reproduced: it retired a guild A role row while
+operating in guild B, combined with `--confirm-target-gone`), and the partial-refusal message, which
+still says "some of your access was applied" when the error records possible mutation rather than
+actual application.
+
+Two regressions this fold introduced were fixed before stopping: the refusal path rereading a revision
+after its await and deleting a replacement row, and the covering default breaking Matrix and Telegram.
+Both are in `56876d2`, both reproduced by the confirmation, and neither existed the previous morning.
+
 ### Where the project is
 
 Unchanged in substance. Anonymous zero-knowledge proof of masternode control gating a private
@@ -103,7 +136,8 @@ The 2026-07-30 section's list holds. What round 11 added:
 
 ### Punch list, in order
 
-1. **A focused confirmation on the round 11 fold.** Do not skip this. See the section above.
+1. **The clear path rethink.** See the section at the top. The round 11 confirmation is done and
+   three of its findings are open on purpose.
 2. **The parser decision.** `test/discord_permissions.test.js` is an honest tripwire, not a proof: the
    cache hands back a mutable object, so `cache.get(id).edit(...)` passes. Closing it needs a parser
    dependency, which is a decision rather than a test tweak.
