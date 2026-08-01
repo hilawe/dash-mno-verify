@@ -131,7 +131,7 @@ test("a first grant that sent nothing is not compensated, and leaves no record b
   assert.equal("u1" in onDisk(file), false);
 });
 
-test("a transient first grant keeps its record and is NOT compensated", async () => {
+test("a REPAIRING adapter keeps a transient first grant's record and does not compensate", async () => {
   // This asserted the opposite a few commits ago, and the reason it changed is that a repair path now
   // exists. Without one, a kept record was a live grant with no access behind it and nothing that
   // would ever fix it, so revoking and dropping the row was the least-wrong option. With
@@ -141,7 +141,9 @@ test("a transient first grant keeps its record and is NOT compensated", async ()
   // that DID succeed, which the repair would only put back.
   const file = tmpFile();
   const revoked = [];
-  const l = new GrantLedger({ exclusive: false, file, apply: () => Promise.reject(new Error("discord down")), revoke: (u) => (revoked.push(u), noop()), now: () => 100, log: () => {} });
+  // `repairs: true` is what the bot passes, because it runs repairLiveGrants on the sweep schedule.
+  // The flag is declared here rather than assumed, since the behaviour below is only correct WITH it.
+  const l = new GrantLedger({ exclusive: false, repairs: true, file, apply: () => Promise.reject(new Error("discord down")), revoke: (u) => (revoked.push(u), noop()), now: () => 100, log: () => {} });
   await assert.rejects(l.grant("u1", rec(200)), /discord down/);
   assert.deepEqual(revoked, [], "no compensating revoke, because the repair pass reapplies instead");
   assert.equal(l.has("u1"), true, "the record survives, and it is what the repair reads");

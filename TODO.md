@@ -4,6 +4,33 @@ Known issues and planned work, in priority order, from a code review of the curr
 This is a working prototype and is not audited. Do not gate anything of real value until at
 least the P0 items are done and the system has had an audit.
 
+KNOWN GAP, THE DISCORD ADAPTER CANNOT ENFORCE AN EXCLUSION (2026-08-01). An operator has no way to
+keep a specific person out of a gated channel while this bot is granting access to it. Two facts
+combine, both verified in the installed `discord.js` 14.26.4 source and both found by reviewers on the
+same day the opposite was claimed here:
+
+- A member-level deny is not protectable. `permissionOverwrites.edit()` rebuilds both bitfields from
+  its own cache and sends them whole, and Discord has no compare-and-set, so a deny the cache has not
+  seen is destroyed by any change the bot makes to that entry.
+- A role-level deny does not exclude anybody the bot grants to. `GuildChannel.memberPermissions`
+  applies the member overwrite's ALLOW last, after every role deny and role allow, so the bot's own
+  grant outranks the exclusion. The role entry survives untouched and simply has no effect.
+
+This file, `CLAUDE.md`, the Discord README, and the code comments briefly claimed role-level denies
+were the supported safe mechanism. That was wrong. The mistake was reading "the bot does not edit the
+role entry" as "the role entry still has effect". Do not restore that claim.
+
+The only design that can work is an exclusion OWNED BY THE BOT and checked as part of admission,
+before it grants and before any repair reapplies from a stored record, rather than expressed in
+Discord permissions and hoped to survive. Sketch, not yet built: an operator-managed list of account
+ids, durable next to the grant ledger, consulted by `applyAccess` and `repairAccess`, with existing
+managed allows taken back when an exclusion is added. It needs its own design pass and its own review,
+and it is the one genuinely new feature in the current backlog rather than a bug fix.
+
+Until it exists, this is a documented limitation and not a silent one. It is stated in `CLAUDE.md` as
+a security invariant, in the Discord README where operators will look, and above the two mutation
+sites in `adapters/discord/permissions.js`.
+
 ROLE MODE HAS BEEN REMOVED (2026-07-30). A verified member is added to the private channel with a
 per-user permission overwrite, and that is the only mode. A Discord role is visible on the member's
 profile card to everyone in the server, so granting one announced who holds a masternode, which is

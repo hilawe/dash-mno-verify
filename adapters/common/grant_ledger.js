@@ -116,6 +116,16 @@ export class GrantLedger {
     // old one is revoked, leaving that access live with nothing naming it. That is worse than the
     // ordering it replaced, and it is what a default of `record` did to two adapters.
     covering = () => null,
+    // Whether this adapter runs a pass that reapplies access from a live record.
+    //
+    // OFF by default, and that default is the whole point. Keeping a record after an uncertain apply
+    // failure is only safe for an adapter that will later finish the job from it. Discord has such a
+    // pass. Matrix and Telegram do not, and when this policy was introduced for Discord it silently
+    // applied to them too: their member ended up with a live row, no access, no retry, and a spent
+    // one-time proof, while being told to verify again. A shared default that is correct for exactly
+    // one of three callers is a trap, so an adapter has to say it can repair before it gets the
+    // behaviour that assumes repair.
+    repairs = false,
     now = () => Math.floor(Date.now() / 1000),
     resetClock = false,
     log = () => {},
@@ -158,6 +168,7 @@ export class GrantLedger {
     this.validate = validate;
     this.orphaned = orphaned;
     this.covering = covering;
+    this.repairs = Boolean(repairs);
     this.apply = apply;
     this.revoke = revoke;
     this.now = now;
@@ -707,8 +718,26 @@ export class GrantLedger {
           throw e;
         }
 
-        // Anything else is a transient or uncertain failure, and the record is KEPT with no
-        // compensating revoke.
+        // Anything else is a transient or uncertain failure, and what happens next depends on whether
+        // this adapter can finish the job later.
+        //
+        // WITHOUT a repair pass, keeping the record strands the member: nothing retries the platform
+        // call, their proof is spent for the epoch, and the row proves an authorization it cannot
+        // deliver. So compensate, and drop the row only if that compensation completes, since a row
+        // surviving a successful compensation is a live grant with nothing behind it. A failed
+        // compensation keeps the row so the sweep retries.
+        if (!this.repairs) {
+          try {
+            await this.revoke(userId, record);
+            if (writtenRev !== null) this.#stmt.del.run(String(userId), writtenRev);
+          } catch {
+            // Deliberately swallowed. The apply failure is what the caller needs, and the record
+            // surviving is the correct outcome of a failed compensation.
+          }
+          throw e;
+        }
+
+        // WITH a repair pass, the record is KEPT with no compensating revoke.
         //
         // This is the opposite of what it did a few commits ago, and the reason is that a repair path
         // now exists. Without one, a kept record was a live grant with no access behind it and nothing

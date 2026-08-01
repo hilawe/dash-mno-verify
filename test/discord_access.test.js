@@ -63,6 +63,10 @@ function withLedger(guild, fn) {
   });
   const ledger = new GrantLedger({
     exclusive: false,
+    // Mirrors the bot, which runs repairLiveGrants on the sweep schedule. Keeping a record after an
+    // uncertain apply failure is only correct WITH a repair pass, so the harness declares it rather
+    // than inheriting a default. Matrix and Telegram deliberately do not set it.
+    repairs: true,
     file: join(dir, "grants.db"),
     scope: "g1",
     apply: applyAccess,

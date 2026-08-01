@@ -147,6 +147,10 @@ const ledger = new GrantLedger({
   // any Discord configuration could take. A guard whose exit exists only in the documentation is a
   // guard with no exit.
   resetClock: process.env.DISCORD_RESET_CLOCK === "1",
+  // This adapter runs repairLiveGrants on the sweep schedule, so it may keep a record after an
+  // uncertain apply failure and finish the job from it later. Matrix and Telegram have no such pass
+  // and deliberately do not set this.
+  repairs: true,
   apply: applyAccess,
   revoke: revokeAccess,
   log: (m) => console.error("[discord]", m),

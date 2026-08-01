@@ -1166,3 +1166,43 @@ function onDiskRoom(file, userId) {
     db.close();
   }
 }
+
+test("an adapter with NO repair pass compensates a failed first grant instead of keeping it", async () =>
+  scopeDir(async ({ mk, file }) => {
+    // The default, and the reason it is the default. Keeping a record after an uncertain apply failure
+    // is only safe for an adapter that will later finish the job from it. Matrix and Telegram have no
+    // such pass, and when this policy arrived for Discord it silently applied to them: their member
+    // was left with a live row, no access, no retry, and a one-time proof already spent, while being
+    // told to verify again. A shared default correct for one of three callers is a trap.
+    const revoked = [];
+    const l = mk({
+      file: file("norepair.db"),
+      scope: "g",
+      apply: () => Promise.reject(new Error("invite failed")),
+      revoke: (u) => (revoked.push(u), Promise.resolve()),
+    });
+    await assert.rejects(
+      l.grant("u1", { expiresAt: 9999, mode: "channel", channels: ["c1"] }),
+      /invite failed/,
+    );
+    assert.deepEqual(revoked, ["u1"], "it compensates, because nothing will come back for this later");
+    assert.equal(l.has("u1"), false, "and drops the row, so no live record claims access that is gone");
+    l.close();
+  }));
+
+test("an adapter with no repair pass KEEPS the row when its compensation fails", async () =>
+  scopeDir(async ({ mk, file }) => {
+    const l = mk({
+      file: file("norepair2.db"),
+      scope: "g",
+      apply: () => Promise.reject(new Error("invite failed")),
+      revoke: () => Promise.reject(new Error("still down")),
+    });
+    await assert.rejects(
+      l.grant("u1", { expiresAt: 9999, mode: "channel", channels: ["c1"] }),
+      /invite failed/,
+      "the apply failure is what the caller is told, not the compensation failure",
+    );
+    assert.equal(l.has("u1"), true, "access may be live, so it stays tracked for the sweep");
+    l.close();
+  }));

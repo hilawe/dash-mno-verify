@@ -153,8 +153,15 @@ The 2026-07-30 section's list holds. What round 11 added:
 
 ### Punch list, in order
 
-1. **A fresh full round.** The last two folds each introduced regressions, and the tree has changed a
-   great deal since round 11. Nothing from that round is open now.
+1. **Fold the rest of round 12.** Five blockers remain open, listed below. Two decisions were taken:
+   keep-on-uncertain-failure is now opt-in (`repairs`), and the exclusion gap is recorded in `TODO.md`
+   rather than built.
+2. **The exclusion mechanism**, when it is wanted. A bot-owned admission check is the only design that
+   can work. See `TODO.md`.
+3. **Round 12's open blockers**: the covering record extends orphaned access to the new deadline,
+   foreign-scope cleanup resolves a legacy row against the current guild instead of the bound scope,
+   Discord grants are not bound to their proof context while Matrix and Telegram compare `contextHash`,
+   and decommission preview diverges from apply on fully-denied members.
 2. **The parser decision.** `test/discord_permissions.test.js` is an honest tripwire, not a proof: the
    cache hands back a mutable object, so `cache.get(id).edit(...)` passes. Closing it needs a parser
    dependency, which is a decision rather than a test tweak.
