@@ -239,3 +239,36 @@ test("confirm-target-gone is refused for a target no ledger record names", async
     assert.equal(ledger.has("u1"), true, "and nothing unrelated was touched");
   });
 });
+
+test("a foreign-guild row is never retired, even in cleanup mode with the gone assertion", async () => {
+  // The cleanup command can open a ledger bound to another guild, because it is the documented exit
+  // from that refusal. That bypass came with no check on the ROWS, so it retired a record made in one
+  // guild while operating in another, which forgets access that is live and unreachable from here. A
+  // bypass has to be narrower than the guard it steps around, not wider.
+  const { guild } = fakeGuild({ roles: {}, members: [] });
+  const dir = mkdtempSync(join(tmpdir(), "mno-dc-"));
+  const ledger = new GrantLedger({
+    exclusive: false,
+    file: join(dir, "grants.db"),
+    scope: "g1",
+    apply: async () => {},
+    revoke: async () => {},
+    now: () => 1000,
+    log: () => {},
+  });
+  try {
+    await ledger.grant("ours", { expiresAt: 9999, mode: "role", guildId: "g1", roleId: "r1" });
+    await ledger.grant("theirs", { expiresAt: 9999, mode: "role", guildId: "OTHER", roleId: "r1" });
+
+    await runDecommission({
+      guild, target: { mode: "role", ids: ["r1"] }, targetArg: "role:r1",
+      dryRun: false, confirmGone: true, ledger, botUserId: "bot",
+    });
+
+    assert.equal(ledger.has("ours"), false, "this guild's row is retired");
+    assert.equal(ledger.has("theirs"), true, "the other guild's row is left exactly alone");
+  } finally {
+    ledger.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

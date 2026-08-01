@@ -298,3 +298,32 @@ test("repair refuses an expired record on its own, not only via its caller", asy
   assert.deepEqual(await repairAccess("u1", rec(["c1"])), [], "expiresAt 9999 is behind now 10000");
   assert.deepEqual(edits, [], "nothing written for an expired record");
 });
+
+test("a grant reports what DEFINITELY applied, separately from what may have been written", async () => {
+  // `mutated` is deliberately conservative: "a write may have gone out", so the ledger compensates
+  // when unsure. It is the wrong question for a member-facing message. A transient failure on one
+  // channel alongside a denial on another gives mutated true with zero successful writes, and the
+  // member was told some of their access had been applied when none had.
+  const denied = { id: "u1", type: OverwriteType.Member, allow: bits(), deny: bits("ViewChannel") };
+  const { guild } = fakeGuild({ c1: [denied], c2: [] });
+  guild.channels.fetch = async (id) => {
+    if (id === "c2") throw Object.assign(new Error("Service Unavailable"), { status: 503 });
+    return {
+      id,
+      permissionOverwrites: {
+        cache: new Map([[denied.id, denied]]),
+        edit: async () => {},
+      },
+    };
+  };
+  const { applyAccess } = makeAccess({ getGuild: async () => guild, guildId: "g1", log: () => {} });
+
+  const err = await applyAccess("u1", rec(["c1", "c2"])).then(
+    () => null,
+    (e) => e,
+  );
+  assert.ok(err, "the grant failed");
+  assert.equal(err.mutated, true, "a transient failure means a write may have gone out");
+  assert.equal(err.applied, false, "but nothing definitely landed, which is the member-facing question");
+  assert.deepEqual(err.refusedChannels, ["c1"]);
+});

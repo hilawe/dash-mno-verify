@@ -147,6 +147,7 @@ export function staleTargets(records, { mode, channels = [], roleId } = {}) {
 export function retireTargetTransform({
   mode,
   ids,
+  guildId = null,
   failedMembers = new Set(),
   failedPairs = new Set(),
   skippedChannels = new Set(),
@@ -154,6 +155,12 @@ export function retireTargetTransform({
   const retired = (ids ?? []).map(String);
   return (record, userId) => {
     const u = String(userId);
+    // NEVER retire a record belonging to another guild. The cleanup command can open a ledger bound
+    // elsewhere, which it must be able to do because it is the documented exit from that refusal, and
+    // that bypass came with no check on the rows themselves: it retired a record made in one guild
+    // while operating in another, which forgets access that is live and unreachable. The bypass has to
+    // be narrower than the guard it steps around, not wider.
+    if (guildId !== null && record?.guildId && String(record.guildId) !== String(guildId)) return record;
     if (mode === "role") {
       if (failedMembers.has(u)) return record;
       return record?.mode === "role" && retired.includes(String(record.roleId)) ? null : record;

@@ -37,10 +37,15 @@ export async function runDecommission({
   // having retired nothing, because no row named the typo. Success on a target this command was never
   // tracking teaches an operator that the flag "worked" when nothing happened. If no row names the
   // target, there is nothing the assertion could retire, so it is refused as almost certainly a typo.
+  // Rows for THIS guild only. Counting a foreign row as evidence would let the assertion be satisfied
+  // by a record the command must not touch, which is the same weakness as retiring one.
+  const ours = (r) => !r?.guildId || String(r.guildId) === String(guild.id);
   const namedInLedger = (chOrRoleId) =>
-    (ledger?.all?.() ?? []).some((r) =>
-      r?.mode === "role" ? String(r.roleId) === String(chOrRoleId) : (r?.channels ?? []).map(String).includes(String(chOrRoleId)),
-    );
+    (ledger?.all?.() ?? [])
+      .filter(ours)
+      .some((r) =>
+        r?.mode === "role" ? String(r.roleId) === String(chOrRoleId) : (r?.channels ?? []).map(String).includes(String(chOrRoleId)),
+      );
   if (confirmGone && !dryRun) {
     const unnamed = target.ids.filter((id) => !namedInLedger(id));
     if (unnamed.length) {
@@ -273,6 +278,7 @@ export async function runDecommission({
         retireTargetTransform({
           mode: target.mode,
           ids: target.ids,
+          guildId: guild.id,
           failedMembers,
           failedPairs,
           skippedChannels,

@@ -91,6 +91,12 @@ export function makeAccess({
     if (failures.length) {
       const err = new Error(`could not grant ${failures.join("; ")}`);
       err.mutated = applied || !onlyRefusals;
+      // Whether anything DEFINITELY landed, which is not the same question as `mutated`. `mutated` is
+      // "a write may have gone out", deliberately conservative so the ledger compensates when unsure.
+      // Telling a member "some of your access was applied" on the strength of it said something had
+      // landed when a transient failure alongside a denial produces mutated true and zero successful
+      // writes.
+      err.applied = applied;
       // Which channels refused, so the caller can tell the member the truth. mutated alone could not:
       // one clean channel plus one denied channel gives mutated true, and the member was told the
       // whole failure was temporary when the denied channel is permanent.

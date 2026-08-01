@@ -570,11 +570,16 @@ async function handleInteraction(i) {
       // A mix. Some channels applied or blipped, and some refused permanently. Telling this member the
       // whole failure was temporary left them waiting on channels that will never arrive.
       if (e?.refusedChannels?.length) {
+        // Only claim access was applied when something DEFINITELY was. A transient failure alongside a
+        // denial gives mutated true with zero successful writes, and the earlier wording told that
+        // member some of their access had landed when none had.
+        const some = e.applied
+          ? "Some of your access was applied, and anything that failed temporarily will be applied "
+          : "Anything that failed temporarily will be applied ";
         return i.editReply(
-          "Verified. Some of your access was applied, and the rest of any temporary failure will be " +
-            "applied automatically within a few minutes. One or more channels were refused because an " +
-            "administrator has set a permission on your account there that this bot will not override. " +
-            "Ask a server admin about those. Verifying again will not change this.",
+          `Verified. ${some}automatically within a few minutes. One or more channels were refused ` +
+            "because an administrator has set a permission on your account there that this bot will " +
+            "not override. Ask a server admin about those. Verifying again will not change this.",
         );
       }
       return i.editReply(
