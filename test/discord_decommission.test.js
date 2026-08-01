@@ -147,3 +147,44 @@ test("a preview changes nothing on Discord and nothing in the ledger", async () 
     assert.equal(ledger.has("u1"), true, "and retires nothing");
   });
 });
+
+test("a transient role lookup failure retires nothing, even with the gone assertion", async () => {
+  // The exit added for a deleted role became a way to forget a live one. Catching every error to null
+  // meant one Discord 500 plus --confirm-target-gone deleted the rows for a role that was still live
+  // and still disclosing. A failure to look is not evidence of absence.
+  const guild = {
+    id: "g1",
+    name: "Test",
+    roles: {
+      fetch: async () => {
+        throw Object.assign(new Error("Service Unavailable"), { status: 503 });
+      },
+    },
+    members: { fetch: async () => new Map() },
+    channels: { fetch: async () => new Map() },
+  };
+  await withLedger({ u1: roleRec("r1") }, async (ledger) => {
+    await assert.rejects(
+      () =>
+        runDecommission({
+          guild, target: { mode: "role", ids: ["r1"] }, targetArg: "role:r1",
+          dryRun: false, confirmGone: true, ledger, botUserId: "bot",
+        }),
+      /could not read role/,
+    );
+    assert.equal(ledger.has("u1"), true, "the row survives, because nothing proved the role is gone");
+  });
+});
+
+test("a genuinely absent role is still retired with the assertion", async () => {
+  // The exit must still work, or the fix reintroduces the guard with no exit.
+  const { guild } = fakeGuild({ roles: {}, members: [] });
+  await withLedger({ u1: roleRec("r1") }, async (ledger) => {
+    const { failed } = await runDecommission({
+      guild, target: { mode: "role", ids: ["r1"] }, targetArg: "role:r1",
+      dryRun: false, confirmGone: true, ledger, botUserId: "bot",
+    });
+    assert.deepEqual(failed, []);
+    assert.equal(ledger.has("u1"), false);
+  });
+});

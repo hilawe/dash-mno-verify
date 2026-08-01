@@ -46,7 +46,23 @@ export async function runDecommission({
     // Confirm the role belongs to THIS guild. Role ids are globally unique, so naming a role from
     // another server simply matched nobody, reported zero holders, and exited zero as if it had
     // succeeded, while every real holder kept the role.
-    const role = await guild.roles.fetch(roleId).catch(() => null);
+    // ONLY a genuine absence counts as absence. This used to catch every error to null, which was
+    // survivable while a missing role simply refused, and became a blocker the moment
+    // --confirm-target-gone existed: one Discord 500 plus that flag deleted the rows for a role that
+    // was still live and still disclosing who holds a masternode. A guard's new exit must not accept a
+    // blip as proof the thing is gone.
+    let role;
+    try {
+      role = await guild.roles.fetch(roleId);
+    } catch (e) {
+      if (!isGone(e)) {
+        throw new Error(
+          `could not read role ${roleId} (${e.message}). Nothing was changed, and no ledger row was ` +
+            `retired, because a failure to look is not evidence of absence. Try again.`,
+        );
+      }
+      role = null;
+    }
     if (!role && !confirmGone) {
       throw new Error(
         `role ${roleId} does not exist in ${guild.name} (${guild.id}). Check DISCORD_GUILD_ID and the ` +
