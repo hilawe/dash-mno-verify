@@ -61,9 +61,22 @@ export function authorizesTarget(record, isLive, { mode, channel = null, roleId 
 }
 
 
+// The record that names the new grant AND the prior targets it orphans, held for the moment between
+// revoking the old and committing the new. Over-claiming is the safe direction: the row must always be
+// a superset of what could be live, or a crash in that window strands access nothing tracks.
+//
+// Channel mode is the only mode, so this is the union of the channel sets. A covering record for a
+// prior grant of a different shape keeps the new record alone, because there is nothing to union and
+// the orphan is revoked in the same breath.
+export function coveringTargets(record, orphan) {
+  if (record?.mode !== "channel" || orphan?.mode !== "channel") return record;
+  const channels = [...new Set([...(record.channels ?? []), ...(orphan.channels ?? [])])];
+  return { ...record, channels };
+}
+
 export class GrantLedger extends BaseGrantLedger {
   constructor(opts = {}) {
-    super({ ...opts, validate: isValidRecord, orphaned: extraTargets });
+    super({ ...opts, validate: isValidRecord, orphaned: extraTargets, covering: coveringTargets });
   }
 }
 

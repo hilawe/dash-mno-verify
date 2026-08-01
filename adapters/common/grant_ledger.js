@@ -106,6 +106,10 @@ export class GrantLedger {
     revoke,
     validate = (r) => Boolean(r) && Number.isFinite(r.expiresAt),
     orphaned = () => null,
+    // The record that covers BOTH the new grant and the prior targets it orphans, used for the moment
+    // between revoking the old and committing the new. The default keeps the new record alone, which
+    // is right for an adapter whose renewal has nothing to migrate.
+    covering = (record) => record,
     now = () => Math.floor(Date.now() / 1000),
     resetClock = false,
     log = () => {},
@@ -147,6 +151,7 @@ export class GrantLedger {
     this.file = file;
     this.validate = validate;
     this.orphaned = orphaned;
+    this.covering = covering;
     this.apply = apply;
     this.revoke = revoke;
     this.now = now;
@@ -604,12 +609,30 @@ export class GrantLedger {
         );
       }
       const prev = this.#row(userId);
-      // If a renewal changes the target, revoke the parts of the prior grant the new one does not
-      // carry forward, before applying the new grant, so old access (including a different mode, room
-      // or role id) is never left live and untracked. If that revoke fails, abort the renewal. The
-      // prior row is unchanged, so its access stays fully tracked and live.
+      // A renewal that changes target revokes the parts of the prior grant the new one does not carry
+      // forward, so old access is never left live and untracked.
+      //
+      // THE INVARIANT IS THAT THE ROW ALWAYS COVERS EVERYTHING THAT COULD BE LIVE. The order used to
+      // be revoke, then write, and the comment claimed the prior row kept its access fully tracked and
+      // live. The first half stayed true and the second did not: after a successful revoke the row
+      // named a target that had just been taken away. If the write then failed, or the process died in
+      // between, the member was left with the old access gone, the new access never applied, and a row
+      // naming only the old target. Repair could not help them, because it deliberately ignores
+      // channels outside the current configuration, so they stayed verified, recorded, and locked out
+      // with the epoch's proof already spent.
+      //
+      // So a covering record is committed FIRST. It names the new targets and the orphaned ones
+      // together, which over-claims and never under-claims. Then the orphan is revoked. Then the final
+      // record replaces it. Every failure point in that sequence leaves a row that is a superset of
+      // what is live, which is the safe direction, and every one leaves the NEW targets named, so the
+      // repair pass can finish the job without spending another proof.
       const orphan = prev ? this.orphaned(prev, record) : null;
       if (orphan) {
+        try {
+          this.#put(userId, this.covering(record, orphan));
+        } catch (e) {
+          throw new Error(`could not persist grant: ${e.message}`);
+        }
         try {
           await this.revoke(userId, orphan);
         } catch (e) {
@@ -620,7 +643,9 @@ export class GrantLedger {
       try {
         this.#put(userId, record);
       } catch (e) {
-        // A single statement either committed or it did not, so there is nothing to roll back.
+        // A single statement either committed or it did not, so there is nothing to roll back. On a
+        // renewal the covering row above survives, which still names the new targets, so the member is
+        // repairable rather than stranded.
         throw new Error(`could not persist grant: ${e.message}`);
       }
       try {

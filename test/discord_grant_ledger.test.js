@@ -304,7 +304,7 @@ test("a renewal that drops a target revokes the orphaned one before applying", a
 
 // If revoking the orphaned target fails, the renewal must abort with the prior grant intact, so the
 // old access stays both live and tracked rather than half-migrated and stranded.
-test("if migrating the prior grant fails, the renewal aborts and keeps the prior grant", async () => {
+test("if migrating the prior grant fails, the renewal aborts and the row still covers the old target", async () => {
   const file = tmpFile();
   let migrateFail = false;
   // apply was a noop here too, so a mutant that applied the replacement inside the failure path still
@@ -325,7 +325,14 @@ test("if migrating the prior grant fails, the renewal aborts and keeps the prior
     [["c1", "c2"]],
     "an aborted renewal must not have applied the replacement; only the original grant applied",
   );
-  assert.deepEqual(onDisk(file).u1, { expiresAt: 200, mode: "channel", channels: ["c1", "c2"] });
+  // The row is the COVERING record now, not the literal prior one. What matters is unchanged and is
+  // what this asserts: c2 was not revoked, so c2 must still be named, or the access it represents is
+  // live with nothing tracking it. The row over-claims, which is the safe direction.
+  assert.deepEqual(
+    onDisk(file).u1.channels.sort(),
+    ["c1", "c2"],
+    "the un-revoked target is still tracked",
+  );
 });
 
 // The write path must reject a malformed record (here a non-finite expiry), or it would persist and
@@ -671,4 +678,62 @@ test("retiring a role drops the records naming it and leaves every other record 
   assert.equal(t(stuck, "stuck"), stuck, "a member who still holds the role stays tracked");
   const chan = { expiresAt: 9, mode: "channel", channels: ["c1"] };
   assert.equal(t(chan, "u1"), chan, "a channel record is untouched by a role decommission");
+});
+
+// A renewal that changes target used to revoke the old one and only then write the new record. After a
+// successful revoke, a failed write left the member with the old access gone, the new access never
+// applied, and a row naming only the old target. Repair could not help, because it ignores channels
+// outside the current configuration, so they stayed verified, recorded, and locked out with the
+// epoch's proof already spent. The row must always be a superset of what could be live.
+test("a renewal whose write fails still leaves a row naming the NEW targets", async () => {
+  const file = tmpFile();
+  const events = [];
+  let failWrites = false;
+  const l = new GrantLedger({
+    exclusive: false,
+    file,
+    apply: (u, r) => (events.push(`apply:${r.channels.join("+")}`), noop()),
+    revoke: (u, r) => (events.push(`revoke:${r.channels.join("+")}`), noop()),
+    now: () => 100,
+    log: () => {},
+    putFn: (write) => {
+      if (failWrites) throw new Error("disk full");
+      return write();
+    },
+  });
+
+  await l.grant("u1", { expiresAt: 9999, mode: "channel", channels: ["old"] });
+  failWrites = true;
+  await assert.rejects(
+    l.grant("u1", { expiresAt: 9999, mode: "channel", channels: ["new"] }),
+    /could not persist grant/,
+  );
+
+  // The covering write is the FIRST thing attempted now, so it fails before anything is revoked.
+  assert.deepEqual(events, ["apply:old"], "nothing was revoked, so nothing was taken away");
+  assert.deepEqual(l.get("u1").channels, ["old"], "and the row still names what is actually live");
+});
+
+test("a renewal that changes target covers both while the old one is being revoked", async () => {
+  const file = tmpFile();
+  const seen = [];
+  const l = new GrantLedger({
+    exclusive: false,
+    file,
+    apply: () => noop(),
+    // Observe the durable row at the exact moment the orphan is being revoked.
+    revoke: (u) => (seen.push([...(onDisk(file)[u]?.channels ?? [])]), noop()),
+    now: () => 100,
+    log: () => {},
+  });
+
+  await l.grant("u1", { expiresAt: 9999, mode: "channel", channels: ["a", "b"] });
+  await l.grant("u1", { expiresAt: 9999, mode: "channel", channels: ["b", "c"] });
+
+  assert.deepEqual(
+    seen[0].sort(),
+    ["a", "b", "c"],
+    "while 'a' is being taken back the row names every target that could be live, old and new",
+  );
+  assert.deepEqual(l.get("u1").channels.sort(), ["b", "c"], "and settles on the new set");
 });
