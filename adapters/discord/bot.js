@@ -557,9 +557,21 @@ async function handleInteraction(i) {
       });
     } catch (e) {
       console.error("[discord] grant failed:", e.message);
-      // NOT "run /verify again", which cannot work: the challenge is one-time and the nullifier is
-      // spent for this epoch, so a second proof from the same voting key is refused. The verification
-      // stands, the record is kept, and the repair pass reapplies it on the sweep schedule.
+      // TWO different outcomes, and telling the member the wrong one is its own defect.
+      //
+      // A refusal means nothing was applied and the row was dropped, because this member is excluded
+      // on every configured channel. No repair can occur, so promising one is a lie that leaves them
+      // waiting. A transient failure keeps the record, and the repair pass genuinely does reapply it.
+      //
+      // Neither says "run /verify again". The challenge is one-time and the nullifier is spent for this
+      // epoch, so a second proof from the same voting key is refused either way.
+      if (e?.mutated === false) {
+        return i.editReply(
+          "Verified, but access could not be applied on this server. An administrator has set a " +
+            "permission on your account that this bot will not override. Ask a server admin about it. " +
+            "Verifying again will not change this.",
+        );
+      }
       return i.editReply(
         "Verified. Applying your access did not complete just now, which is usually temporary. Your " +
           "verification still counts and it will be applied automatically within a few minutes. There " +

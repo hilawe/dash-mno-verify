@@ -182,7 +182,12 @@ export async function runDecommission({
             `role-level allow. Everyone else on this channel is still cleared.`,
         );
       }
-      const holders = members;
+      // Preview must not claim it would clear a member it will refuse. It used to warn that denied
+      // members are left alone and then count every one of them in `removed`, so the preview and the
+      // apply disagreed about the same channel. A destructive command's preview is the only thing an
+      // operator checks before running it for real.
+      const deniedIds = new Set(denied.map((d) => String(d.id)));
+      const holders = dryRun ? members.filter((m) => !deniedIds.has(String(m.id))) : members;
       log(`[decommission] channel ${chId}: ${holders.length} per-member overwrite(s)`);
       for (const ow of holders) {
         if (dryRun) {

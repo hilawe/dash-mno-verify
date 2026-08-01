@@ -188,3 +188,23 @@ test("a genuinely absent role is still retired with the assertion", async () => 
     assert.equal(ledger.has("u1"), false);
   });
 });
+
+test("preview does not claim it would clear a member it will refuse", async () => {
+  // The preview and the apply must agree about the same channel. It used to warn that denied members
+  // are left alone and then count every one of them as would-be-removed.
+  const { guild, edits } = fakeGuild({ channels: { c1: [ow("denied", ["ViewChannel"]), ow("clean")] } });
+  await withLedger({ denied: chanRec(["c1"]), clean: chanRec(["c1"]) }, async (ledger) => {
+    const preview = await runDecommission({
+      guild, target: { mode: "channel", ids: ["c1"] }, targetArg: "channel:c1",
+      dryRun: true, ledger, botUserId: "bot",
+    });
+    assert.deepEqual(preview.removed, ["c1/clean"], "only the member it would actually clear");
+    assert.deepEqual(edits, [], "and a preview still sends nothing");
+
+    const applied = await runDecommission({
+      guild, target: { mode: "channel", ids: ["c1"] }, targetArg: "channel:c1",
+      dryRun: false, ledger, botUserId: "bot",
+    });
+    assert.deepEqual(applied.removed, preview.removed, "the preview matched what apply did");
+  });
+});

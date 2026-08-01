@@ -178,22 +178,25 @@ function discordSources(dir, out = []) {
   return out;
 }
 
-test("outside permissions.js, the mutating Discord APIs are only ever read", () => {
-  // THE RULE, inverted from what it was.
+test("the module boundary catches the common ways a permission mutation escapes it", () => {
+  // A TRIPWIRE, and the name says so now. The previous name claimed that outside permissions.js the
+  // mutating APIs are only ever read, and that claim is false, which was itself a finding.
   //
-  // The previous version hunted for known mutation spellings, and all three round 10 reviewers listed
-  // the same evasions: optional chaining, bracket notation, aliasing the receiver to a variable, a call
-  // split across lines, and a nested directory the scan never entered. A checker that enumerates the
-  // ways to break a rule will always be shorter than the list of ways to break it.
+  // What it does: every mention of a mutation-capable object outside permissions.js must be
+  // immediately followed by a read, `.cache` or `.fetch(`. That catches the accidental reintroduction
+  // this component has actually produced eight times, and the evasions reviewers listed: optional
+  // chaining, bracket notation, aliasing the receiver, a call split across lines, and a nested
+  // directory an earlier version never entered.
   //
-  // So this does not look for mutations. It asserts that every mention of a mutation-capable object
-  // outside permissions.js is IMMEDIATELY a read of its cache, and nothing else. `.edit(`, `["edit"]`,
-  // `?.edit(`, a newline before the call, and `const p = ch.permissionOverwrites` all fail the same
-  // way, because none of them is followed by `.cache`. Aliasing fails precisely because the alias is
-  // the point at which the object escapes.
+  // WHAT IT CANNOT CATCH, stated rather than implied:
   //
-  // This is still a text rule and not a parser, so it is a boundary check rather than a proof. What it
-  // no longer does is enumerate spellings.
+  //   ch.permissionOverwrites.cache.get(id).edit(...)   the cache hands back a mutable object
+  //   for (const [id, ow] of ch.permissionOverwrites.cache) { ow.edit(...) }   same, via iteration
+  //
+  // Both pass, because `.cache` is counted as a read and what the cache returns is not tracked. Only a
+  // parser that follows values can close that, and adding a parser dependency to this project is a
+  // decision rather than a test tweak. Until then this is a tripwire for the accident, not a proof
+  // against the determined, and the difference is written down so nobody relies on the stronger one.
   const here = dirname(fileURLToPath(import.meta.url));
   const files = [
     ...discordSources(join(here, "..", "adapters", "discord")),

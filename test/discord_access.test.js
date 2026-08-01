@@ -135,9 +135,13 @@ test("revoking past a member's denial clears the clean channel and leaves the de
   assert.equal(edits[0].patch.ViewChannel, null, "cleared to inherit");
 });
 
-test("a revoke that genuinely fails still throws, so the record is kept and retried", async () => {
+test("a revoke that genuinely fails throws, rather than being swallowed as a refusal", async () => {
   // The other side of the same decision. Skipping a refusal must not turn into swallowing a real
   // failure, which would drop the record while the access was still live.
+  //
+  // The name says only what this asserts. An earlier name promised "the record is kept and retried",
+  // which this never checks: it calls revokeAccess directly and never drives a sweep. The ledger-level
+  // consequence is covered by the sweep tests in adapter_grant_expiry.test.js.
   const { guild } = fakeGuild({ c1: [] });
   guild.channels.fetch = async () => {
     throw Object.assign(new Error("Discord is down"), { status: 500 });

@@ -131,7 +131,7 @@ test("a first grant that sent nothing is not compensated, and leaves no record b
   assert.equal("u1" in onDisk(file), false);
 });
 
-test("a transient first grant keeps its record and is NOT compensated, so a repair can reapply it", async () => {
+test("a transient first grant keeps its record and is NOT compensated", async () => {
   // This asserted the opposite a few commits ago, and the reason it changed is that a repair path now
   // exists. Without one, a kept record was a live grant with no access behind it and nothing that
   // would ever fix it, so revoking and dropping the row was the least-wrong option. With
