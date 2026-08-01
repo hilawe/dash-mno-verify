@@ -148,6 +148,11 @@ export function retireTargetTransform({
   mode,
   ids,
   guildId = null,
+  // Where a record carrying NO guildId belongs. Defaults to `guildId`, which is right whenever the
+  // command is pointed at the database's own scope. It differs only under the cleanup escape, where
+  // the process is configured for one guild and the database is bound to another, and an unlabelled
+  // legacy row belongs to the BOUND one.
+  unlabelledBelongTo = null,
   failedMembers = new Set(),
   failedPairs = new Set(),
   skippedChannels = new Set(),
@@ -160,7 +165,11 @@ export function retireTargetTransform({
     // that bypass came with no check on the rows themselves: it retired a record made in one guild
     // while operating in another, which forgets access that is live and unreachable. The bypass has to
     // be narrower than the guard it steps around, not wider.
-    if (guildId !== null && record?.guildId && String(record.guildId) !== String(guildId)) return record;
+    const home = unlabelledBelongTo ?? guildId;
+    if (guildId !== null) {
+      const belongsTo = record?.guildId ? String(record.guildId) : home === null ? null : String(home);
+      if (belongsTo !== null && belongsTo !== String(guildId)) return record;
+    }
     if (mode === "role") {
       if (failedMembers.has(u)) return record;
       return record?.mode === "role" && retired.includes(String(record.roleId)) ? null : record;

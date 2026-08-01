@@ -272,3 +272,38 @@ test("a foreign-guild row is never retired, even in cleanup mode with the gone a
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("an unlabelled legacy row is judged by the ledger's bound scope, not the current guild", async () => {
+  // The cleanup escape lets this command open a ledger bound to guild A while configured for guild B.
+  // A migrated legacy row carries no guildId, which is expected and is exactly why the binding exists.
+  // Resolving it against B made it look local, so --confirm-target-gone accepted B's not-found as
+  // evidence and retired A's row while that access stayed live and unreachable in A.
+  const { guild } = fakeGuild({ roles: {}, members: [] }); // guild.id is "g1", standing in for B
+  const dir = mkdtempSync(join(tmpdir(), "mno-dc-"));
+  const file = join(dir, "grants.db");
+  const opts = { exclusive: false, apply: async () => {}, revoke: async () => {}, now: () => 1000, log: () => {} };
+  try {
+    // A database bound to a DIFFERENT guild, holding one legacy row with no guildId.
+    const bound = new GrantLedger({ ...opts, file, scope: "OLD" });
+    await bound.grant("legacy", { expiresAt: 9999, mode: "role", roleId: "r1" });
+    bound.close();
+
+    // Reopened through the cleanup escape while pointed at g1.
+    const cleanup = new GrantLedger({ ...opts, file, scope: "g1", allowForeignScope: true });
+    assert.equal(cleanup.scope(), "OLD", "the binding is unchanged, which is what makes this the trap");
+
+    await assert.rejects(
+      () =>
+        runDecommission({
+          guild, target: { mode: "role", ids: ["r1"] }, targetArg: "role:r1",
+          dryRun: false, confirmGone: true, ledger: cleanup, botUserId: "bot",
+        }),
+      /no ledger record names/,
+      "g1 cannot use OLD's unlabelled row as evidence that r1 is gone",
+    );
+    assert.equal(cleanup.has("legacy"), true, "and the row survives, because its access is live in OLD");
+    cleanup.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

@@ -37,9 +37,17 @@ export async function runDecommission({
   // having retired nothing, because no row named the typo. Success on a target this command was never
   // tracking teaches an operator that the flag "worked" when nothing happened. If no row names the
   // target, there is nothing the assertion could retire, so it is refused as almost certainly a typo.
-  // Rows for THIS guild only. Counting a foreign row as evidence would let the assertion be satisfied
-  // by a record the command must not touch, which is the same weakness as retiring one.
-  const ours = (r) => !r?.guildId || String(r.guildId) === String(guild.id);
+  // A row with no guildId belongs to the DATABASE'S BOUND SCOPE, not to whatever guild this process
+  // happens to be pointed at.
+  //
+  // That distinction is the whole reason the binding exists, and reading it the other way undid it.
+  // With allowForeignScope the command can open a ledger bound to guild A while configured for guild
+  // B. A migrated legacy row carries no guildId, which is expected. Resolving it against B made it
+  // look local, so --confirm-target-gone accepted B's not-found as evidence and retired A's row while
+  // that access stayed live and unreachable, with its only record gone. Reproduced by two reviewers.
+  const boundScope = ledger?.scope?.() ?? null;
+  const homeGuild = boundScope ?? guild.id;
+  const ours = (r) => (r?.guildId ? String(r.guildId) === String(homeGuild) : String(homeGuild) === String(guild.id));
   const namedInLedger = (chOrRoleId) =>
     (ledger?.all?.() ?? [])
       .filter(ours)
@@ -278,7 +286,10 @@ export async function runDecommission({
         retireTargetTransform({
           mode: target.mode,
           ids: target.ids,
+          // The bound scope, so an unlabelled legacy row is judged by where the DATABASE says it
+          // belongs rather than by where this process happens to be pointed.
           guildId: guild.id,
+          unlabelledBelongTo: homeGuild,
           failedMembers,
           failedPairs,
           skippedChannels,
