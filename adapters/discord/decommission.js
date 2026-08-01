@@ -30,6 +30,28 @@ export async function runDecommission({
   warn = () => {},
   err = () => {},
 }) {
+  // The assertion behind --confirm-target-gone is only accepted for a target the LEDGER names.
+  //
+  // The flag exists to retire rows for a target that no longer exists on Discord. A typo'd id also
+  // does not exist on Discord, and the flag used to accept it, run to completion, and report success
+  // having retired nothing, because no row named the typo. Success on a target this command was never
+  // tracking teaches an operator that the flag "worked" when nothing happened. If no row names the
+  // target, there is nothing the assertion could retire, so it is refused as almost certainly a typo.
+  const namedInLedger = (chOrRoleId) =>
+    (ledger?.all?.() ?? []).some((r) =>
+      r?.mode === "role" ? String(r.roleId) === String(chOrRoleId) : (r?.channels ?? []).map(String).includes(String(chOrRoleId)),
+    );
+  if (confirmGone && !dryRun) {
+    const unnamed = target.ids.filter((id) => !namedInLedger(id));
+    if (unnamed.length) {
+      throw new Error(
+        `--confirm-target-gone was given for ${unnamed.join(", ")}, but no ledger record names ` +
+          `${unnamed.length === 1 ? "it" : "them"}, so there is nothing the assertion could retire. ` +
+          `A deleted target that was never tracked needs no cleanup, which makes this almost ` +
+          `certainly a mistyped id. Nothing was changed.`,
+      );
+    }
+  }
   const removed = [];
   const failed = [];
   // What must NOT be retired, tracked precisely rather than as one flag, so a single stuck member does
@@ -277,22 +299,10 @@ export async function runDecommission({
     }
   }
 
-  log(
-    `[decommission] ${dryRun ? "would take" : "took"} access back from ${removed.length} member(s) on ${targetArg}` +
-      `${failed.length ? `, ${failed.length} failed` : ""}` +
-      `${
-        dryRun && removed.length
-          ? ". Nothing was changed. Re-run with --apply to do it, which also stops the ledger " +
-            "tracking whatever comes back, so no later sweep clears those bits a second time."
-          : ""
-      }`,
-  );
-  if (failed.length) {
-    err(
-      `[decommission] ${failed.length} could not be cleared (${failed.join(", ")}). They still hold ` +
-        `access. Give the bot the permission it needs, or clear them by hand, then run this again.`,
-    );
-  }
-
+  // No summary here. The pass reports per-item progress as it goes, and the COMMAND owns the final
+  // presentation, because both layers printing it produced every result twice, with the generic footer
+  // contradicting the specific inner message on a ledger failure: the inner one correctly said Discord
+  // access was taken back while the footer said the failed items still hold access. One voice for the
+  // verdict. Tests assert the returned result instead.
   return { removed, failed };
 }

@@ -215,8 +215,9 @@ client.once("ready", async () => {
     );
     if (failed.length) {
       console.error(
-        `[decommission] ${failed.length} could not be cleared (${failed.join(", ")}). They still hold ` +
-          `access. Give the bot the permission it needs, or clear them by hand, then run this again.`,
+        `[decommission] ${failed.length} item(s) could not be completed (${failed.join(", ")}). The ` +
+          `lines above say what happened to each; anything still holding access is named there. Fix ` +
+          `the cause and run this again.`,
       );
     }
     done(failed.length ? 1 : 0);

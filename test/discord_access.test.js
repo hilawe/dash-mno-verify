@@ -177,7 +177,7 @@ test("a member left with a live record and no access is repaired from the record
 
     // Discord recovers. The repair pass runs on the sweep schedule.
     broken = false;
-    const { repairAccess } = makeAccess({ getGuild: async () => guild, guildId: "g1", managedChannels: ["c1"], log: () => {} });
+    const { repairAccess } = makeAccess({ getGuild: async () => guild, guildId: "g1", managedChannels: ["c1"], log: () => {}, now: () => 1000 });
     const repaired = await repairAccess("u1", ledger.get("u1"));
 
     assert.deepEqual(repaired, ["c1"]);
@@ -200,7 +200,7 @@ test("the repair is idempotent, so a healthy member costs no Discord write", asy
       },
     ],
   });
-  const { repairAccess } = makeAccess({ getGuild: async () => guild, guildId: "g1", managedChannels: ["c1"], log: () => {} });
+  const { repairAccess } = makeAccess({ getGuild: async () => guild, guildId: "g1", managedChannels: ["c1"], log: () => {}, now: () => 1000 });
   assert.deepEqual(await repairAccess("u1", rec(["c1"])), [], "already complete, nothing to do");
   assert.deepEqual(edits, [], "and no request sent");
 });
@@ -208,7 +208,7 @@ test("the repair is idempotent, so a healthy member costs no Discord write", asy
 test("the repair refuses to reapply over an administrator's exclusion", async () => {
   // A repair must not become a way to override an exclusion. It goes through the same guarded grant.
   const { guild, edits } = fakeGuild({ c1: [overwrite("u1", ["ViewChannel"])] });
-  const { repairAccess } = makeAccess({ getGuild: async () => guild, guildId: "g1", managedChannels: ["c1"], log: () => {} });
+  const { repairAccess } = makeAccess({ getGuild: async () => guild, guildId: "g1", managedChannels: ["c1"], log: () => {}, now: () => 1000 });
   assert.deepEqual(await repairAccess("u1", rec(["c1"])), [], "refused, so nothing repaired");
   assert.deepEqual(edits, [], "and nothing written");
 });
@@ -219,7 +219,7 @@ test("the repair reapplies a PARTIAL overwrite, not just a missing one", async (
   const { guild, edits } = fakeGuild({
     c1: [{ id: "u1", type: OverwriteType.Member, allow: bits("ViewChannel"), deny: bits() }],
   });
-  const { repairAccess } = makeAccess({ getGuild: async () => guild, guildId: "g1", managedChannels: ["c1"], log: () => {} });
+  const { repairAccess } = makeAccess({ getGuild: async () => guild, guildId: "g1", managedChannels: ["c1"], log: () => {}, now: () => 1000 });
   assert.deepEqual(await repairAccess("u1", rec(["c1"])), ["c1"]);
   assert.equal(edits.length, 1);
 });
@@ -234,6 +234,7 @@ test("repair is confined to the channels the bot grants through now", async () =
     guildId: "g1",
     managedChannels: ["current"],
     log: () => {},
+    now: () => 1000,
   });
   assert.deepEqual(await repairAccess("u1", rec(["current", "dropped"])), ["current"]);
   assert.deepEqual(edits.map((e) => e.channel), ["current"], "the dropped channel is never written to");
@@ -284,4 +285,16 @@ test("a TOTAL denial sends nothing, so an excluded member cannot jam the sweep",
   const { revokeAccess } = makeAccess({ getGuild: async () => guild, guildId: "g1", log: () => {} });
   await revokeAccess("u1", rec(["c1"]));
   assert.deepEqual(edits, [], "nothing allowed, so nothing to take back");
+});
+
+test("repair refuses an expired record on its own, not only via its caller", async () => {
+  // The comment claimed repair could never grant longer than the member proved, while the expiry
+  // check lived only in the caller. The one operation that grants from a stored record instead of a
+  // fresh proof checks its own authority now, in time as well as in guild.
+  const { guild, edits } = fakeGuild({ c1: [] });
+  const { repairAccess } = makeAccess({
+    getGuild: async () => guild, guildId: "g1", managedChannels: ["c1"], log: () => {}, now: () => 10000,
+  });
+  assert.deepEqual(await repairAccess("u1", rec(["c1"])), [], "expiresAt 9999 is behind now 10000");
+  assert.deepEqual(edits, [], "nothing written for an expired record");
 });

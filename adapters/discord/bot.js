@@ -119,6 +119,8 @@ const { applyAccess, revokeAccess, repairAccess } = makeAccess({
   getGuild,
   guildId: GUILD_ID,
   managedChannels: GRANT_CHANNEL_IDS,
+  // The same seconds-since-epoch shape the ledger's clock uses, for repair's own expiry check.
+  now: () => Math.floor(Date.now() / 1000),
   log: (m) => console.warn("[discord]", m),
 });
 
@@ -565,6 +567,16 @@ async function handleInteraction(i) {
             "Verifying again will not change this.",
         );
       }
+      // A mix. Some channels applied or blipped, and some refused permanently. Telling this member the
+      // whole failure was temporary left them waiting on channels that will never arrive.
+      if (e?.refusedChannels?.length) {
+        return i.editReply(
+          "Verified. Some of your access was applied, and the rest of any temporary failure will be " +
+            "applied automatically within a few minutes. One or more channels were refused because an " +
+            "administrator has set a permission on your account there that this bot will not override. " +
+            "Ask a server admin about those. Verifying again will not change this.",
+        );
+      }
       return i.editReply(
         "Verified. Applying your access did not complete just now, which is usually temporary. Your " +
           "verification still counts and it will be applied automatically within a few minutes. There " +
@@ -588,15 +600,23 @@ client.once("ready", async () => {
   // stop the bot revoking access that has already expired. Previously a single bad channel threw out
   // of this handler before the sweep and its timer existed, so every other member's lapsed grant went
   // unrevoked until somebody noticed. Interactions stay shut; cleanup runs regardless.
-  let ready = false;
-  try {
-    ready = (await reconcileGuild()).ready;
-  } catch (e) {
-    console.error(`[discord] reconciliation failed: ${e.message}`);
-  }
-  if (ready) {
-    reconciled = true;
-  } else {
+  // Reconciliation is RETRIED on the sweep schedule rather than attempted once. A transient Discord
+  // failure during the single startup attempt used to leave `reconciled` false forever, so the bot ran
+  // its sweeps normally while refusing every interaction until an operator restarted it by hand. A
+  // guard against admitting before cleanup must not turn one 500 into a manual-intervention outage.
+  const tryReconcile = async () => {
+    if (reconciled) return;
+    try {
+      if ((await reconcileGuild()).ready) {
+        reconciled = true;
+        console.log("[discord] reconciled; interactions are open");
+      }
+    } catch (e) {
+      console.error(`[discord] reconciliation failed, will retry on the sweep schedule: ${e.message}`);
+    }
+  };
+  await tryReconcile();
+  if (!reconciled) {
     console.error(
       "[discord] interactions stay CLOSED because a configured target is missing. Expired access is " +
         "still being revoked on the usual schedule. Fix the configuration and restart to accept " +
@@ -604,7 +624,10 @@ client.once("ready", async () => {
     );
   }
   await sweepAndNotify().catch((e) => console.error("[discord] startup sweep failed:", e.message));
-  setInterval(() => sweepAndNotify().catch((e) => console.error("[discord] sweep failed:", e.message)), SWEEP_SECONDS * 1000);
+  setInterval(() => {
+    tryReconcile().catch((e) => console.error("[discord] reconcile retry failed:", e.message));
+    sweepAndNotify().catch((e) => console.error("[discord] sweep failed:", e.message));
+  }, SWEEP_SECONDS * 1000);
 });
 
 await registerCommands();

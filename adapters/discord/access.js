@@ -18,7 +18,13 @@ import { grantMemberOverwrite, clearManagedAllows, isDenialConflict } from "./pe
 const RETRY_DELAYS_MS = [250, 1000];
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
-export function makeAccess({ getGuild, guildId, managedChannels = null, log = () => {} }) {
+export function makeAccess({
+  getGuild,
+  guildId,
+  managedChannels = null,
+  log = () => {},
+  now = () => Math.floor(Date.now() / 1000),
+}) {
   // The channels this bot grants through NOW. Repair is confined to them, because a record can name a
   // channel the configuration has since dropped, and reapplying there would restore access on a target
   // the startup pass has just finished warning it no longer manages. Null means unrestricted, which is
@@ -56,6 +62,7 @@ export function makeAccess({ getGuild, guildId, managedChannels = null, log = ()
     // flag was dead code across two commits that described it as the thing making the refusal safe.
     let applied = false;
     let onlyRefusals = true;
+    const refusedChannels = [];
     for (const chId of record.channels) {
       let lastErr = null;
       for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt += 1) {
@@ -77,12 +84,17 @@ export function makeAccess({ getGuild, guildId, managedChannels = null, log = ()
         failures.push(`${chId}: ${lastErr.message}`);
         // A fetch failure or a network error is NOT a refusal. Its outcome is unknown, so it counts as
         // possibly-mutated, which keeps the record so reconciliation can repair it.
-        if (!isDenialConflict(lastErr)) onlyRefusals = false;
+        if (isDenialConflict(lastErr)) refusedChannels.push(chId);
+        else onlyRefusals = false;
       }
     }
     if (failures.length) {
       const err = new Error(`could not grant ${failures.join("; ")}`);
       err.mutated = applied || !onlyRefusals;
+      // Which channels refused, so the caller can tell the member the truth. mutated alone could not:
+      // one clean channel plus one denied channel gives mutated true, and the member was told the
+      // whole failure was temporary when the denied channel is permanent.
+      err.refusedChannels = refusedChannels;
       throw err;
     }
   }
@@ -178,9 +190,13 @@ export function makeAccess({ getGuild, guildId, managedChannels = null, log = ()
   // Returns the channels it actually repaired, so a caller can say whether it did anything.
   async function repairAccess(userId, record) {
     if (record?.mode !== "channel") return [];
-    // Defence in depth. The caller already refuses a foreign record, and repair is the one operation
-    // that GRANTS from a stored record rather than from a fresh proof, so it checks again itself.
+    // Defence in depth, and BOTH halves of it. The caller already refuses a foreign record and only
+    // hands over live ones, but repair is the one operation that GRANTS from a stored record rather
+    // than from a fresh proof, so it checks its own authority rather than trusting the call site. The
+    // comment used to claim it could never grant longer than the member proved while the expiry check
+    // lived only in the caller, which is the argument-that-never-reaches-the-path shape again.
     if (record.guildId && String(record.guildId) !== String(guildId)) return [];
+    if (!Number.isFinite(record.expiresAt) || now() >= record.expiresAt) return [];
     const guild = await getGuild();
     const repaired = [];
     for (const chId of record.channels ?? []) {
@@ -193,7 +209,11 @@ export function makeAccess({ getGuild, guildId, managedChannels = null, log = ()
         ch = await guild.channels.fetch(chId);
       } catch (e) {
         if (isGone(e) || isNotOurs(e)) continue; // nothing to repair on a channel we cannot reach
-        continue; // a blip; the next pass tries again rather than failing the whole sweep
+        // Not silent. This retries on every sweep, and a PERMANENT failure here, a lost permission
+        // for instance, used to retry invisibly forever, so nobody learned the member was still
+        // waiting. The pass stays quiet only about what needs no attention.
+        log(`repair could not read ${chId} for ${userId}, will retry: ${e.message}`);
+        continue;
       }
       const own = [...ch.permissionOverwrites.cache.values()].find(
         (o) => o.type === OverwriteType.Member && String(o.id) === String(userId),

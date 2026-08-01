@@ -222,3 +222,20 @@ test("preview predicts exactly the set apply takes back", async () => {
     assert.deepEqual(applied.removed.sort(), preview.removed.sort(), "the same set, however each is ordered");
   });
 });
+
+test("confirm-target-gone is refused for a target no ledger record names", async () => {
+  // The flag retires rows for a target that no longer exists on Discord. A typo'd id also does not
+  // exist on Discord, and the flag used to accept it and report success having retired nothing. If no
+  // row names the target, the assertion has nothing to retire and is almost certainly a mistake.
+  await withLedger({ u1: chanRec(["real"]) }, async (ledger) => {
+    await assert.rejects(
+      () =>
+        runDecommission({
+          guild: fakeGuild({}).guild, target: { mode: "channel", ids: ["typo"] }, targetArg: "channel:typo",
+          dryRun: false, confirmGone: true, ledger, botUserId: "bot",
+        }),
+      /no ledger record names/,
+    );
+    assert.equal(ledger.has("u1"), true, "and nothing unrelated was touched");
+  });
+});

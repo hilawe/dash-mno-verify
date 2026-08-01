@@ -227,15 +227,19 @@ test("the clock mark is durable even when no grant changes", async () => {
     const first = new GrantLedger({ exclusive: false, file, apply: async () => {}, revoke: async () => {}, now: () => clock.t });
     await first.grant("u1", { expiresAt: 4000 });
 
-    clock.t = 5000; // past the deadline; nothing is granted or revoked, but time moved on
+    // BEFORE the deadline, so the sweep genuinely changes no grant. It used to advance past 4000,
+    // which deleted the grant, so the "no grant changes" condition in the name never actually held and
+    // the test proved durability of a mark written by a MUTATING sweep instead.
+    clock.t = 3500;
     await first.sweep();
     first.close();
 
-    // A fresh process whose clock sits back before the deadline.
+    // A fresh process whose clock sits back before the quiet observation.
     clock.t = 3000;
     const second = new GrantLedger({ exclusive: false, file, apply: async () => {}, revoke: async () => {}, now: () => clock.t });
-    assert.equal(second.live("u1"), false, "the persisted high-water keeps the grant expired");
-    assert.equal(second.clockStatus.mark, 5000, "the quiet observation was written down");
+    assert.equal(second.has("u1"), true, "the no-change condition really held: the grant is still there");
+    assert.equal(second.clockStatus.mark, 3500, "the quiet observation was written down");
+    assert.equal(second.live("u1"), true, "and 3500 is before the deadline, so the grant is still live");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -359,24 +363,29 @@ test("a sweep revokes against the target the grant recorded, not the one now con
 test("a renewal onto a different target revokes the old one before granting the new", async () => {
   const dir = mkdtempSync(join(tmpdir(), "mno-grant-"));
   try {
-    const revoked = [];
-    const applied = [];
+    // ONE shared sequence. Two separate arrays could not detect cross-operation order, so a mutant
+    // that applied the new room before revoking the old passed every assertion while the member
+    // briefly held both.
+    const events = [];
     const ledger = new GrantLedger({ exclusive: false,
       file: join(dir, "grants.json"),
-      apply: async (id, r) => applied.push(r.roomId),
-      revoke: async (id, r) => revoked.push(r.roomId),
+      apply: async (id, r) => events.push(`apply:${r.roomId}`),
+      revoke: async (id, r) => events.push(`revoke:${r.roomId}`),
       validate: (r) => Boolean(r) && Number.isFinite(r.expiresAt) && Boolean(r.roomId),
       orphaned: (prev, next) => (String(prev.roomId) === String(next.roomId) ? null : prev),
       now: () => 1000,
     });
     await ledger.grant("u1", { expiresAt: 2000, roomId: "!old:hs" });
     await ledger.grant("u1", { expiresAt: 2000, roomId: "!new:hs" });
-    assert.deepEqual(revoked, ["!old:hs"], "the orphaned room must not be left live and untracked");
-    assert.deepEqual(applied, ["!old:hs", "!new:hs"]);
+    assert.deepEqual(
+      events,
+      ["apply:!old:hs", "revoke:!old:hs", "apply:!new:hs"],
+      "the revoke of the orphan comes BEFORE the apply of the new, in one observed order",
+    );
 
     // A renewal that stays put carries forward and revokes nothing.
     await ledger.grant("u1", { expiresAt: 2400, roomId: "!new:hs" });
-    assert.deepEqual(revoked, ["!old:hs"]);
+    assert.deepEqual(events.filter((e) => e.startsWith("revoke")), ["revoke:!old:hs"]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -556,7 +565,7 @@ test("a second process is refused while the first holds the ledger", async () =>
 // The previous version of this test kept the "crashed" ledger open in this very process and advanced a
 // fake clock, which both reviewers correctly said proves nothing about a dead process. This one really
 // exits a child and checks that the lock died with it, with no staleness window to wait out.
-test("the ledger is released when the process holding it exits, however it exits", async () => {
+test("the ledger is released when the process holding it is force-terminated with signal 9", async () => {
   const dir = mkdtempSync(join(tmpdir(), "mno-grant-"));
   const file = join(dir, "grants.db");
   try {
@@ -632,30 +641,37 @@ test("a revision is never reused, so delete-then-reinsert cannot collide", async
 // start with a lower clock found a floor one tick short of what it had already acted on and let the
 // expired grant back in. The invariant, stated without reference to how it is achieved: once the
 // ledger has reported a grant dead, no restart at any clock may report it live again.
-test("a decision is never made on a clock reading that was not persisted", async () => {
+test("a decision uses exactly the clock reading it persisted", async () => {
   const dir = mkdtempSync(join(tmpdir(), "mno-grant-"));
   const file = join(dir, "grants.db");
   try {
-    // Advances on EVERY call, which is what a real clock does, and what a double sample cannot survive.
+    // Advances on EVERY call, which is what a real clock does and what a double sample cannot survive.
+    // The readings straddle the deadline: the first is 1999 and the second would be 2000.
     let t = 1998;
-    const mode = { advancing: false, fixed: 1000 };
-    const now = () => (mode.advancing ? ++t : mode.fixed);
+    const now = () => ++t;
+    const l = new GrantLedger({ exclusive: false, file, apply: async () => {}, revoke: async () => {}, now });
+    l.close();
 
-    const first = new GrantLedger({ exclusive: false, file, apply: async () => {}, revoke: async () => {}, now });
-    await first.grant("u1", { expiresAt: 2000 });
+    const clockAt = (v) => {
+      t = v;
+      return new GrantLedger({ exclusive: false, file, apply: async () => {}, revoke: async () => {}, now });
+    };
+    const led = clockAt(1000);
+    await led.grant("u1", { expiresAt: 2000 });
 
-    mode.advancing = true; // the next reading is 1999, the one after that 2000
-    const reportedDead = first.live("u1") === false;
-    first.close();
+    // ONE decision, taken while the clock is one tick short of the deadline.
+    t = 1998;
+    const live = led.live("u1");
+    const mark = led.clockStatus.mark;
+    led.close();
 
-    // A restart with the clock well before the deadline.
-    mode.advancing = false;
-    mode.fixed = 1500;
-    const second = new GrantLedger({ exclusive: false, file, apply: async () => {}, revoke: async () => {}, now });
-    if (reportedDead) {
-      assert.equal(second.live("u1"), false, "a grant already reported dead must not come back after a restart");
-    }
-    second.close();
+    // Both halves, unconditionally. A double sample would persist 1999 and DECIDE on 2000, so it would
+    // report dead while the mark said 1999. The previous version of this test wrapped its only real
+    // assertion in `if (reportedDead)`, so an implementation that always reported live took the empty
+    // branch and passed while proving nothing. A conditional whose condition is the behaviour under
+    // test is not a test.
+    assert.equal(mark, 1999, "the reading it wrote down");
+    assert.equal(live, true, "and the reading it decided on, which must be the same one");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -947,6 +963,10 @@ test("a retirement that would leave an invalid record changes nothing at all", a
     // u1 was transformed to null BEFORE u2 failed, so if the transaction did not roll back it would
     // already be gone. This assertion is the whole point of the test.
     assert.equal(l.size(), 2, "the rollback put back the row the failing pass had already deleted");
+    // Contents too, not only the count. A rollback failure that rewrote a record while keeping the
+    // row count would have passed the count assertion.
+    assert.deepEqual(l.get("u1").channels, ["c1"], "u1's record is byte-for-byte its old self");
+    assert.deepEqual(l.get("u2").channels, ["c1"], "and so is u2's");
     l.close();
   }));
 
@@ -1011,6 +1031,12 @@ test("a pending legacy import counts as rows, so an empty foreign ledger is not 
     // And the refusal must not have consumed the operator's file.
     assert.equal(existsSync(json), true, "the legacy file was peeked at, not moved aside");
     assert.equal(existsSync(`${json}.migrated`), false);
+
+    // Reopen for the ORIGINAL guild and prove the binding never moved. Asserting only the throw left
+    // open exactly the failure this test exists for, a rebind that happened before the refusal.
+    const back = mk({ file: db, scope: "guildA" });
+    assert.equal(back.scope(), "guildA", "the refused open did not rebind the database");
+    back.close();
   }));
 
 test("an empty ledger with no pending import still rebinds, so the recovery is not blocked", async () =>

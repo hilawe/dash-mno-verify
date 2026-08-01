@@ -211,7 +211,7 @@ export DISCORD_CONTEXT_ID=mn-members     # stable context the proof is scoped to
 
 1. A member runs `/verify`. The bot fetches a challenge from the gateway and returns it as `challenge.json` in an ephemeral reply.
 2. The member runs the prover locally with their voting key and that challenge, producing `proof.json`.
-3. The member runs `/submit` with `proof.json` attached. The bot forwards it to the gateway, and on success grants access by the configured mode.
+3. The member runs `/submit` with `proof.json` attached. The bot forwards it to the gateway, and on success adds the member to the configured private channels.
 
 ## Writing another adapter
 
