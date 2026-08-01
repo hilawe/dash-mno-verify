@@ -294,3 +294,50 @@ test("the boundary rule actually rejects the evasions reviewers listed", () => {
     assert.equal(violates(src), false, `should be accepted: ${label}`);
   }
 });
+
+test("both mutations refresh the channel before deciding, and use the refreshed view", async () => {
+  // Every check in this file reads a cache, and a check against a cache of unknown age is mostly
+  // imaginary. The stale view here says the member is clean; the refreshed one says they are denied.
+  // If the operation decides on the stale view it grants over an exclusion.
+  const staleClean = memberOverwrite("u1", [], ["ViewChannel"]);
+  const freshDenied = memberOverwrite("u1", ["ViewChannel"]);
+
+  const freshEdits = [];
+  const fresh = {
+    id: "c1",
+    permissionOverwrites: {
+      cache: new Map([["u1", freshDenied]]),
+      edit: (...a) => (freshEdits.push(a), Promise.resolve()),
+    },
+  };
+  const staleEdits = [];
+  const stale = {
+    id: "c1",
+    fetch: async () => fresh,
+    permissionOverwrites: {
+      cache: new Map([["u1", staleClean]]),
+      edit: (...a) => (staleEdits.push(a), Promise.resolve()),
+    },
+  };
+
+  await assert.rejects(() => grantMemberOverwrite(stale, "u1"), isDenialConflict, "decided on the refreshed view");
+  assert.deepEqual(staleEdits, []);
+  assert.deepEqual(freshEdits, [], "and refused before writing to either");
+});
+
+test("a channel that cannot be refreshed is still operated on, not abandoned", async () => {
+  // Refusing to act when Discord is briefly unreachable would turn a blip into an outage. The
+  // operation proceeds on what it has, which is the behaviour before the refresh existed.
+  const { ch, edits } = channelWith([memberOverwrite("u1", [], ["ViewChannel"])]);
+  ch.fetch = async () => {
+    throw Object.assign(new Error("Service Unavailable"), { status: 503 });
+  };
+  assert.deepEqual(await clearManagedAllows(ch, "u1"), ["ViewChannel"]);
+  assert.equal(edits.length, 1, "it fell back to the cached view and still took the access back");
+});
+
+test("a channel with no fetch method still works, so the operations do not require one", async () => {
+  const { ch, edits } = channelWith([memberOverwrite("u1", [], ["ViewChannel"])]);
+  assert.deepEqual(await clearManagedAllows(ch, "u1"), ["ViewChannel"]);
+  assert.equal(edits.length, 1);
+});

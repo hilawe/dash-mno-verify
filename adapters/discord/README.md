@@ -93,11 +93,23 @@ dropped, because a startup check cannot cover a mutation that happens later or i
 Every permission change the bot makes goes through one module that carries the check with it, so there
 is no way to add a mutation that skips it.
 
-One residual, stated rather than hidden: that check reads Discord's cached view of the overwrite, so a
-denial set moments earlier and not yet propagated can still be cleared. Discord offers no
-compare-and-set for permissions, so this cannot be closed. The bot refuses to touch a conflict it can
-see rather than trying to preserve one it cannot, which is a much narrower claim than two earlier
-versions made.
+**Exclude somebody with a ROLE-LEVEL deny, not a member-level one.** This is a requirement, not a
+preference, and it is the honest version of a claim this README made too strongly for several
+versions.
+
+`discord.js` has no partial update for a permission entry. Its `edit()` reads the existing entry from
+its own cache, rebuilds both the allow and deny bitfields, and sends them whole. Discord offers no
+compare-and-set. So a member-level deny that the bot's cache has not seen is destroyed by any change
+the bot makes to that member's entry, whichever bits it is trying to set. No amount of care in the bot
+changes that, and three designs were tried before the library was read closely enough to know it.
+
+A role-level deny is safe, for a reason you can check rather than take on trust: this bot writes only
+member-type overwrites, at two calls in `adapters/discord/permissions.js`, so it never edits a role
+entry and the rewrite can never reach one.
+
+What the bot does do is refresh the channel immediately before every check and every change, so the
+window between reading and writing is milliseconds rather than however old the cache happened to be.
+That shrinks the exposure for member-level denies. It does not remove it, and nothing can.
 
 **One ledger serves one server.** The ledger database itself is bound to a guild the first time it is
 used, and every grant also records the guild it was made in. If you repoint the bot at a different

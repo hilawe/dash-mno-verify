@@ -10,7 +10,7 @@ prioritized punch list.
 `main` at `b4b4da1`, pushed, 338 tests green (`npm test`, about two and a half minutes). Node 22.13 or
 newer. Read this section, then `TODO.md`. Everything below is superseded.
 
-### STOP HERE. THE CLEAR PATH IS OPEN AND NEEDS A RETHINK, NOT A PATCH
+### THE PERMISSION GUARANTEE, NARROWED ON PURPOSE. Read before touching the adapter.
 
 The round 11 confirmation is in and it is the first thing to read. `main` is at `56876d2` and three of
 its findings are NOT RESOLVED, deliberately left for a fresh start.
@@ -28,10 +28,15 @@ overwrite, whichever bits are named. All three attempts at this rule share that 
 The project's documented residual is therefore narrower than the truth. It is not only that the CHECK
 reads a cached view. Every WRITE rewrites the whole overwrite from a cached view.
 
-The open question, and it is a design and honesty question before it is a code one: can this adapter
-claim to protect an administrator's exclusion at all, given every write it makes rebuilds the entry
-from a cache it does not control? Answer that before writing a fourth version. Do not patch the
-predicate again.
+**That question is now answered, and the answer is written into the code, the README, and CLAUDE.md.**
+A member-level deny is NOT a supported exclusion and the bot may destroy one. A ROLE-LEVEL deny is
+supported, and it is safe for a checkable reason rather than a hoped-for one: the bot writes only
+member-type overwrites, at two calls in `adapters/discord/permissions.js`, so it never edits a role
+entry and the rewrite cannot reach one. Both mutations now refresh the channel immediately before
+deciding and writing, which shrinks the member-level window to milliseconds without closing it.
+
+Do not attempt a fourth design that claims to preserve a member-level deny. Three have failed and the
+library makes the fourth impossible. If a third write is ever added, revisit this first.
 
 The other two NOT RESOLVED items are `allowForeignScope`, which bypasses the binding without requiring
 the target rows to belong to the configured guild (reproduced: it retired a guild A role row while
@@ -136,8 +141,8 @@ The 2026-07-30 section's list holds. What round 11 added:
 
 ### Punch list, in order
 
-1. **The clear path rethink.** See the section at the top. The round 11 confirmation is done and
-   three of its findings are open on purpose.
+1. **A fresh full round.** The last two folds each introduced regressions, and the tree has changed a
+   great deal since round 11. Nothing from that round is open now.
 2. **The parser decision.** `test/discord_permissions.test.js` is an honest tripwire, not a proof: the
    cache hands back a mutable object, so `cache.get(id).edit(...)` passes. Closing it needs a parser
    dependency, which is a decision rather than a test tweak.

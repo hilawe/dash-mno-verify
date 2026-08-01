@@ -108,50 +108,71 @@ function assertRoleOnlyAdds(guild, roleId, what) {
   }
 }
 
-// ---- the four guarded operations ------------------------------------------------------------------
+// ---- the guarded operations ------------------------------------------------------------------
 //
 // The overwrite type is passed explicitly on every channel edit, because after a restart a raw user id
 // is not resolvable to a member from cache and the edit would otherwise throw.
 
-export async function grantMemberOverwrite(ch, userId) {
-  assertNoMemberDenial(ch, userId, "granting access");
-  await ch.permissionOverwrites.edit(userId, ACCESS, { type: OverwriteType.Member });
+// WHAT THIS BOT CANNOT PROTECT, AND WHY, read this before changing either mutation below.
+//
+// discord.js `permissionOverwrites.edit()` is a read-modify-write against its own CACHE, inside the
+// library. It looks the existing entry up in the cache and hands it to `resolveOverwriteOptions`,
+// which rebuilds BOTH bitfields and sends them whole. Verified in 14.26.4. There is no partial update
+// on this API and Discord offers no compare-and-set.
+//
+// So a member-level DENY that the cache has not seen is destroyed by any edit this bot makes on that
+// member's entry, whichever bits the patch names. That is true of every design tried here, including
+// this one, and no predicate can change it. Three attempts were made before that was understood:
+// nulling all three bits (which cleared the deny outright), merging the whole overwrite by hand (the
+// same read-modify-write, written out longhand), and refusing to touch an entry carrying any denial
+// (which left the access in place forever and still misread inherited allows).
+//
+// THE GUARANTEE IS THEREFORE NARROW AND EXPLICIT: a member-level deny is NOT a supported way to
+// exclude somebody from a gated channel, and this bot may destroy one. A ROLE-LEVEL deny is the
+// supported way, and it is safe here for a reason that is checkable rather than hoped for: this bot
+// writes ONLY member-type overwrites, at the two calls below, so it never edits a role entry and the
+// merge can never reach one.
+//
+// The refresh below shrinks the window for the member-level case from "whenever the cache last
+// updated" to the moment before the write. It does not close it, and nothing can.
+
+// Pull the channel's overwrites fresh immediately before deciding and mutating.
+//
+// Every check in this file reads the cache, and the value of a check made against a cache of unknown
+// age is mostly imaginary. Failing to refresh is not fatal: the operation proceeds on what it has,
+// which is exactly the old behaviour, because refusing to act when Discord is briefly unreachable
+// would turn a blip into an outage.
+async function refreshed(ch) {
+  try {
+    return (await ch.fetch?.(true)) ?? ch;
+  } catch {
+    return ch;
+  }
 }
 
-// CLEAR ONLY WHAT IS ALLOWED. Never write a deny bit, and never clear one.
+export async function grantMemberOverwrite(ch, userId) {
+  const fresh = await refreshed(ch);
+  assertNoMemberDenial(fresh, userId, "granting access");
+  await fresh.permissionOverwrites.edit(userId, ACCESS, { type: OverwriteType.Member });
+}
+
+// Take back only the managed bits that are currently ALLOWED, refusing nothing.
 //
-// This is the third design for taking access back, and it is worth saying exactly how it differs,
-// because the first two were each worse than the bug they fixed and this one has to not be.
+// Naming only allowed bits is still the right patch to construct, because it is the smallest change
+// that removes what this bot granted, and it keeps the bot from deliberately writing a deny. What it
+// does NOT do, contrary to what this comment claimed until the library was read, is keep a deny off
+// the wire: `edit` rebuilds and sends both bitfields regardless. See the note above the grant.
 //
-//   Attempt 1 set all three managed bits to null. That cleared an administrator's DENY as well as the
-//   allow, so removing access lifted an exclusion and a role-level allow let the excluded member in.
-//   Removal granted.
-//
-//   Attempt 2 read the overwrite and wrote back a merged version. That is read-modify-write against a
-//   cache on a surface other people edit, so a denial the cache had not seen was destroyed by the code
-//   written to protect it.
-//
-//   Attempt 3 refused to touch any overwrite carrying a denial at all. That looked safe and was not.
-//   A member allowed ViewChannel and denied SendMessages kept seeing the channel forever, because the
-//   bot would not clear the allow and the row jammed the sweep every interval. And judging "nothing
-//   remains" from explicit allows alone missed access inherited from a role, so the opposite case
-//   deleted the row while the member could still see the channel.
-//
-// This one computes the patch from the bits that are CURRENTLY ALLOWED and sets only those to null.
-// A deny bit is never in that set, so it is never written and never cleared, which is what attempt 1
-// got wrong. It is not a merge of the whole overwrite, which is what attempt 2 got wrong. And it
-// actually removes the access rather than declining to, which is what attempt 3 got wrong.
-//
-// The residual is the one this project already accepts and documents: the allow set is read from the
-// cache, so a bit that is really a deny and is stale in the cache as an allow would be cleared. That
-// is the same compare-and-set gap as everywhere else, and it is not made worse here.
+// Sending nothing when nothing is allowed matters for a second reason now. It is the one case where
+// the bot definitely cannot damage a denial, because it makes no request at all.
 //
 // Returns the bits it cleared, so a caller can say whether there was anything to take back.
 export async function clearManagedAllows(ch, userId) {
-  const allowed = retainedManagedAllows(ch, userId);
-  if (allowed.length === 0) return []; // nothing this bot granted is in effect here
+  const fresh = await refreshed(ch);
+  const allowed = retainedManagedAllows(fresh, userId);
+  if (allowed.length === 0) return []; // nothing this bot granted is in effect here, so no request
   const patch = Object.fromEntries(allowed.map((bit) => [bit, null]));
-  await ch.permissionOverwrites.edit(userId, patch, { type: OverwriteType.Member });
+  await fresh.permissionOverwrites.edit(userId, patch, { type: OverwriteType.Member });
   return allowed;
 }
 

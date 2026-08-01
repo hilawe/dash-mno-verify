@@ -51,6 +51,14 @@ environment variables.
 
 ## Security invariants (do not weaken without a clear reason)
 
+- Discord exclusions must be expressed with a ROLE-LEVEL deny. `discord.js` has no partial update for
+  a permission entry: `edit()` rebuilds both bitfields from its own cache and sends them whole, and
+  Discord has no compare-and-set, so a member-level deny the cache has not seen is destroyed by any
+  change the bot makes to that member's entry. Role-level denies are safe because the bot writes only
+  member-type overwrites, at two calls in `adapters/discord/permissions.js`. Do not add a third write
+  without revisiting this, and do not attempt a fourth design that claims to preserve a member-level
+  deny. Three have failed.
+
 - The verifier runs all policy checks before the cryptographic check and hard-fails on an invalid
   proof. The `expected` values are ones the gateway chose or knows, never values read from the proof.
   A proof can assert only the nullifier and that some valid node authorized it. It can never talk the
