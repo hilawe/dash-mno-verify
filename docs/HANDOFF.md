@@ -5,6 +5,132 @@ counts and supersedes everything below it. Historical sections are append-only a
 only marked superseded. Read this first when picking the project back up, then `TODO.md` for the full
 prioritized punch list.
 
+## CURRENT STATE, 2026-08-01
+
+`main` at `b4b4da1`, pushed, 338 tests green (`npm test`, about two and a half minutes). Node 22.13 or
+newer. Read this section, then `TODO.md`. Everything below is superseded.
+
+### Where the project is
+
+Unchanged in substance. Anonymous zero-knowledge proof of masternode control gating a private
+community. Working prototype, validated on real mainnet data, NOT audited. Do not gate anything of
+value. Everything since 2026-07-29 is the Discord adapter, the shared grant ledger, and the
+decommission command.
+
+### READ THIS BEFORE FOLDING ANOTHER REVIEW ROUND
+
+**Two of the three folds in this stretch introduced blockers of their own, and the reviewers found
+them within hours.**
+
+- The round 10 fold closed twelve findings and introduced three blockers plus a major. A focused
+  confirmation caught all four.
+- The fix for the mixed-denial case introduced a blocker that two model families found independently,
+  and the executing reviewer found the SAME fix broken in the opposite direction at the same time.
+- The round 11 fold has not yet been confirmed. Assume it is the same until a round says otherwise.
+
+The pattern is not carelessness about any one fix. It is that a fix written immediately after reading
+a finding tends to solve the case in front of it and break the neighbouring one. The countermeasures
+that demonstrably worked:
+
+1. **One defect per commit**, each with a test that fails against the code it replaces. Verified by
+   actually reverting the fix and watching the test fail, not by assuming.
+2. **Fix the twin in the same commit.** Every time a twin existed and was left, the next round found it.
+3. **A focused confirmation after every fold.** The one run here found three blockers a fresh round
+   would have taken longer to reach.
+4. **State what is NOT pinned.** Several fixes have properties no test in this suite can reach, and
+   saying so in the commit is the only thing that stops them reading as verified.
+
+### The permission model, settled at the third attempt
+
+`clearManagedAllows` computes its patch from the bits CURRENTLY ALLOWED and sets only those to null.
+Do not replace it without reading why the other two designs failed:
+
+- Nulling all three bits cleared an administrator's DENY as well as the allow, so removal lifted an
+  exclusion and a role-level allow let the excluded member back in. Removal granted.
+- Reading the overwrite and writing back a merged version is read-modify-write against a cache on a
+  surface other people edit, so a denial the cache had not seen was destroyed by the code protecting it.
+- Refusing to touch an overwrite carrying any denial left the allowed bits in place permanently and
+  jammed the sweep every interval. Judging "nothing remains" from explicit allows also missed access
+  INHERITED from a role, so the opposite case deleted the row while the member could still see the
+  channel.
+
+A deny bit is never in the allowed set, so it is never written and never cleared. There is now no
+refusal on the clear path at all: refuse a GRANT over a denial, never refuse a CLEAR.
+
+**Inherited role access is out of scope, not solved.** Resolving effective permissions needs the
+privileged member intent this adapter dropped with role mode. The bot owns the member overwrite slot
+and clears what it put there.
+
+### Invariants that cost a blocker each to learn
+
+- **The ledger row must always be a superset of what could be live.** A renewal commits a COVERING
+  record naming both new and orphaned targets BEFORE revoking anything. Revoking first meant a failed
+  write left the old access gone, the new never applied, and the row naming only the old target, with
+  the epoch's proof already spent.
+- **Every guard needs an exit that correct operation reaches.** Four instances so far. The inverse
+  also bites: an exit must not accept weaker evidence than the guard demanded, which is how
+  `--confirm-target-gone` plus one Discord 500 nearly retired a live role.
+- **Repair is the only operation that grants from a stored record rather than a fresh proof.** It runs
+  inside `admitIfLive` for serialization and checks guild, expiry, and configured channels itself.
+- **Role mode is REMOVED and must not come back.** A Discord role is on the profile card, so it
+  disclosed who holds a masternode. Role targets survive only in `discord:decommission`.
+
+### Review framing, still the highest-leverage thing
+
+The 2026-07-30 section's list holds. What round 11 added:
+
+- **Name the defect shape in its costumes and ask for each explicitly.** Round 11 got hits on all
+  three: twins, correct-arguments-that-miss-the-path, and guards with no exit.
+- **Tell reviewers the fixes are the highest-risk surface**, because for two rounds running they were.
+- **Say which files are NOT in the packet.** A reviewer once concluded a file was missing when it was
+  present, said so in writing, and reviewed on that premise, missing a blocker inside it.
+- **Declare non-findings.** Removed features and deliberately narrowed test claims, so effort goes
+  elsewhere.
+- The executing reviewer remains the load-bearing one. Every reproduction came from it.
+
+### Gotchas new this stretch
+
+- A `python3` edit script with no `open(...).write(...)` silently changes nothing. This happened twice
+  and both times the surrounding edits landed, so the file looked edited. Re-grep after every scripted
+  edit.
+- A replacement string with the wrong indentation matches nothing and `str.replace(..., 1)` reports no
+  error. A "revert and check the test fails" step that silently reverts nothing proves nothing.
+- `ledger.get()` returns the record, not `{record, rev}`, and a missing row is `null`.
+- `entries()` exists because `all()` drops the account id. An optional-call `entries?.()` would have
+  made the whole repair pass a silent no-op.
+- The test fixtures in `discord_access.test.js` and `discord_decommission.test.js` take channels
+  differently. One nests under `channels`, the other does not.
+
+### Punch list, in order
+
+1. **A focused confirmation on the round 11 fold.** Do not skip this. See the section above.
+2. **The parser decision.** `test/discord_permissions.test.js` is an honest tripwire, not a proof: the
+   cache hands back a mutable object, so `cache.get(id).edit(...)` passes. Closing it needs a parser
+   dependency, which is a decision rather than a test tweak.
+3. **Pasta was asked** whether `merkleRootMNList` in the coinbase is the right anchor for checking a
+   masternode-list snapshot against the chain. His answer decides whether the pinned-key trust can be
+   dropped entirely.
+4. **A periodic re-check of the current target**, not only at startup.
+5. **Confirm the `dash-cli` read buffer against a real node.**
+6. **Direct node mode** and **the durable Platform claim**. Neither started, and they gate real use.
+7. **An audit.** Still none.
+
+### Naming note
+
+"Oracle" reads as a trusted third party and the thing it names is a snapshot publisher: it applies a
+deterministic function to public chain data and anyone can recompute it. The word is load-bearing
+internally (`oracle/`, `MNO_ORACLE_PUBKEYS`, `MNO_ORACLE_QUORUM`) so renaming is a real change, not a
+tidy-up. Avoid the word in anything external.
+
+### Breaking changes for any existing deployment
+
+Everything in the 2026-07-30 list, plus:
+
+- `DISCORD_RESET_CLOCK=1` now exists and is the documented escape from an inflated clock floor.
+- Decommission takes the ledger lock BEFORE logging in, reads the same legacy JSON the bot does, and
+  can open a ledger bound to another guild for cleanup without changing the binding.
+- `--confirm-target-gone` is refused unless a ledger record names the target.
+
 ## CURRENT STATE, 2026-07-30
 
 `main` at `7427a34`, pushed, 307 tests green (`npm test`, about two and a half minutes). Node 22.13 or
