@@ -5,6 +5,52 @@ counts and supersedes everything below it. Historical sections are append-only a
 only marked superseded. Read this first when picking the project back up, then `TODO.md` for the full
 prioritized punch list.
 
+## CURRENT STATE, 2026-08-01 (evening, session paused mid-cycle)
+
+`main` at `5d08856`, pushed, 354 tests green. Working tree clean apart from two untracked reviewer
+findings files. Round 12 is FOLDED but NOT CONFIRMED, and that is the single most important fact here.
+
+### Pick up exactly here
+
+1. **Run a focused confirmation on the round 12 fold** (`git diff 51b22c7..5d08856`). Do not skip it
+   and do not start anything else first. Every fold this week has introduced something, and two of the
+   last three introduced blockers that only a confirmation caught. The base rate is two in three.
+2. Then the parser decision, Pasta's answer, the exclusion feature, and the punch list below.
+
+### What round 12 found and what was done
+
+Four reviewers, all rejecting. Six blockers, four of them mine from the preceding two days. All folded
+in five commits, one defect each, every fix verified by reverting it and watching a test fail.
+
+- `51b22c7` keep-on-uncertain-failure is now opt-in (`repairs`), because it was silently stranding
+  Matrix and Telegram members who have no repair pass. The exclusion gap was recorded in `TODO.md`.
+- `0da3c2c` a failed orphan revoke restores the prior record. The covering row carries the NEW
+  deadline, so leaving it extended a retired channel's life and the sweep never retried.
+- `ec4ff42` an unlabelled legacy row belongs to the ledger's BOUND scope, not the current guild.
+  Resolving it the other way let cleanup in one guild delete another's record.
+- `23f2f4b` Discord grants carry and compare `contextHash`, which Matrix and Telegram always did. A
+  record with no context authorizes nothing, because unknown authority is not local authority.
+- `5d08856` preview and apply share one predicate, and the comment claiming they already did is fixed.
+
+### The retraction that matters most
+
+I documented a security guarantee and it was FALSE. It said role-level denies were the supported, safe
+way to exclude somebody. `GuildChannel.memberPermissions` applies the member overwrite's ALLOW last,
+after every role deny, so the bot's own grant outranks the exclusion. Combined with member-level denies
+being unprotectable, THERE IS NO DISCORD-NATIVE EXCLUSION that survives this bot's grant. Retracted in
+`CLAUDE.md`, the README, this file, and the code comments. Do not restore it. See `TODO.md` for the
+only design that can work.
+
+### Two gotchas that cost real time today
+
+- **Do not run two `npm test` suites at once.** They contend for the same loopback port, `gateway_http`
+  waits rather than failing, and `--test-timeout=0` means nothing ever cuts it off. Two orphaned runs
+  had to be terminated by hand today, and one of them looked like a hung test rather than my own
+  overlap.
+- **A scripted edit whose replacement string has the wrong indentation matches nothing and reports no
+  error**, and if the script asserts before its write call, the file is not touched at all. This bit
+  three times today. Grep for the change after every scripted edit.
+
 ## CURRENT STATE, 2026-08-01
 
 `main` at `b4b4da1`, pushed, 338 tests green (`npm test`, about two and a half minutes). Node 22.13 or
