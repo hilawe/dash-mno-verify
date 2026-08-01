@@ -10,7 +10,7 @@
 // `getGuild` and `guildId` are injected. Nothing here reads the environment.
 import { OverwriteType } from "discord.js";
 import { isGone, isNotOurs, managedState, MANAGED_BITS } from "./grant_ledger.js";
-import { grantMemberOverwrite, clearMemberOverwrite, isDenialConflict } from "./permissions.js";
+import { grantMemberOverwrite, clearMemberOverwrite, isDenialConflict, retainedManagedAllows } from "./permissions.js";
 
 // One short retry inside the request, because a member who has just verified should not wait a whole
 // sweep interval for a rate limit or a brief 5xx to clear. A refusal is never retried: it is a
@@ -148,7 +148,21 @@ export function makeAccess({ getGuild, guildId, managedChannels = null, log = ()
           // the sweep retried it every interval for the life of the deployment, which is a guard causing
           // a larger failure than the one it reports.
           if (isDenialConflict(e)) {
-            log(`left ${userId} alone on ${chId} while revoking: ${e.message}`);
+            // A refusal only means "nothing to take back" when the denial covers everything. A mixed
+            // overwrite, allowing ViewChannel while denying SendMessages, leaves the member able to
+            // SEE a private channel, and skipping it let the sweep report success and delete the row
+            // while that visibility stayed forever. I noticed this case while writing the skip and
+            // decided the ownership rule covered it. It does not.
+            const kept = retainedManagedAllows(ch, userId);
+            if (kept.length) {
+              failures.push(
+                `${chId}: ${userId} is denied some bits but still ALLOWED ${kept.join(", ")}, so access ` +
+                  `remains and this bot will not touch the overwrite. Resolve it by hand; the record ` +
+                  `is kept so the access stays tracked.`,
+              );
+              continue;
+            }
+            log(`left ${userId} alone on ${chId} while revoking, nothing remains allowed: ${e.message}`);
             continue;
           }
           if (!isGone(e)) failures.push(`${chId}: ${e.message}`);

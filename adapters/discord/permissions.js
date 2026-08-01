@@ -20,7 +20,7 @@
 // claim is narrow and unchanged from the one the project already made: the bot refuses to touch a
 // conflict it can SEE. What is new is that every mutation now actually looks.
 import { OverwriteType } from "discord.js";
-import { memberDenialsOnGatedChannel, roleDenialsAcrossChannels } from "./grant_ledger.js";
+import { memberDenialsOnGatedChannel, roleDenialsAcrossChannels, managedState } from "./grant_ledger.js";
 
 // The three permission bits this bot manages on a private channel, as a grant and as a clear.
 export const ACCESS = { ViewChannel: true, SendMessages: true, ReadMessageHistory: true };
@@ -44,6 +44,20 @@ export class DenialConflict extends Error {
 }
 
 export const isDenialConflict = (e) => e instanceof DenialConflict || e?.name === "DenialConflict";
+
+// Which managed bits this member is still ALLOWED on this channel, read from the cached overwrite.
+//
+// A refusal was being read as proof that the member holds nothing, which is true only when the denial
+// covers everything. An overwrite that allows ViewChannel and ReadMessageHistory while denying
+// SendMessages is a member who can still see a private channel, and treating that as "nothing to take
+// back" let the sweep report success and delete the row while the visibility stayed. Callers that
+// refuse a mutation have to ask what survives it.
+export function retainedManagedAllows(ch, userId) {
+  const own = [...ch.permissionOverwrites.cache.values()].find(
+    (o) => o.type === OverwriteType.Member && String(o.id) === String(userId),
+  );
+  return own ? managedState(own).allow : [];
+}
 
 // Refuse if this member's own overwrite on this channel carries a denial on any managed bit.
 //

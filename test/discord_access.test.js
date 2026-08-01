@@ -244,3 +244,36 @@ test("repair refuses a record belonging to another guild", async () => {
   assert.deepEqual(await repairAccess("u1", foreign), []);
   assert.deepEqual(edits, [], "repair grants from a stored record, so it checks the guild itself too");
 });
+
+test("a MIXED denial keeps the record, because the member can still see the channel", async () => {
+  // The case I noticed while writing the refusal skip and decided the ownership rule covered. It does
+  // not. An overwrite that denies SendMessages while allowing ViewChannel is a member who can still
+  // read a private channel, and skipping it as "nothing to take back" let the sweep report success and
+  // delete the row while that visibility stayed forever.
+  const mixed = {
+    id: "u1",
+    type: OverwriteType.Member,
+    allow: bits("ViewChannel", "ReadMessageHistory"),
+    deny: bits("SendMessages"),
+  };
+  const { guild, edits } = fakeGuild({ c1: [mixed] });
+  const { revokeAccess } = makeAccess({ getGuild: async () => guild, guildId: "g1", log: () => {} });
+
+  await assert.rejects(() => revokeAccess("u1", rec(["c1"])), /still ALLOWED ViewChannel/);
+  assert.deepEqual(edits, [], "the overwrite is still not touched, which is the design");
+});
+
+test("a TOTAL denial is still skipped, so the sweep does not wedge on an excluded member", async () => {
+  // The other side. If nothing is allowed, there is genuinely nothing to take back, and treating that
+  // as a failure kept the record and made the sweep retry it every interval forever.
+  const total = {
+    id: "u1",
+    type: OverwriteType.Member,
+    allow: bits(),
+    deny: bits("ViewChannel", "SendMessages", "ReadMessageHistory"),
+  };
+  const { guild, edits } = fakeGuild({ c1: [total] });
+  const { revokeAccess } = makeAccess({ getGuild: async () => guild, guildId: "g1", log: () => {} });
+  await revokeAccess("u1", rec(["c1"])); // resolves
+  assert.deepEqual(edits, []);
+});
