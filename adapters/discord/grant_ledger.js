@@ -53,8 +53,15 @@ import { GrantLedger as BaseGrantLedger } from "../common/grant_ledger.js";
 // fail the check on the channel they legitimately held, and the startup pass cleared it. The ledger row
 // survived, so the sweep never repaired it, and on a Platform-backed store the member could not
 // re-grant until the next epoch. Judge each channel on whether the record covers THAT channel.
-export function authorizesTarget(record, isLive, { mode, channel = null, roleId } = {}) {
+export function authorizesTarget(record, isLive, { mode, channel = null, roleId, contextHash = null } = {}) {
   if (!record || !isLive || record.mode !== mode) return false;
+  // The record must name the context it was proved in, and it must be THIS one.
+  //
+  // A record with no contextHash predates this check, and its authority is unknown rather than
+  // assumed: it cannot say which context the member proved in, so it authorizes nothing and expires
+  // on its own. Treating unknown as "ours" is the same mistake the guild binding already cost a
+  // blocker for. Matrix and Telegram have compared this since they were written.
+  if (contextHash !== null && String(record.contextHash ?? "") !== String(contextHash)) return false;
   return mode === "channel"
     ? Boolean(channel) && (record.channels ?? []).includes(String(channel))
     : Boolean(roleId) && String(record.roleId) === String(roleId);

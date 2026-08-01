@@ -22,6 +22,7 @@ export function makeAccess({
   getGuild,
   guildId,
   managedChannels = null,
+  contextHash = null,
   log = () => {},
   now = () => Math.floor(Date.now() / 1000),
 }) {
@@ -203,6 +204,10 @@ export function makeAccess({
     // lived only in the caller, which is the argument-that-never-reaches-the-path shape again.
     if (record.guildId && String(record.guildId) !== String(guildId)) return [];
     if (!Number.isFinite(record.expiresAt) || now() >= record.expiresAt) return [];
+    // The context too. Repair is the one operation that grants from a stored record rather than a
+    // fresh proof, so every dimension of that record's authority is checked here and not left to the
+    // caller. A record that cannot say which context it was proved in authorizes nothing.
+    if (contextHash !== null && String(record.contextHash ?? "") !== String(contextHash)) return [];
     const guild = await getGuild();
     const repaired = [];
     for (const chId of record.channels ?? []) {

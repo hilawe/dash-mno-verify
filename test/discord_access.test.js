@@ -331,3 +331,16 @@ test("a grant reports what DEFINITELY applied, separately from what may have bee
   assert.equal(err.applied, false, "but nothing definitely landed, which is the member-facing question");
   assert.deepEqual(err.refusedChannels, ["c1"]);
 });
+
+test("repair refuses a record proved in a different context", async () => {
+  // Repair grants from a stored record rather than a fresh proof, so it checks every dimension of that
+  // record's authority itself: guild, expiry, configured channels, and context.
+  const { guild, edits } = fakeGuild({ c1: [] });
+  const { repairAccess } = makeAccess({
+    getGuild: async () => guild, guildId: "g1", managedChannels: ["c1"],
+    contextHash: "ctx-new", log: () => {}, now: () => 1000,
+  });
+  const old = { expiresAt: 9999, mode: "channel", guildId: "g1", channels: ["c1"], contextHash: "ctx-old" };
+  assert.deepEqual(await repairAccess("u1", old), []);
+  assert.deepEqual(edits, [], "nothing reapplied from a record proved somewhere else");
+});

@@ -37,6 +37,7 @@ import {
 // its twin unguarded a few lines away, is what this import exists to end.
 import { clearManagedAllows, isDenialConflict } from "./permissions.js";
 import { makeAccess } from "./access.js";
+import { contextHash } from "../../common/index.js";
 
 const TOKEN = process.env.DISCORD_TOKEN;
 const APP_ID = process.env.DISCORD_APP_ID;
@@ -71,6 +72,15 @@ const GRANT_CHANNEL_IDS = (process.env.DISCORD_GRANT_CHANNEL_IDS ?? "").split(",
 // scoped to it, so keep it stable. It defaults to the first channel id, but set DISCORD_CONTEXT_ID for
 // a context that does not change if the channel ids do.
 const CONTEXT_ID = process.env.DISCORD_CONTEXT_ID ?? GRANT_CHANNEL_IDS[0];
+// The proof context, recorded on every grant and compared before that grant authorizes anything.
+//
+// Matrix and Telegram have always stored and compared this. Discord did not, which made it the
+// surviving sibling: a record held the guild, the channels, the mode, and the expiry, but nothing
+// tying it to the context the member actually proved in. Change DISCORD_CONTEXT_ID while keeping the
+// guild and channels, and an old live record still counted as authorization for the new context, with
+// the repair pass willing to recreate access from it. The documentation says changing the context
+// starts a fresh membership set, and this is what makes that true here.
+const CONTEXT_HASH = contextHash({ platform: "discord", communityId: GUILD_ID, roleId: CONTEXT_ID }).toString();
 const SWEEP_SECONDS = Number(process.env.DISCORD_SWEEP_SECONDS ?? 300);
 // The ledger is a SQLite database now. DISCORD_GRANTS_FILE keeps its old meaning, the JSON file, and
 // is read once on first start to migrate its grants and clock state across, after which it is renamed
@@ -119,6 +129,7 @@ const { applyAccess, revokeAccess, repairAccess } = makeAccess({
   getGuild,
   guildId: GUILD_ID,
   managedChannels: GRANT_CHANNEL_IDS,
+  contextHash: CONTEXT_HASH,
   // The same seconds-since-epoch shape the ledger's clock uses, for repair's own expiry check.
   now: () => Math.floor(Date.now() / 1000),
   log: (m) => console.warn("[discord]", m),
@@ -234,7 +245,11 @@ const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 // `channelId` names the ONE channel being judged, so a member keeps the channel their record covers
 // even when the configuration has since grown to include others.
 const authorizedNow = (userId, channelId = null) =>
-  authorizesTarget(ledger.get(userId), ledger.live(userId), { mode: "channel", channel: channelId });
+  authorizesTarget(ledger.get(userId), ledger.live(userId), {
+    mode: "channel",
+    channel: channelId,
+    contextHash: CONTEXT_HASH,
+  });
 
 // Interactions arrive as soon as the gateway is ready, and the ready handler awaits this pass, so a
 // member can run /submit while it is running. Reconciliation touches Discord directly rather than
@@ -552,6 +567,7 @@ async function handleInteraction(i) {
         expiresAt: out.expiresAt,
         mode: "channel",
         guildId: GUILD_ID, // so a repoint cannot delete a record for access in a guild we can no longer reach
+        contextHash: CONTEXT_HASH, // so a context change cannot be authorized by an older proof
         channels: GRANT_CHANNEL_IDS,
       });
     } catch (e) {

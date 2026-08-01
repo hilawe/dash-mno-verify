@@ -781,3 +781,29 @@ test("a successful migrate still settles on the new record and deadline", async 
   assert.deepEqual(row.channels, ["new"]);
   assert.equal(row.expiresAt, 999, "the covering row is transient, not the end state");
 });
+
+// Matrix and Telegram have compared the proof context since they were written. Discord did not, which
+// made it the surviving sibling: a record held the guild, channels, mode, and expiry, but nothing
+// tying it to the context the member proved in. Change DISCORD_CONTEXT_ID while keeping the guild and
+// channels, and an old live record still authorized the new context.
+test("a record proved in another context authorizes nothing here", () => {
+  const rec = { expiresAt: 9, mode: "channel", channels: ["c1"], contextHash: "ctx-old" };
+  assert.equal(
+    authorizesTarget(rec, true, { mode: "channel", channel: "c1", contextHash: "ctx-new" }),
+    false,
+    "same guild, same channel, live record, different context",
+  );
+  assert.equal(authorizesTarget(rec, true, { mode: "channel", channel: "c1", contextHash: "ctx-old" }), true);
+});
+
+test("a record with no context authorizes nothing, rather than being assumed local", () => {
+  // Unknown authority is not local authority. Treating unknown as ours is the same mistake the guild
+  // binding already cost a blocker for. Such a record simply expires on its own.
+  const legacy = { expiresAt: 9, mode: "channel", channels: ["c1"] };
+  assert.equal(authorizesTarget(legacy, true, { mode: "channel", channel: "c1", contextHash: "ctx" }), false);
+  assert.equal(
+    authorizesTarget(legacy, true, { mode: "channel", channel: "c1" }),
+    true,
+    "and a caller that does not ask about context is unaffected",
+  );
+});
