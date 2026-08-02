@@ -4,6 +4,41 @@ Known issues and planned work, in priority order, from a code review of the curr
 This is a working prototype and is not audited. Do not gate anything of real value until at
 least the P0 items are done and the system has had an audit.
 
+STARTED, DIRECT NODE MODE ON protx diff (2026-08-02). `oracle/diff_snapshot.js` and
+`test/diff_snapshot.test.js` are the block-bound, ChainLock-gated read. NOT WIRED into the oracle CLI
+or the gateway yet, deliberately, because the transition below is a decision rather than a detail.
+
+What it does. Reads `getbestchainlock` FIRST so the node cannot pick a block to suit the answer,
+refuses if the node reports a lock for a block it does not have, then calls `protx diff 1 <height>` and
+REFUSES unless the response's own `blockHash` equals the locked hash. That last check is what closes
+the A to B to A read residual documented in `oracle/snapshot.js`: the old read could not detect it at
+all, because `masternodelist json` says nothing about which block it describes. Filters on `isValid`,
+which is the on-chain committed validity flag and the same set the old read selected with status
+ENABLED. Every guard is pinned by a test that fails when the guard is removed.
+
+TWO THINGS NEEDED BEFORE IT CAN BE WIRED.
+
+1. **The root CHANGES, so this is a breaking transition, not a drop-in.** The old read ordered leaves
+   by the collateral outpoint, because that is what keys `masternodelist json`. The collateral outpoint
+   is NOT a field of the DIP4 simplified entry, since it is not committed on chain, so it is absent
+   from `protx diff`, and the canonical order there is `proRegTxHash`. Aligning with DIP4's own order
+   is right, because the eventual `merkleRootMNList` check merkleizes in exactly that order, but the
+   same set of masternodes now produces a different root. Snapshots are marked `version: 3` and carry
+   `order: "proRegTxHash"` so nothing can treat a v2 and v3 root as interchangeable. The transition
+   needs deciding: whether the gateway accepts both during a window, and what a prover holding a v2
+   tree does. Nothing is wired until that is settled.
+2. **A live mainnet node, to confirm the response shape.** The field names used here
+   (`proRegTxHash`, `votingAddress`, `isValid`) come from DIP4 and from this file's own earlier
+   research, and are corroborated by the Core lead's answer, but they have not been observed. The
+   builder fails loudly on a missing field rather than dropping a member, so a mismatch surfaces
+   immediately, but it should be observed before this is trusted. Per the project rules a native
+   `dashd` is a dead end on this Mac, so this needs colima and a container. The same run settles the
+   outstanding `MNO_CLI_MAX_BUFFER` question.
+
+Once wired, this delivers the P1 (direct node mode, removing pinned-key trust for the common
+deployment), closes the read residual, and leaves `protx diff`'s `cbTx` and `cbTxMerkleTree` already in
+hand so the on-chain commitment check becomes an increment rather than a separate integration.
+
 OPEN, TWO ITEMS THE RECORD FORMAT CANNOT EXPRESS (2026-08-02). Both came out of the round 12
 confirmation as blockers, and both were left rather than patched, because each has already had one
 patch fail in a new place and the reason is the same: a grant record holds ONE deadline and ONE target
