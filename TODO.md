@@ -8,6 +8,15 @@ STARTED, DIRECT NODE MODE ON protx diff (2026-08-02). `oracle/diff_snapshot.js` 
 `test/diff_snapshot.test.js` are the block-bound, ChainLock-gated read. NOT WIRED into the oracle CLI
 or the gateway yet, deliberately, because the transition below is a decision rather than a detail.
 
+WHAT IT IS WORTH, corrected. An earlier version of this entry said the block-bound check closes the
+A to B to A residual. Against an HONEST node it does, which is a real gain over bracketing that could
+not detect that case at all. Against a dishonest or buggy node it closes nothing: one server answers
+the ChainLock query, `known_block`, `diff.blockHash`, and `mnList`, so it can return matching hashes
+with an arbitrary list, and reading the lock first does not stop it choosing both answers. This is a
+TRUSTED-NODE read, not a chain-authenticated one, and pinned signer trust is still load-bearing until
+the `merkleRootMNList` check exists. That check is what makes the difference, and `protx diff` already
+carries the coinbase transaction and merkle branch it needs.
+
 What it does. Reads `getbestchainlock` FIRST so the node cannot pick a block to suit the answer,
 refuses if the node reports a lock for a block it does not have, then calls `protx diff 1 <height>` and
 REFUSES unless the response's own `blockHash` equals the locked hash. That last check is what closes

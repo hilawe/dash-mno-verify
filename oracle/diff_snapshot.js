@@ -9,10 +9,26 @@
 // from the other.
 //
 // `protx diff` names the block hash it describes. So the read stops being "the list, plus a hope about
-// which block it came from" and becomes "the list AT this block", which the caller can compare against
-// a hash it chose in advance. That is what closes the residual, and it is the same call that carries
-// the coinbase transaction and its merkle branch, so the on-chain `merkleRootMNList` check later
-// becomes an increment rather than a second integration.
+// which block it came from" and becomes "the list this node SAYS is at this block", which the caller
+// can compare against a hash it chose in advance.
+//
+// WHAT THAT IS AND IS NOT WORTH, stated precisely, because an earlier version of this comment claimed
+// it closed the residual outright and that is false.
+//
+// Against an HONEST node it closes the A -> B -> A ambiguity, which is a real gain: an accidental
+// reorg inside the read window now produces a mismatch and a refusal instead of a silently torn
+// snapshot. That is the failure the old bracketing could not detect at all.
+//
+// Against a DISHONEST OR BUGGY node it closes nothing. One server answers the ChainLock query,
+// `known_block`, `diff.blockHash`, AND `mnList`. It can return matching hashes alongside an arbitrary
+// list, and reading the lock first does not stop the same server choosing both answers. This is a
+// TRUSTED-NODE read, not a chain-authenticated one, and the pinned signer trust it was meant to
+// replace is still doing work until the commitment check exists.
+//
+// The commitment check is what would make it chain-authenticated: verify the header, verify the
+// coinbase inclusion proof, decode `merkleRootMNList`, rebuild the simplified-list commitment from
+// these entries, and compare. `protx diff` already carries the coinbase transaction and its merkle
+// branch, so the material is here, and none of it is verified yet.
 //
 // CHAINLOCK IS THE GATE, and it is doing real work rather than being belt-and-braces. A ChainLocked
 // block cannot be reorged away, so pinning the read to one removes the reorg question entirely rather
