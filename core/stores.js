@@ -6,6 +6,7 @@
 // so several gateways can share one tamper-evident spent set. Implement the same
 // has/add interface against Platform and pass it in instead of NullifierStore.
 import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 
 // Recent-roots ring buffer. The gateway accepts any root the oracle published in the
 // last `window` snapshots, which gives members a window to prove against a fresh root.
@@ -50,6 +51,23 @@ export class RootStore {
 // A v1 snapshot carries no shaRoot, so its record has shaRoot: null and the SHA-256 view never
 // matches it. isRecent(root) is the Poseidon view (a drop-in for the old RootStore, so the existing
 // membership and registration callers are unchanged), and shaIsRecent(shaRoot) is the SHA-256 view.
+// An ORDER-INDEPENDENT commitment to a leaf multiset.
+//
+// This is what makes accepting two roots at one height safe rather than merely convenient. The
+// transition claim is that a v2 and a v3 root over the same masternodes commit to the SAME leaf set
+// and differ only in build order. That was an assumption, and a reviewer pointed out the window
+// stored nothing that could check it: a member present only in a stale, orphaned, or inconsistent set
+// could keep proving after the canonical root was adopted.
+//
+// Sorted so ordering cannot change it, and DUPLICATES ARE PRESERVED, because two masternodes sharing
+// a voting key are two members of the set and collapsing them would let a set with a duplicate match
+// one without it. Computed by the gateway from the leaves it already recomputes both roots from, so
+// it is derived rather than supplied and a source cannot choose it.
+export function leafSetCommitment(leaves) {
+  const sorted = [...(leaves ?? [])].map(String).sort((a, b) => (a === b ? 0 : a.length === b.length ? (a < b ? -1 : 1) : a.length - b.length));
+  return createHash("sha256").update(sorted.join("\n"), "utf8").digest("hex");
+}
+
 export class RootWindows {
   constructor(window = 8) {
     this.window = window;
@@ -69,10 +87,18 @@ export class RootWindows {
   // the check changes, and the transition is bounded by the ordinary window and age rules, so a v2
   // root ages out on its own once the oracle stops publishing them. There is no separate switch to
   // remember to turn off.
-  adopt({ height, root, shaRoot = null, ts, order = null }) {
+  adopt({ height, root, shaRoot = null, ts, order = null, blockHash = null, setCommitment = null }) {
     const key = `${height}|${order ?? "legacy"}`;
     const byKey = new Map(this.snaps.map((s) => [`${s.height}|${s.order ?? "legacy"}`, s]));
-    byKey.set(key, { height, root, shaRoot: shaRoot ?? null, ts, order: order ?? null });
+    byKey.set(key, {
+      height,
+      root,
+      shaRoot: shaRoot ?? null,
+      ts,
+      order: order ?? null,
+      blockHash: blockHash ?? null,
+      setCommitment: setCommitment ?? null,
+    });
     // The window counts HEIGHTS, not records, so running two orders during a changeover does not
     // silently halve how far back the gateway will accept a proof.
     const all = [...byKey.values()].sort((a, b) => a.height - b.height);
@@ -96,6 +122,26 @@ export class RootWindows {
   shaView() {
     return { isRecent: (r) => this.shaIsRecent(r) };
   }
+  // Whether a snapshot may join one already held at its height. Two roots coexist ONLY when they
+  // describe the same block and commit to the same leaf multiset, differing just in build order. That
+  // is the transition claim, checked rather than assumed.
+  //
+  // A null commitment on either side means the question cannot be answered, so the answer is no.
+  mayCoexist({ height, order = null, blockHash = null, setCommitment = null }) {
+    const atHeight = this.snaps.filter((s) => s.height === height);
+    if (atHeight.length === 0) return true; // nothing to disagree with
+    return atHeight.every(
+      (s) =>
+        (s.order ?? "legacy") !== (order ?? "legacy") &&
+        s.blockHash != null &&
+        blockHash != null &&
+        String(s.blockHash) === String(blockHash) &&
+        s.setCommitment != null &&
+        setCommitment != null &&
+        String(s.setCommitment) === String(setCommitment),
+    );
+  }
+
   clear() {
     this.snaps = [];
   }

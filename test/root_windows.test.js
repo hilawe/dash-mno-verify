@@ -5,7 +5,7 @@
 // independent windows (the full-review blocker).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { RootWindows } from "../core/stores.js";
+import { leafSetCommitment, RootWindows } from "../core/stores.js";
 
 test("a v2 snapshot is recent in both views; a v1 snapshot only in the Poseidon view", () => {
   const w = new RootWindows(8);
@@ -112,4 +112,63 @@ test("an aged-out v2 root stops being accepted with no switch to remember", () =
   w.dropOlderThan(1500);
   assert.equal(w.isRecent("old-order"), false, "it ages out on its own once the oracle stops publishing it");
   assert.equal(w.isRecent("new-order"), true);
+});
+
+// COEXISTENCE IS CHECKED, NOT ASSUMED. The transition claim is that a v2 and a v3 root over the same
+// masternodes commit to the same leaf set and differ only in build order. The window stored nothing
+// that could verify that, so a member present only in a stale, orphaned, or inconsistent set could
+// keep proving after the canonical root arrived.
+test("two orders coexist only when block and leaf set both match", () => {
+  const w = new RootWindows(8);
+  const BLOCK = "aa".repeat(32);
+  const SET = leafSetCommitment(["111", "222"]);
+  w.adopt({ height: 100, root: "v2", ts: 1, order: null, blockHash: BLOCK, setCommitment: SET });
+
+  assert.equal(
+    w.mayCoexist({ height: 100, order: "proRegTxHash", blockHash: BLOCK, setCommitment: SET }),
+    true,
+    "same block, same set, different order: the legitimate pair",
+  );
+  assert.equal(
+    w.mayCoexist({ height: 100, order: "proRegTxHash", blockHash: "bb".repeat(32), setCommitment: SET }),
+    false,
+    "a different block at the same height is a fork, not an ordering change",
+  );
+  assert.equal(
+    w.mayCoexist({ height: 100, order: "proRegTxHash", blockHash: BLOCK, setCommitment: leafSetCommitment(["111", "999"]) }),
+    false,
+    "a different member set is the case this check exists for",
+  );
+  assert.equal(
+    w.mayCoexist({ height: 100, order: null, blockHash: BLOCK, setCommitment: SET }),
+    false,
+    "the SAME order twice is a changed root, not a transition",
+  );
+});
+
+test("an unanswerable question is answered no", () => {
+  // A snapshot carrying no block hash or no commitment cannot be shown to describe the same set, and
+  // the safe reading of "cannot tell" is "not allowed".
+  const w = new RootWindows(8);
+  const BLOCK = "aa".repeat(32);
+  const SET = leafSetCommitment(["111"]);
+  w.adopt({ height: 100, root: "v2", ts: 1, order: null, blockHash: BLOCK, setCommitment: SET });
+  assert.equal(w.mayCoexist({ height: 100, order: "proRegTxHash", blockHash: null, setCommitment: SET }), false);
+  assert.equal(w.mayCoexist({ height: 100, order: "proRegTxHash", blockHash: BLOCK, setCommitment: null }), false);
+});
+
+test("a height with nothing in it accepts anything, since there is nothing to disagree with", () => {
+  const w = new RootWindows(8);
+  assert.equal(w.mayCoexist({ height: 7, order: "proRegTxHash", blockHash: null, setCommitment: null }), true);
+});
+
+test("the leaf set commitment ignores order and preserves duplicates", () => {
+  // Order independence is the whole point. Duplicate preservation matters because two masternodes can
+  // share a voting key, so collapsing them would let a set with a duplicate match one without it.
+  assert.equal(leafSetCommitment(["3", "1", "2"]), leafSetCommitment(["1", "2", "3"]));
+  assert.notEqual(leafSetCommitment(["1", "1", "2"]), leafSetCommitment(["1", "2"]));
+  assert.notEqual(leafSetCommitment(["1", "2"]), leafSetCommitment(["1", "3"]));
+  // Numeric, not lexical: "10" must not sort before "9" in a way that differs from another ordering
+  // of the same members.
+  assert.equal(leafSetCommitment(["10", "9"]), leafSetCommitment(["9", "10"]));
 });

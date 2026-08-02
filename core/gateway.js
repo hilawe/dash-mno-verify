@@ -26,7 +26,7 @@
 import { createServer } from "node:http";
 import { randomUUID, createHash, timingSafeEqual } from "node:crypto";
 import { config } from "./config.js";
-import { RootWindows, NullifierStore, ChallengeStore, RateLimiter, Semaphore, loadOracle } from "./stores.js";
+import { leafSetCommitment, RootWindows, NullifierStore, ChallengeStore, RateLimiter, Semaphore, loadOracle } from "./stores.js";
 import { loadVerificationKey, verifyMembership, verifyRegistration } from "./verifier.js";
 import { SeasonMembers } from "./season.js";
 import { makeDmlRootHasher } from "./dml_root.js";
@@ -365,9 +365,26 @@ async function refreshRoots() {
       // oracleMaxAgeSeconds, enforceDmlFreshness clears latestDml, and the next lower-height snapshot
       // is then accepted, so the gateway self-heals onto the canonical branch within the bound.
       console.error(`[gateway] oracle height regressed (${o.height} < ${latestDml.height}), snapshot rejected`);
-    } else if (latestDml && Number(o.height) === Number(latestDml.height) && String(o.root) !== String(latestDml.root)) {
-      // Same height, different root: the list at a fixed height is deterministic, so this is
-      // inconsistent. Reject rather than flap the served root.
+    } else if (
+      latestDml &&
+      Number(o.height) === Number(latestDml.height) &&
+      String(o.root) !== String(latestDml.root) &&
+      !dmlRoots.mayCoexist({
+        height: o.height,
+        order: o.order ?? null,
+        blockHash: o.blockHash ?? null,
+        setCommitment: leafSetCommitment(o.leaves),
+      })
+    ) {
+      // Same height, different root, and NOT a legitimate ordering pair. The list at a fixed height is
+      // deterministic, so this is inconsistent. Reject rather than flap the served root.
+      //
+      // The exception is narrow and checked, not assumed. A v2 and a v3 snapshot of the same
+      // masternodes differ in build order and so in root, and both are meant to be provable against
+      // during a changeover. mayCoexist admits that pair ONLY when the two describe the same block AND
+      // commit to the same leaf multiset, so a member present only in a stale, orphaned, or
+      // inconsistent set cannot keep proving after the canonical root arrives. Without that check the
+      // coexistence would have been the hole rather than the feature.
       console.error(`[gateway] oracle root changed at height ${o.height}, snapshot rejected`);
     } else {
       // Height is at or above the accepted root, so this snapshot becomes (or stays) current and
@@ -386,6 +403,10 @@ async function refreshRoots() {
         shaRoot: o.shaRoot ?? null,
         ts: o.ts ?? nowSec(),
         order: o.order ?? null,
+        blockHash: o.blockHash ?? null,
+        // Derived here from the leaves this gateway just recomputed both roots from, so it is never a
+        // value the source chose. It is what a later snapshot at this height is checked against.
+        setCommitment: leafSetCommitment(o.leaves),
       });
     }
   } catch (err) {
