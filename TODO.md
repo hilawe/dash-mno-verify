@@ -4,6 +4,51 @@ Known issues and planned work, in priority order, from a code review of the curr
 This is a working prototype and is not audited. Do not gate anything of real value until at
 least the P0 items are done and the system has had an audit.
 
+ANSWERED, THE CHAIN ANCHOR FOR THE SNAPSHOT (2026-08-02). The largest open trust assumption has a
+known answer now, confirmed by the Dash Core lead against the consensus code, and it is a design item
+rather than a question.
+
+`merkleRootMNList` in the coinbase special transaction IS the canonical commitment, and it is
+consensus-enforced: every block connect recomputes the list root and rejects the block on mismatch
+(`src/evo/specialtxman.cpp`). It commits the DIP4 SIMPLIFIED masternode list, entries sorted by
+`proRegTxHash` and merkleized with the same algorithm as the block transaction merkle root.
+
+Committed: `proRegTxHash`, `confirmedHash`, network addresses, `pubKeyOperator`, `keyIDVoting`,
+`isValid`, plus type and Platform fields for evonodes. NOT committed: the owner key, payout scripts,
+and the collateral outpoint.
+
+**This project is directly covered.** The leaf is built from `keyIDVoting` (`common/dml.js`,
+`oracle/snapshot.js`), which is a committed field, so no ProRegTx inclusion proof is needed. A design
+that proved the owner key or collateral ownership instead would also need the ProRegTx, provable by
+ordinary transaction merkle inclusion.
+
+The verification chain: recompute the root from the snapshot, compare against `merkleRootMNList`,
+prove the coinbase transaction is in the block via its merkle branch, verify the header.
+`getmnlistdiff` / the `MNLISTDIFF` P2P message hands over the coinbase transaction plus
+`cbTxMerkleTree` pre-packaged. That replaces "a quorum of pinned oracle keys is honest" with "this
+block header is on the real chain", pinned by header proof-of-work from a checkpoint, which is the
+standard light-client approach.
+
+Foot-guns to design against, all named by the Core lead:
+
+- Entry serialization is VERSION-DEPENDENT. Legacy versus basic BLS `pubKeyOperator` encoding at v19,
+  evonode Platform fields, and the newer extended-address netInfo each change the entry hash bytes.
+  Byte-exact serialization across versions is where independent implementations usually break. Test
+  vectors live in `test/functional/feature_dip4_coinbasemerkleroots.py` in Dash Core.
+- The merkle computation inherits the odd-node duplication quirk (CVE-2012-2459). Use the same
+  `ComputeMerkleRoot` semantics and reject mutated trees in the inclusion proof.
+- `isValid` is part of the commitment. A PoSe-banned node is still IN the list with `isValid=false`,
+  so membership alone is not enough. ALREADY HANDLED: `oracle/snapshot.js` filters on
+  `status === "ENABLED"`, the same set as `protx list valid`.
+- Dropping the header-checkpoint assumption as well needs ChainLock verification, whose quorum keys
+  are committed via `merkleRootQuorums` in the same coinbase transaction. That is the full DIP4
+  light-client bootstrap and is overkill before a first audit, but it is the path to fully trustless.
+
+What this changes here: the oracle stops being a trusted publisher and becomes a snapshot whose
+correctness a verifier can check for itself. `docs/DESIGN.md` currently says the leaf set is
+authenticated "against a trusted key, not yet against the chain's own masternode-list commitment", and
+that sentence is the thing this work closes.
+
 KNOWN GAP, THE DISCORD ADAPTER CANNOT ENFORCE AN EXCLUSION (2026-08-01). An operator has no way to
 keep a specific person out of a gated channel while this bot is granting access to it. Two facts
 combine, both verified in the installed `discord.js` 14.26.4 source and both found by reviewers on the
