@@ -913,3 +913,42 @@ test("a v3 snapshot with no shaRoot is rejected, exactly as a v2 would be", asyn
     gw.proc.kill();
   }
 });
+
+// A zkVM deployment requires a snapshot carrying a SHA-256 root. The guard tested `version !== 2`,
+// which rejected every v3 snapshot and so made the block-bound read unusable exactly where the dual
+// root matters most. The accidental third guarantee in that equality test, that an UNKNOWN version is
+// refused too, is kept: the versions are enumerated rather than inferred from a shaRoot being present.
+test("a zkVM deployment accepts a v3 snapshot, which carries a shaRoot by schema", async () => {
+  const oracle = join(dir, "v3-zkvm.json");
+  await writeFile(
+    oracle,
+    JSON.stringify(snapshot({ version: 3, shaRoot: shaRootHasher(REAL_LEAVES), order: "proRegTxHash", chainlocked: true })),
+  );
+  const gw = await startGateway({
+    MNO_ORACLE_SOURCE: oracle,
+    MNO_ORACLE_REFRESH: "3600",
+    MNO_REQUIRE_SHA_ROOT: "1",
+  });
+  try {
+    const res = await post(gw.base, "/v1/challenge", { platform: "p", communityId: "c", roleId: "r", account: "alice" });
+    assert.notEqual(res.status, 503, "a v3 snapshot must be usable on a zkVM deployment");
+  } finally {
+    gw.proc.kill();
+  }
+});
+
+test("a zkVM deployment still refuses v1, which carries no shaRoot at all", async () => {
+  const oracle = join(dir, "v1-zkvm.json");
+  await writeFile(oracle, JSON.stringify(snapshot()));
+  const gw = await startGateway({
+    MNO_ORACLE_SOURCE: oracle,
+    MNO_ORACLE_REFRESH: "3600",
+    MNO_REQUIRE_SHA_ROOT: "1",
+  });
+  try {
+    const res = await post(gw.base, "/v1/challenge", { platform: "p", communityId: "c", roleId: "r", account: "alice" });
+    assert.equal(res.status, 503, "the downgrade refusal must survive the fix");
+  } finally {
+    gw.proc.kill();
+  }
+});

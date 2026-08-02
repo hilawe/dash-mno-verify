@@ -215,6 +215,11 @@ const dmlRootFromLeaves = await makeDmlRootHasher(config.treeDepth);
 // oracle's self-reported timestamp: too old to adopt, or too far in the future (which would
 // otherwise let a clock-skewed or replayed future-dated snapshot pose as fresh). The root recompute
 // in refreshRoots is the separate check that the leaves actually produce the claimed root.
+// Snapshot versions whose schema carries a SHA-256 root. A version absent from this set is refused on
+// a zkVM deployment even if it happens to include a shaRoot field, so adding a version is a decision
+// rather than something that happens by default.
+const DUAL_ROOT_VERSIONS = new Set([2, 3]);
+
 function validateSnapshot(o, requiresSha) {
   if (!o || typeof o !== "object") throw new Error("snapshot is not an object");
   if (!Number.isInteger(o.height) || o.height < 0) throw new Error("snapshot height invalid");
@@ -258,8 +263,17 @@ function validateSnapshot(o, requiresSha) {
   // durable current-season zkVM declaration (computed in refreshRoots), so a gateway reopened with
   // existing zkVM registrations keeps requiring v2 even if the config flag was unset (the rollback
   // rule the review flagged).
-  if (requiresSha && (version !== 2 || o.shaRoot == null)) {
-    throw new Error("zkVM deployment requires a v2 snapshot with a shaRoot (downgrade refused)");
+  // The versions whose SCHEMA carries a SHA-256 root, enumerated rather than inferred. This read
+  // `version !== 2`, which guaranteed three things: no snapshot without a shaRoot, no v1, and, as a
+  // side effect of testing equality with ONE version, no other version either. That third guarantee
+  // was accidental and is worth keeping, because it fails closed on a future version that might not
+  // carry a root. It also rejected every v3 snapshot, which made the block-bound read unusable on any
+  // zkVM deployment. Listing the versions keeps the fail-closed property and admits v3.
+  if (requiresSha && (!DUAL_ROOT_VERSIONS.has(version) || o.shaRoot == null)) {
+    throw new Error(
+      `zkVM deployment requires a snapshot carrying a shaRoot (v${[...DUAL_ROOT_VERSIONS].join(" or v")}), ` +
+        `got v${version} (downgrade refused)`,
+    );
   }
   if (config.oracleMaxAgeSeconds > 0) {
     const ts = Number(o.ts);
