@@ -952,3 +952,34 @@ test("a zkVM deployment still refuses v1, which carries no shaRoot at all", asyn
     gw.proc.kill();
   }
 });
+
+// v1 and v2 signatures do not cover `order` or `chainlocked`, so a snapshot carrying them on those
+// versions is claiming something its signature does not authenticate. A compromised host could append
+// a unique order string on every refresh while keeping a valid signature, which is how one height came
+// to hold a thousand window records. Refused as a hard error rather than silently ignored.
+test("a v1 snapshot carrying a leaf order is rejected, not silently ignored", async () => {
+  const oracle = join(dir, "v1-with-order.json");
+  await writeFile(oracle, JSON.stringify(snapshot({ order: "proRegTxHash" })));
+  const gw = await startGateway({ MNO_ORACLE_SOURCE: oracle, MNO_ORACLE_REFRESH: "3600" });
+  try {
+    const res = await post(gw.base, "/v1/challenge", { platform: "p", communityId: "c", roleId: "r", account: "alice" });
+    assert.equal(res.status, 503, "an unsigned field must not reach the window key");
+  } finally {
+    gw.proc.kill();
+  }
+});
+
+test("a v2 snapshot carrying a chainlock claim is rejected", async () => {
+  const oracle = join(dir, "v2-with-cl.json");
+  await writeFile(
+    oracle,
+    JSON.stringify(snapshot({ version: 2, shaRoot: shaRootHasher(REAL_LEAVES), chainlocked: true })),
+  );
+  const gw = await startGateway({ MNO_ORACLE_SOURCE: oracle, MNO_ORACLE_REFRESH: "3600" });
+  try {
+    const res = await post(gw.base, "/v1/challenge", { platform: "p", communityId: "c", roleId: "r", account: "alice" });
+    assert.equal(res.status, 503, "v2 does not sign this claim, so it must not carry it");
+  } finally {
+    gw.proc.kill();
+  }
+});

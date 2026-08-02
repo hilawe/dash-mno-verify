@@ -201,6 +201,17 @@ if (config.store === "platform") {
   console.warn("[gateway] EPHEMERAL nullifier state: a restart forgets every spend this epoch");
 }
 
+// The window's ordering key, DERIVED from the validated version rather than read from the snapshot.
+//
+// Taking it from the snapshot is what removed the window's bound: the key space became "any string a
+// source cares to send", so one height could hold unlimited records. Deriving it means the key space
+// is exactly as large as the set of versions this build understands, which is two, so at most two
+// records can share a height and the bound is a property of the enumeration rather than a counter
+// somebody has to remember to check.
+function windowOrderKey(version, order) {
+  return version === 3 ? String(order) : null; // v1 and v2 are the legacy ordering
+}
+
 // The DML root window, fed by the oracle. One window holds both roots per snapshot (RootWindows), so
 // the Poseidon view (dmlRoots.isRecent, for single-tier verify and two-tier registration) and the
 // SHA-256 view (dmlRoots.shaView(), for the zkVM registration statement) are structurally in lockstep
@@ -247,6 +258,16 @@ function validateSnapshot(o, requiresSha) {
   // signed-message form cannot be relied on. Adding a version and leaving its schema unstated is how
   // a new version becomes the weakest one: v3 had no rule here at all, so a v3 snapshot with no
   // shaRoot and no order passed validation that v2 would have failed.
+  // v1 and v2 signatures do not cover `order` or `chainlocked`, so accepting those fields on those
+  // versions is accepting unauthenticated input. A compromised host could append a unique order
+  // string on every refresh while keeping a valid signature, and because the window keyed on that
+  // string it grew without bound at one height. Refuse them outright rather than ignoring them, so a
+  // snapshot claiming something its signature does not cover is a hard error rather than a silent
+  // discard.
+  if (version !== 3) {
+    if (o.order != null) throw new Error(`a v${version} snapshot must not carry a leaf order`);
+    if (o.chainlocked != null) throw new Error(`a v${version} snapshot must not carry a chainlock claim`);
+  }
   if (version === 3) {
     if (o.shaRoot == null) throw new Error("v3 snapshot is missing its shaRoot");
     if (typeof o.order !== "string" || o.order.length === 0) {
@@ -371,7 +392,7 @@ async function refreshRoots() {
       String(o.root) !== String(latestDml.root) &&
       !dmlRoots.mayCoexist({
         height: o.height,
-        order: o.order ?? null,
+        order: windowOrderKey(snapshotVersion(o), o.order),
         blockHash: o.blockHash ?? null,
         setCommitment: leafSetCommitment(o.leaves),
       })
@@ -402,7 +423,7 @@ async function refreshRoots() {
         root: o.root,
         shaRoot: o.shaRoot ?? null,
         ts: o.ts ?? nowSec(),
-        order: o.order ?? null,
+        order: windowOrderKey(snapshotVersion(o), o.order),
         blockHash: o.blockHash ?? null,
         // Derived here from the leaves this gateway just recomputed both roots from, so it is never a
         // value the source chose. It is what a later snapshot at this height is checked against.

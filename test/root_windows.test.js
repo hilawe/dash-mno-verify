@@ -172,3 +172,39 @@ test("the leaf set commitment ignores order and preserves duplicates", () => {
   // of the same members.
   assert.equal(leafSetCommitment(["10", "9"]), leafSetCommitment(["9", "10"]));
 });
+
+// THE WINDOW MUST STAY BOUNDED. Keying on height alone guaranteed at most one record per height, and
+// adding the order to the key destroyed that guarantee without replacing it. A source that could
+// choose the order string could therefore create unlimited records at one height. The replacement is
+// that the key is DERIVED from the validated version, so the key space is the size of the version
+// enumeration, and the bound is a property of that rather than a counter.
+test("a height holds at most one record per known ordering, however many adoptions arrive", () => {
+  const w = new RootWindows(8);
+  const BLOCK = "aa".repeat(32);
+  const SET = leafSetCommitment(["111"]);
+  // Only two order keys can ever reach adopt, because the gateway derives them from the version.
+  for (let i = 0; i < 500; i += 1) {
+    w.adopt({ height: 100, root: `legacy-${i}`, ts: i, order: null, blockHash: BLOCK, setCommitment: SET });
+    w.adopt({ height: 100, root: `v3-${i}`, ts: i, order: "proRegTxHash", blockHash: BLOCK, setCommitment: SET });
+  }
+  const atHeight = w.snaps.filter((s) => s.height === 100);
+  assert.equal(atHeight.length, 2, "1000 adoptions, two orderings, two records");
+});
+
+test("the window never exceeds its configured size in heights", () => {
+  const w = new RootWindows(3);
+  for (let h = 1; h <= 20; h += 1) {
+    w.adopt({ height: h, root: `r-${h}`, ts: h, order: null });
+  }
+  assert.equal(new Set(w.snaps.map((s) => s.height)).size, 3);
+});
+
+test("an unknown ordering is refused by the store itself, not just by its caller", () => {
+  // Defence in depth, and the reason it matters: the gateway derives the key from the validated
+  // version, so only known orderings can arrive today. That is a property of ONE caller. The store's
+  // bound depends on the key space, so it enforces the key space itself rather than trusting whoever
+  // calls it. With an attacker-chosen key this held a thousand records at one height.
+  const w = new RootWindows(8);
+  assert.throws(() => w.adopt({ height: 1, root: "r", ts: 1, order: "attacker-chosen" }), /unknown leaf ordering/);
+  assert.equal(w.snaps.length, 0, "and nothing was stored on the way to refusing");
+});

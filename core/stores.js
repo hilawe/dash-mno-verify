@@ -68,6 +68,15 @@ export function leafSetCommitment(leaves) {
   return createHash("sha256").update(sorted.join("\n"), "utf8").digest("hex");
 }
 
+// The orderings this build understands, and therefore the entire key space of the window.
+//
+// The bound on records per height is a property of THIS SET, not of a counter. The gateway derives
+// the key from the validated snapshot version so only these can arrive, and the assertion below makes
+// that a first-run crash rather than a slow leak if a future caller ever passes something else. The
+// vector it closes is real and was reproduced: with an attacker-chosen key, one height held a
+// thousand records.
+const KNOWN_ORDERS = new Set([null, "proRegTxHash"]);
+
 export class RootWindows {
   constructor(window = 8) {
     this.window = window;
@@ -88,6 +97,14 @@ export class RootWindows {
   // root ages out on its own once the oracle stops publishing them. There is no separate switch to
   // remember to turn off.
   adopt({ height, root, shaRoot = null, ts, order = null, blockHash = null, setCommitment = null }) {
+    // Executable invariant, not a comment. An unknown ordering means the key space is no longer
+    // bounded by the version enumeration, which is the only thing bounding records per height.
+    if (!KNOWN_ORDERS.has(order ?? null)) {
+      throw new Error(
+        `RootWindows: unknown leaf ordering ${JSON.stringify(order)}. The window's key space is the ` +
+          `set of orderings this build knows, and that is what bounds records at one height.`,
+      );
+    }
     const key = `${height}|${order ?? "legacy"}`;
     const byKey = new Map(this.snaps.map((s) => [`${s.height}|${s.order ?? "legacy"}`, s]));
     byKey.set(key, {
