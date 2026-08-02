@@ -13,6 +13,7 @@ import {
   isGone,
   managedState,
   memberDenialsOnGatedChannel,
+  recordHomeGuild,
   roleDenialsAcrossChannels,
   retireTargetTransform,
 } from "./grant_ledger.js";
@@ -46,8 +47,7 @@ export async function runDecommission({
   // look local, so --confirm-target-gone accepted B's not-found as evidence and retired A's row while
   // that access stayed live and unreachable, with its only record gone. Reproduced by two reviewers.
   const boundScope = ledger?.scope?.() ?? null;
-  const homeGuild = boundScope ?? guild.id;
-  const ours = (r) => (r?.guildId ? String(r.guildId) === String(homeGuild) : String(homeGuild) === String(guild.id));
+  const ours = (r) => recordHomeGuild(r, { boundScope, currentGuild: guild.id }) === String(guild.id);
   const namedInLedger = (chOrRoleId) =>
     (ledger?.all?.() ?? [])
       .filter(ours)
@@ -291,10 +291,8 @@ export async function runDecommission({
         retireTargetTransform({
           mode: target.mode,
           ids: target.ids,
-          // The bound scope, so an unlabelled legacy row is judged by where the DATABASE says it
-          // belongs rather than by where this process happens to be pointed.
-          guildId: guild.id,
-          unlabelledBelongTo: homeGuild,
+          currentGuild: guild.id,
+          boundScope,
           failedMembers,
           failedPairs,
           skippedChannels,

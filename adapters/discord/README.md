@@ -116,6 +116,14 @@ What the bot does do is refresh the channel immediately before every check and e
 window between reading and writing is milliseconds rather than however old the cache happened to be.
 That shrinks the exposure for member-level denies. It does not remove it, and nothing can.
 
+**Upgrading past the context binding costs every existing member their access, once.** Grants written
+before that change carry no context hash, so they cannot say which context they were proved in, they
+authorize nothing, and the first startup after the upgrade takes that access back. Those members
+verify again. One on a Platform-backed nullifier store cannot do that until the next epoch, so plan
+the upgrade for an epoch boundary if that matters. The bot names the count at startup before the pass
+runs rather than letting a channel quietly empty. Assuming a context for those records instead would
+be the same "unknown means ours" mistake the guild binding already cost two blockers for.
+
 **One ledger serves one server.** The ledger database itself is bound to a guild the first time it is
 used, and every grant also records the guild it was made in. If you repoint the bot at a different
 server while a bound ledger survives, it refuses to start and names the old server, because that access

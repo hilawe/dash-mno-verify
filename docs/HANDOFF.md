@@ -226,6 +226,22 @@ deterministic function to public chain data and anyone can recompute it. The wor
 internally (`oracle/`, `MNO_ORACLE_PUBKEYS`, `MNO_ORACLE_QUORUM`) so renaming is a real change, not a
 tidy-up. Avoid the word in anything external.
 
+### BREAKING ON UPGRADE: existing Discord grants lose their access once
+
+Grants written before `23f2f4b` carry no `contextHash`. They cannot say which context they were proved
+in, so they authorize nothing, and the first startup after upgrading takes that access back. Those
+members must verify again, and one on a Platform-backed nullifier store cannot do that until the next
+epoch.
+
+That is the correct decision, because assuming a context is exactly the "unknown means ours" mistake
+the guild binding cost two blockers for. What was wrong was doing it silently. Startup now names the
+count and says it is a one-time upgrade effect before the pass runs.
+
+Plan the upgrade for an epoch boundary if the timing matters. If a deployment ever needs the rows kept
+instead, the shape is an explicit operator assertion that transactionally stamps a named legacy
+context, in the same style as `DISCORD_LEDGER_ADOPT_GUILD_ID`. It does not exist and should not be
+inferred.
+
 ### Breaking changes for any existing deployment
 
 Everything in the 2026-07-30 list, plus:

@@ -401,6 +401,21 @@ async function reconcileGuild() {
         `\n  Run that for each, then start again. The command retires the rows it clears.`,
     );
   }
+  // SAY IT OUT LOUD before removing anybody's access over it.
+  //
+  // Records written before grants carried a context hash cannot say which context they were proved in,
+  // so they authorize nothing and this pass takes their access back. That is the correct decision, and
+  // an operator finding out by watching a channel empty is not acceptable, especially since a
+  // Platform-backed member cannot re-verify until the next epoch.
+  const contextless = ledger.all().filter((r) => r?.mode === "channel" && !r.contextHash);
+  if (contextless.length) {
+    console.warn(
+      `[discord] ${contextless.length} grant(s) predate context binding and cannot say which context ` +
+        `they were proved in. They authorize nothing, so this pass will take that access back and ` +
+        `those members must verify again. A member on a Platform-backed nullifier store cannot do that ` +
+        `until the next epoch. This is a one-time upgrade effect and is expected.`,
+    );
+  }
   const targets = await usableTargets(guild);
   const removed = [];
   const failed = [];

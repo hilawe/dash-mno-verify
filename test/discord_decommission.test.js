@@ -337,3 +337,59 @@ test("a fully denied member is reported by neither preview nor apply, and is sti
     assert.equal(ledger.has("denied"), false, "retired anyway, because nothing of the bot's is left");
   });
 });
+
+// NF1: two provenance rules disagreed. An explicit guildId was compared against the DATABASE'S bound
+// scope in one place and the CURRENT guild in the other. The broken rule only decides the
+// confirm-gone precondition, so this isolates that: the ONLY row is one explicitly naming the guild we
+// are connected to, and it is the row the command exists to retire.
+test("a row explicitly naming the connected guild is evidence for the gone assertion", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mno-dc-"));
+  const file = join(dir, "grants.db");
+  const opts = { exclusive: false, apply: async () => {}, revoke: async () => {}, now: () => 1000, log: () => {} };
+  const { guild } = fakeGuild({ roles: {}, members: [] }); // connected to g1
+  try {
+    // Bound elsewhere, one row explicitly naming g1. The record said where it belongs, so it wins over
+    // the binding. Comparing it to the bound scope made the command refuse the one row it could
+    // legitimately retire.
+    const bound = new GrantLedger({ ...opts, file, scope: "OTHER" });
+    await bound.grant("mine", { expiresAt: 9999, mode: "role", guildId: "g1", roleId: "r1" });
+    bound.close();
+
+    const cleanup = new GrantLedger({ ...opts, file, scope: "g1", allowForeignScope: true });
+    await runDecommission({
+      guild, target: { mode: "role", ids: ["r1"] }, targetArg: "role:r1",
+      dryRun: false, confirmGone: true, ledger: cleanup, botUserId: "bot",
+    });
+    assert.equal(cleanup.has("mine"), false, "retired, because the record names this guild");
+    cleanup.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a row explicitly naming ANOTHER guild is neither evidence nor retired", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mno-dc-"));
+  const file = join(dir, "grants.db");
+  const opts = { exclusive: false, apply: async () => {}, revoke: async () => {}, now: () => 1000, log: () => {} };
+  const { guild } = fakeGuild({ roles: {}, members: [] });
+  try {
+    const bound = new GrantLedger({ ...opts, file, scope: "OTHER" });
+    await bound.grant("theirs", { expiresAt: 9999, mode: "role", guildId: "OTHER", roleId: "r1" });
+    bound.close();
+
+    const cleanup = new GrantLedger({ ...opts, file, scope: "g1", allowForeignScope: true });
+    await assert.rejects(
+      () =>
+        runDecommission({
+          guild, target: { mode: "role", ids: ["r1"] }, targetArg: "role:r1",
+          dryRun: false, confirmGone: true, ledger: cleanup, botUserId: "bot",
+        }),
+      /no ledger record names/,
+      "another guild's row cannot be evidence that r1 is gone from this one",
+    );
+    assert.equal(cleanup.has("theirs"), true);
+    cleanup.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

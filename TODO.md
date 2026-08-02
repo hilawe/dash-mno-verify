@@ -4,6 +4,30 @@ Known issues and planned work, in priority order, from a code review of the curr
 This is a working prototype and is not audited. Do not gate anything of real value until at
 least the P0 items are done and the system has had an audit.
 
+OPEN, TWO ITEMS THE RECORD FORMAT CANNOT EXPRESS (2026-08-02). Both came out of the round 12
+confirmation as blockers, and both were left rather than patched, because each has already had one
+patch fail in a new place and the reason is the same: a grant record holds ONE deadline and ONE target
+set, and these need per-target state.
+
+- **A failed orphan revoke can still extend the old target's deadline.** The renewal writes a covering
+  record naming both targets with the NEW deadline, revokes the orphan, then writes the final record.
+  If the revoke fails, the prior record is restored, which handles the common case. If that restore
+  ALSO fails, or the process dies after the covering write, the durable row stays as both targets at
+  the new deadline and the old access is extended, with the sweep not firing at the original time to
+  retry. The fix needs per-target deadlines and a pending-revoke state, retrying the orphan revocation
+  at ITS deadline independently of the new grant. That is a record-schema change.
+- **The non-repairing policy covers first grants and not renewals.** `repairs` is opt-in, so an adapter
+  without a repair pass gets a compensating revoke when a FIRST grant fails. A renewal that revokes the
+  old target and then fails to apply the new one keeps the new record with nothing behind it, and for
+  Matrix and Telegram nothing will ever retry. Either the compensating policy extends to migrations, or
+  those two adapters get a real stored-record repair pass before they can safely opt in.
+
+These are the same shape as the exclusion gap below: a design the current record format cannot express,
+which is why each attempt fails somewhere new. Four consecutive folds introduced blockers, and the two
+of those that were patches on this exact machinery are the reason these are written down instead. Pick
+them up together, with the confirmation report open, and change the record format once rather than
+patching around it a third time.
+
 ANSWERED, THE CHAIN ANCHOR FOR THE SNAPSHOT (2026-08-02). The largest open trust assumption has a
 known answer now, confirmed by the Dash Core lead against the consensus code, and it is a design item
 rather than a question.

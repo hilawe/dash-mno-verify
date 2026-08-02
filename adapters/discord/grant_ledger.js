@@ -151,15 +151,31 @@ export function staleTargets(records, { mode, channels = [], roleId } = {}) {
 // access, so their record keeps naming the target and the sweep keeps trying. A channel that was
 // skipped whole (unreadable, or carrying a denial the command refused to touch) is retired for nobody.
 // Only what was actually taken back stops being tracked.
+// WHERE A RECORD BELONGS. One predicate, used everywhere provenance is decided.
+//
+// There were two, and they disagreed. An explicit `guildId` was compared against the DATABASE'S bound
+// scope in one place and against the CURRENT guild in the other, so cleanup connected to the guild a
+// row explicitly named refused the one row it could legitimately retire, while the opposite
+// orientation accepted a foreign row as evidence and reported success having done nothing. Both
+// reproduced. Two nearly identical rules for the same question is the twin shape this component keeps
+// producing, so there is one rule now and both callers take it.
+//
+// The order is: an explicit `record.guildId` wins, because the record said so. Otherwise the
+// database's bound scope, because an unlabelled legacy row belongs to whatever the database is bound
+// to. Otherwise the current guild, for a ledger with no binding at all.
+export function recordHomeGuild(record, { boundScope = null, currentGuild = null } = {}) {
+  if (record?.guildId) return String(record.guildId);
+  if (boundScope !== null && boundScope !== undefined) return String(boundScope);
+  return currentGuild === null || currentGuild === undefined ? null : String(currentGuild);
+}
+
 export function retireTargetTransform({
   mode,
   ids,
-  guildId = null,
-  // Where a record carrying NO guildId belongs. Defaults to `guildId`, which is right whenever the
-  // command is pointed at the database's own scope. It differs only under the cleanup escape, where
-  // the process is configured for one guild and the database is bound to another, and an unlabelled
-  // legacy row belongs to the BOUND one.
-  unlabelledBelongTo = null,
+  // The guild this process is connected to, and the scope the database is bound to. They differ only
+  // under the cleanup escape. Both go to recordHomeGuild, which is the single provenance rule.
+  currentGuild = null,
+  boundScope = null,
   failedMembers = new Set(),
   failedPairs = new Set(),
   skippedChannels = new Set(),
@@ -172,10 +188,9 @@ export function retireTargetTransform({
     // that bypass came with no check on the rows themselves: it retired a record made in one guild
     // while operating in another, which forgets access that is live and unreachable. The bypass has to
     // be narrower than the guard it steps around, not wider.
-    const home = unlabelledBelongTo ?? guildId;
-    if (guildId !== null) {
-      const belongsTo = record?.guildId ? String(record.guildId) : home === null ? null : String(home);
-      if (belongsTo !== null && belongsTo !== String(guildId)) return record;
+    if (currentGuild !== null) {
+      const home = recordHomeGuild(record, { boundScope, currentGuild });
+      if (home !== null && home !== String(currentGuild)) return record; // not ours to retire
     }
     if (mode === "role") {
       if (failedMembers.has(u)) return record;
