@@ -66,3 +66,50 @@ test("clear empties both views", () => {
   assert.equal(w.isRecent("P"), false);
   assert.equal(w.shaIsRecent("S"), false);
 });
+
+// THE v2 TO v3 TRANSITION. The leaf order changed with the block-bound read, so the same set of
+// masternodes produces two different roots. Keying the window on height alone meant the new snapshot
+// replaced the old one at that height, and every prover still holding a v2 tree was locked out the
+// moment the oracle switched.
+test("both leaf orders are accepted at one height, so a changeover locks nobody out", () => {
+  const w = new RootWindows(8);
+  w.adopt({ height: 100, root: "poseidon-v2", shaRoot: "a".repeat(64), ts: 1000, order: null });
+  w.adopt({ height: 100, root: "poseidon-v3", shaRoot: "b".repeat(64), ts: 1001, order: "proRegTxHash" });
+
+  assert.equal(w.isRecent("poseidon-v2"), true, "a prover still holding the old tree can still prove");
+  assert.equal(w.isRecent("poseidon-v3"), true, "and so can one that has rebuilt");
+  assert.equal(w.shaIsRecent("a".repeat(64)), true);
+  assert.equal(w.shaIsRecent("b".repeat(64)), true);
+  assert.equal(w.current().root, "poseidon-v3", "the newest adoption is what the gateway publishes");
+});
+
+test("re-adopting the SAME order at a height still replaces, rather than accumulating", () => {
+  const w = new RootWindows(8);
+  w.adopt({ height: 100, root: "first", ts: 1000, order: "proRegTxHash" });
+  w.adopt({ height: 100, root: "second", ts: 1001, order: "proRegTxHash" });
+  assert.equal(w.isRecent("first"), false, "a corrected snapshot supersedes, it does not pile up");
+  assert.equal(w.isRecent("second"), true);
+});
+
+test("the window counts heights, so running two orders does not halve the accepted history", () => {
+  const w = new RootWindows(2);
+  for (const h of [1, 2, 3]) {
+    w.adopt({ height: h, root: `v2-${h}`, ts: h, order: null });
+    w.adopt({ height: h, root: `v3-${h}`, ts: h, order: "proRegTxHash" });
+  }
+  // Two heights kept, both orders at each. Counting records instead would have kept one height.
+  assert.equal(w.isRecent("v2-1"), false, "the oldest height is evicted");
+  assert.equal(w.isRecent("v2-2"), true);
+  assert.equal(w.isRecent("v3-2"), true);
+  assert.equal(w.isRecent("v3-3"), true);
+});
+
+test("an aged-out v2 root stops being accepted with no switch to remember", () => {
+  // The transition is bounded by the ordinary age rule, so nothing has to be turned off later.
+  const w = new RootWindows(8);
+  w.adopt({ height: 100, root: "old-order", ts: 1000, order: null });
+  w.adopt({ height: 101, root: "new-order", ts: 2000, order: "proRegTxHash" });
+  w.dropOlderThan(1500);
+  assert.equal(w.isRecent("old-order"), false, "it ages out on its own once the oracle stops publishing it");
+  assert.equal(w.isRecent("new-order"), true);
+});

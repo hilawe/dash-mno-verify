@@ -18,7 +18,17 @@ ENABLED. Every guard is pinned by a test that fails when the guard is removed.
 
 TWO THINGS NEEDED BEFORE IT CAN BE WIRED.
 
-1. **The root CHANGES, so this is a breaking transition, not a drop-in.** The old read ordered leaves
+1. **DONE, the transition window.** The root still changes, but a v2 and a v3 root at one height now
+   coexist in the gateway's window instead of the newer replacing the older, so an oracle can switch
+   without locking out every prover still holding a tree in the old order. Safe rather than a
+   loosening: the two roots commit to the SAME leaf set and differ only in build order, so proving
+   against either proves membership in the same set. Bounded by the ordinary window and age rules, so
+   a v2 root ages out on its own once the oracle stops publishing them and there is no switch to
+   remember to turn off. The window counts HEIGHTS rather than records, so running two orders does not
+   halve the accepted history. (`core/stores.js`, `core/gateway.js`, `test/root_windows.test.js`)
+
+   Original statement of the problem, kept because the reasoning still governs anything that touches
+   leaf ordering: **the root CHANGES, so this is a breaking transition, not a drop-in.** The old read ordered leaves
    by the collateral outpoint, because that is what keys `masternodelist json`. The collateral outpoint
    is NOT a field of the DIP4 simplified entry, since it is not committed on chain, so it is absent
    from `protx diff`, and the canonical order there is `proRegTxHash`. Aligning with DIP4's own order

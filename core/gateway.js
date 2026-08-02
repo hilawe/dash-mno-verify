@@ -348,7 +348,17 @@ async function refreshRoots() {
       latestDml = o;
       // One paired record holds both roots, so the two views stay in lockstep by construction. A v1
       // snapshot has shaRoot null and never matches the SHA-256 view.
-      dmlRoots.adopt({ height: o.height, root: o.root, shaRoot: o.shaRoot ?? null, ts: o.ts ?? nowSec() });
+      // `order` carries the snapshot's leaf ordering, so a v2 and a v3 root at one height coexist in
+      // the window instead of the newer replacing the older. That is what lets an oracle switch to the
+      // block-bound read without locking out every prover still holding a tree in the old order. A
+      // snapshot that does not state its order is legacy ordering, which is what v1 and v2 are.
+      dmlRoots.adopt({
+        height: o.height,
+        root: o.root,
+        shaRoot: o.shaRoot ?? null,
+        ts: o.ts ?? nowSec(),
+        order: o.order ?? null,
+      });
     }
   } catch (err) {
     console.error("[gateway] root refresh failed:", err.message);

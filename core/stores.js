@@ -55,12 +55,32 @@ export class RootWindows {
     this.window = window;
     this.snaps = []; // sorted by height ascending, newest last; each { height, root, shaRoot, ts }
   }
-  // Adopt one snapshot, keyed by height (a re-adoption at the same height replaces it).
-  adopt({ height, root, shaRoot = null, ts }) {
-    const byHeight = new Map(this.snaps.map((s) => [s.height, s]));
-    byHeight.set(height, { height, root, shaRoot: shaRoot ?? null, ts });
-    this.snaps = [...byHeight.values()].sort((a, b) => a.height - b.height).slice(-this.window);
+  // Adopt one snapshot, keyed by height AND leaf order.
+  //
+  // THE TRANSITION WINDOW. The leaf order changed with the block-bound read: v2 snapshots order by the
+  // collateral outpoint, v3 by proRegTxHash, so the same set of masternodes produces two different
+  // roots. Keying on height alone meant a v3 snapshot REPLACED the v2 one at that height, and every
+  // prover still holding a v2 tree was locked out the moment the oracle switched, with no way to
+  // re-prove until they rebuilt.
+  //
+  // Both orders now coexist for as long as both are in the window. That is safe rather than a
+  // loosening: the two roots commit to the SAME leaf set, differing only in the order the tree was
+  // built, so a member proving against either proves membership in the same set. Nothing else about
+  // the check changes, and the transition is bounded by the ordinary window and age rules, so a v2
+  // root ages out on its own once the oracle stops publishing them. There is no separate switch to
+  // remember to turn off.
+  adopt({ height, root, shaRoot = null, ts, order = null }) {
+    const key = `${height}|${order ?? "legacy"}`;
+    const byKey = new Map(this.snaps.map((s) => [`${s.height}|${s.order ?? "legacy"}`, s]));
+    byKey.set(key, { height, root, shaRoot: shaRoot ?? null, ts, order: order ?? null });
+    // The window counts HEIGHTS, not records, so running two orders during a changeover does not
+    // silently halve how far back the gateway will accept a proof.
+    const all = [...byKey.values()].sort((a, b) => a.height - b.height);
+    const keptHeights = new Set([...new Set(all.map((s) => s.height))].slice(-this.window));
+    this.snaps = all.filter((s) => keptHeights.has(s.height));
   }
+  // The newest snapshot. With two orders at one height during a changeover, the LAST adopted wins,
+  // which is the one the oracle is publishing now.
   current() {
     return this.snaps.at(-1) ?? null;
   }
