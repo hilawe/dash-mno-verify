@@ -238,6 +238,20 @@ function validateSnapshot(o, requiresSha) {
   }
   if (version === 2 && o.shaRoot == null) throw new Error("v2 snapshot is missing its shaRoot");
   if (version === 1 && o.shaRoot != null) throw new Error("v1 snapshot must not carry a shaRoot");
+  // v3 carries everything v2 does PLUS the leaf ORDER, and the schema has to demand both or the
+  // signed-message form cannot be relied on. Adding a version and leaving its schema unstated is how
+  // a new version becomes the weakest one: v3 had no rule here at all, so a v3 snapshot with no
+  // shaRoot and no order passed validation that v2 would have failed.
+  if (version === 3) {
+    if (o.shaRoot == null) throw new Error("v3 snapshot is missing its shaRoot");
+    if (typeof o.order !== "string" || o.order.length === 0) {
+      throw new Error("v3 snapshot is missing its leaf order");
+    }
+    // The ordering rules this build knows how to reason about. An unrecognised one is refused rather
+    // than filed under a label nothing understands, because the window keys on it to hold two orders
+    // apart and a label it cannot interpret makes that separation meaningless.
+    if (o.order !== "proRegTxHash") throw new Error(`v3 snapshot has an unknown leaf order: ${o.order}`);
+  }
   // Deployment-scoped dual-root requirement (docs/ZKVM_INTEGRATION.md). A zkVM deployment refuses a
   // v1 snapshot outright, since it lacks the SHA-256 root the zkVM statement is checked against, so a
   // downgrade cannot slip a rootless snapshot in. `requiresSha` is judged by configured intent AND a

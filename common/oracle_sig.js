@@ -15,6 +15,7 @@ import { createPublicKey, createPrivateKey, sign, verify } from "node:crypto";
 
 const DOMAIN_V1 = "mno-oracle-snapshot-v1";
 const DOMAIN_V2 = "mno-oracle-snapshot-v2";
+const DOMAIN_V3 = "mno-oracle-snapshot-v3";
 
 // Canonical authenticated message for a snapshot. The oracle and the gateway derive it the same way
 // from the snapshot object, so the signed bytes match exactly. The domain prefix stops a signature
@@ -23,10 +24,41 @@ const DOMAIN_V2 = "mno-oracle-snapshot-v2";
 //
 // v1: the original fields, unchanged, so existing v1 snapshots and their signatures verify exactly.
 // v2: appends the SHA-256 root and an explicit version, the zkVM dual-root snapshot. A v2 snapshot
-// MUST carry a shaRoot; the version field, set by the oracle, selects the form so a v1 snapshot with
-// a stray shaRoot cannot be verified as v2 (or vice versa).
+// MUST carry a shaRoot, and the version field, set by the oracle, selects the form so a v1 snapshot
+// with a stray shaRoot cannot be verified as v2 or the reverse.
+//
+// v3: the block-bound, ChainLock-gated read. It signs everything v2 does PLUS the leaf ORDER and the
+// ChainLock claim, and both must be in the signed bytes rather than alongside them.
+//
+// The order matters because v2 and v3 roots are built from the same leaf set in different orders. If
+// `order` were unsigned, a holder of a valid v3 snapshot could present it as v2, or relabel the
+// ordering, and the gateway would file a root under a rule that did not produce it. The window
+// deliberately accepts both orders at one height, so the label is what keeps them apart, and an
+// unsigned label would make that acceptance the hole rather than the feature.
+//
+// `chainlocked` is signed for the same reason. It is the claim that makes a v3 snapshot worth more
+// than a v2 one, so it must not be something a relay can add.
 export function snapshotMessage(o) {
-  const version = snapshotVersion(o); // throws on any version other than absent/1/2
+  const version = snapshotVersion(o); // throws on any version other than absent/1/2/3
+  if (version === 3) {
+    if (typeof o.shaRoot !== "string") throw new Error("v3 snapshot message requires a string shaRoot");
+    if (typeof o.order !== "string" || o.order.length === 0) {
+      throw new Error("v3 snapshot message requires a non-empty string order");
+    }
+    const fields = [
+      DOMAIN_V3,
+      "3",
+      o.height,
+      o.blockHash ?? "",
+      o.depth,
+      o.root,
+      o.shaRoot,
+      o.order,
+      o.chainlocked === true ? "1" : "0",
+      o.ts,
+    ];
+    return Buffer.from(fields.map((f) => String(f)).join("\n"), "utf8");
+  }
   if (version === 2) {
     if (typeof o.shaRoot !== "string") throw new Error("v2 snapshot message requires a string shaRoot");
     const fields = [DOMAIN_V2, "2", o.height, o.blockHash ?? "", o.depth, o.root, o.shaRoot, o.ts];
@@ -45,6 +77,7 @@ export function snapshotVersion(o) {
   const v = o?.version;
   if (v == null || v === 1) return 1;
   if (v === 2) return 2;
+  if (v === 3) return 3;
   throw new Error(`unsupported oracle snapshot version: ${JSON.stringify(v)}`);
 }
 

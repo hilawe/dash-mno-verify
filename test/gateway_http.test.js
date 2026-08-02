@@ -864,3 +864,52 @@ test("the gateway refuses to start with an unsigned oracle and no opt-out", asyn
     /exited early|did not start/,
   );
 });
+
+
+// v3 is the block-bound, ChainLock-gated snapshot. Adding a version and leaving its schema unstated is
+// how a new version becomes the WEAKEST one: v3 initially had no rule here at all, so a v3 snapshot
+// with no shaRoot and no leaf order passed validation that a v2 would have failed. These drive the
+// real gateway, so they exercise validateSnapshot rather than a copy of its logic.
+test("a v3 snapshot with no leaf order is rejected, leaving no usable root", async () => {
+  const oracle = join(dir, "v3-no-order.json");
+  await writeFile(
+    oracle,
+    JSON.stringify(snapshot({ version: 3, shaRoot: "a".repeat(64) })), // order absent
+  );
+  const gw = await startGateway({ MNO_ORACLE_SOURCE: oracle, MNO_ORACLE_REFRESH: "3600" });
+  try {
+    const res = await post(gw.base, "/v1/challenge", { platform: "p", communityId: "c", roleId: "r", account: "alice" });
+    assert.equal(res.status, 503, "an unstated leaf order must not be adopted");
+  } finally {
+    gw.proc.kill();
+  }
+});
+
+test("a v3 snapshot with an unrecognised leaf order is rejected", async () => {
+  // The window keys on this label to hold two orders apart, so a label nothing can interpret makes
+  // that separation meaningless. Refused rather than filed under it.
+  const oracle = join(dir, "v3-odd-order.json");
+  await writeFile(
+    oracle,
+    JSON.stringify(snapshot({ version: 3, shaRoot: "a".repeat(64), order: "somethingElse" })),
+  );
+  const gw = await startGateway({ MNO_ORACLE_SOURCE: oracle, MNO_ORACLE_REFRESH: "3600" });
+  try {
+    const res = await post(gw.base, "/v1/challenge", { platform: "p", communityId: "c", roleId: "r", account: "alice" });
+    assert.equal(res.status, 503);
+  } finally {
+    gw.proc.kill();
+  }
+});
+
+test("a v3 snapshot with no shaRoot is rejected, exactly as a v2 would be", async () => {
+  const oracle = join(dir, "v3-no-sha.json");
+  await writeFile(oracle, JSON.stringify(snapshot({ version: 3, order: "proRegTxHash" })));
+  const gw = await startGateway({ MNO_ORACLE_SOURCE: oracle, MNO_ORACLE_REFRESH: "3600" });
+  try {
+    const res = await post(gw.base, "/v1/challenge", { platform: "p", communityId: "c", roleId: "r", account: "alice" });
+    assert.equal(res.status, 503);
+  } finally {
+    gw.proc.kill();
+  }
+});

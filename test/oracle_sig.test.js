@@ -68,9 +68,53 @@ test("a v2 message with no shaRoot is a hard error, not a silent v1 fallback", (
 });
 
 test("an unknown version fails closed rather than falling back to v1", () => {
-  // version 3 must not produce a (legacy) v1 message that a v1 signature would authenticate.
-  assert.throws(() => snapshotMessage({ ...snapV2, version: 3 }), /unsupported oracle snapshot version/);
+  // An unrecognised version must not produce a legacy v1 message that a v1 signature would
+  // authenticate, which would leave every field the newer version added unsigned.
+  assert.throws(() => snapshotMessage({ ...snapV2, version: 4 }), /unsupported oracle snapshot version/);
   assert.throws(() => snapshotMessage({ ...snap, version: "1" }), /unsupported oracle snapshot version/);
+  assert.throws(() => snapshotMessage({ ...snap, version: 2.0000001 }), /unsupported oracle snapshot version/);
+});
+
+// v3 is the block-bound, ChainLock-gated snapshot. Its extra claims are the leaf ORDER and the
+// ChainLock, and both have to be inside the signed bytes rather than travelling beside them.
+const snapV3 = {
+  ...snapV2,
+  version: 3,
+  order: "proRegTxHash",
+  chainlocked: true,
+};
+
+test("a v3 message signs the leaf order and the chainlock claim, not just the roots", () => {
+  const base = snapshotMessage(snapV3).toString();
+  assert.match(base, /mno-oracle-snapshot-v3/, "its own domain, so no cross-version replay");
+  assert.match(base, /proRegTxHash/, "the ordering rule is signed");
+
+  // Change only the order label. A different message means a signature over one cannot authenticate
+  // the other, which is the whole point: the window accepts both orders at a height, so the LABEL is
+  // what keeps them apart. Unsigned, that acceptance would be the hole rather than the feature.
+  const relabelled = snapshotMessage({ ...snapV3, order: "collateralOutpoint" }).toString();
+  assert.notEqual(base, relabelled);
+
+  // And the chainlock claim, which is what makes a v3 snapshot worth more than a v2 one.
+  const unlocked = snapshotMessage({ ...snapV3, chainlocked: false }).toString();
+  assert.notEqual(base, unlocked);
+});
+
+test("a v3 snapshot cannot be presented as v2, nor a v2 as v3", () => {
+  // Same height, roots, and timestamp. Only the version differs, and the messages must not collide,
+  // or a signature over one would authenticate the other with its extra claims unchecked.
+  const asV3 = snapshotMessage(snapV3).toString();
+  const asV2 = snapshotMessage({ ...snapV3, version: 2 }).toString();
+  assert.notEqual(asV3, asV2);
+  assert.match(asV2, /mno-oracle-snapshot-v2/);
+});
+
+test("a v3 message refuses to form without the fields it claims to sign", () => {
+  const { order, ...noOrder } = snapV3;
+  assert.throws(() => snapshotMessage(noOrder), /requires a non-empty string order/);
+  assert.throws(() => snapshotMessage({ ...snapV3, order: "" }), /requires a non-empty string order/);
+  const { shaRoot, ...noSha } = snapV3;
+  assert.throws(() => snapshotMessage(noSha), /requires a string shaRoot/);
 });
 
 test("a malformed signature returns false rather than throwing", () => {
