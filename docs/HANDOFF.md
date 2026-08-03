@@ -33,9 +33,25 @@ prioritized punch list.
    `stale-or-unknown-root` and should raise it. Setting 0 disables the rule and restores the old
    behaviour, with a loud boot warning.
 
-   Continue at item 6: the rate-limit keying (every adapter makes the request itself, so one user
-   can deny challenges to everyone behind that adapter), the Platform schedule binding, the
-   `/v1/dml` limiter, and health readiness.
+   `45ebc02`: the rate-limit keying, the `/v1/dml` limiter, the Platform schedule binding, and
+   capability-specific health readiness. Suite 459.
+
+   **THE WHOLE-GATEWAY ROUND'S FOLD IS NOW COMPLETE except the two architectural items**, which were
+   always going to be separate work: the members-tree full rebuild (about 20 seconds of blocked
+   event loop for one ordinary first registration) and the retained-leaves bound (up to sixteen full
+   leaf arrays during a changeover, legitimate data that normalization does not touch).
+
+   **THIRD AND FOURTH NEW OPERATOR SETTINGS.** `MNO_RATE_CHALLENGE_ACCOUNT` (10) and
+   `MNO_RATE_VERIFY_ACCOUNT` (20) are per-account-per-window limits, and `MNO_RATE_DML` (60) bounds
+   the public leaf-set endpoint. Also **PLATFORM MODE NOW REFUSES TO START** without
+   `MNO_PLATFORM_ASSUME_SCHEDULE=1`, because the contract cannot carry a schedule marker and a
+   changed schedule would otherwise be reinterpreted in silence.
+
+   **NEXT: a fresh full round.** Everything since `a3cc0ed` has had only focused screens, which are
+   a screen and not a round, and this project's record is five consecutive rounds finding the newest
+   fixes to be the highest-risk surface. That held again throughout this fold: the worst defect in
+   the registration-anchor work existed only in the fix, and three tests of mine were caught vacuous
+   by their own mutations. Build packets from `45ebc02` or later.
 3. **The fold itself has had no independent round.** Two focused artifact checks screened it, which
    is not a round. Build fresh packets from the current commit once the contained items are folded,
    and remember this project's own record: five consecutive rounds found the newest fixes to be the
