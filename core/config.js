@@ -149,6 +149,28 @@ export const config = {
   // durable record and a cached tree. An operator already knows which communities they gate, so the
   // list is the smallest thing that bounds it.
   registerContexts: listEnv("MNO_REGISTER_CONTEXTS"),
+  // How old the DML root a REGISTRATION is anchored to may be, in seconds. 0 disables the rule and
+  // falls back to whatever the membership window accepts.
+  //
+  // WHY THIS IS SEPARATE FROM THE MEMBERSHIP WINDOW. A membership proof against a slightly stale
+  // root buys one epoch of access. A REGISTRATION proof against the same root buys the REMAINDER OF
+  // THE CURRENT SEASON, up to 90 days by default. So a node that left the masternode list minutes
+  // ago can register against a root published just before it left and keep membership for the rest
+  // of that season, which is weaker than what "seasonal re-registration re-proves current control"
+  // promises.
+  //
+  // SOME grace is unavoidable in this design, because a prover must fetch leaves, build a tree, and
+  // produce a heavy proof before submitting, so a root is always somewhat old by the time it is
+  // used. A different design could remove it (a short registration challenge pinning an eligible
+  // root would), and that is recorded in TODO.md rather than claimed here.
+  //
+  // THE DEFAULT IS FINITE AND IS A JUDGMENT, not a measurement. 900 seconds is meant to sit
+  // comfortably above the observed registration proving time (minutes on masternode-class hardware
+  // per docs/REDUCING_PROVING_COST.md) while being well under the membership window's own 1800s
+  // bound, so the grace a departed node gets is halved rather than inherited. A deployment whose
+  // provers are slower should raise it and will see the refusal as stale-or-unknown-root; one that
+  // wants the tightest defensible anchor should lower it.
+  registerRootMaxAgeSeconds: intEnv("MNO_REGISTER_ROOT_MAX_AGE", 900, { min: 0 }),
 
   // Two-tier keys and season length.
   registrationVkeyPath: process.env.MNO_REG_VKEY ?? "circuits/build/mno_registration_vkey.json",

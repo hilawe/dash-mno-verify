@@ -152,6 +152,45 @@ export class RootWindows {
   maxHeight() {
     return this.snaps.length === 0 ? null : Math.max(...this.snaps.map((s) => Number(s.height)));
   }
+  // Whether `root` is accepted AND, when maxAgeSeconds is positive, no older than that. One place,
+  // so the registration anchor rule is a property of the window rather than a predicate rebuilt at
+  // each call site, and so it can be unit-tested directly instead of only through a stubbed
+  // predicate. A root the window does not hold has no timestamp and is refused, which is the same
+  // answer isRecent would give.
+  isEligibleWithin(root, maxAgeSeconds, now) {
+    if (!this.isRecent(root)) return false;
+    if (!(maxAgeSeconds > 0)) return true;
+    const ts = this.tsOf(root);
+    if (ts == null) return false;
+    // A future-dated record reads as age zero rather than as a negative age. That does NOT make a
+    // future stamp free: such a root stays eligible until wall time reaches its timestamp and then
+    // gets the full allowance from there, so the real window is the bound PLUS however far ahead it
+    // was stamped. What keeps that finite is the separate future-skew bound applied at adoption
+    // (oracleFutureSkewSeconds); this clamp only stops a negative age from being compared.
+    const age = Math.max(0, now - ts);
+    return age <= maxAgeSeconds;
+  }
+  // The oracle timestamp of the record holding this root, or null if the window does not hold it.
+  // Registration needs the AGE of the root it is anchored to, not merely whether it is still
+  // accepted: membership lasts one epoch, so a stale-but-windowed root there costs an epoch, while a
+  // registration turns the same staleness into the remainder of the current season.
+  // The NEWEST timestamp among the records holding this root, not the first one found. One root can
+  // legitimately sit at several heights: the root is derived from the leaf set alone, so an
+  // unchanged masternode list across two oracle reads produces the same root at two heights, which
+  // is ordinary rather than exceptional. Taking the first match (the lowest height, since the window
+  // is height-sorted) meant judging a root the oracle republished seconds ago by the timestamp of
+  // its oldest appearance, so a stable network would start refusing registrations once that first
+  // appearance passed the age bound. That is a guard with no exit reached by ordinary operation.
+  tsOf(root) {
+    let newest = null;
+    for (const s of this.snaps) {
+      if (s.root !== root) continue;
+      const ts = Number(s.ts);
+      if (!Number.isFinite(ts)) continue;
+      if (newest == null || ts > newest) newest = ts;
+    }
+    return newest;
+  }
   // Poseidon view. Named isRecent so a RootWindows is a drop-in for the old dmlRoots RootStore.
   isRecent(root) {
     return this.snaps.some((s) => s.root === root);

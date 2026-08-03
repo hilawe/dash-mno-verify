@@ -300,3 +300,52 @@ test("a record retains only the normalized snapshot fields, not whatever the sou
     "blockHash", "depth", "height", "leaves", "root", "shaRoot", "ts", "version",
   ]);
 });
+
+// THE REGISTRATION ANCHOR AGE RULE, tested directly rather than through a stubbed predicate. A
+// membership proof against a stale-but-windowed root costs one epoch; a registration proof against
+// the same root buys the remainder of the season. The rule lives here so it is one implementation
+// with one test, not a predicate rebuilt at each call site.
+test("isEligibleWithin enforces the configured age, and zero means the window's own rule", () => {
+  const w = new RootWindows(8);
+  w.adopt({ height: 1, root: "r", ts: 1000, order: null });
+
+  assert.equal(w.isEligibleWithin("r", 0, 9_999_999), true, "zero disables the age rule entirely");
+  assert.equal(w.isEligibleWithin("r", 600, 1500), true, "500s old, inside a 600s bound");
+  assert.equal(w.isEligibleWithin("r", 600, 1600), true, "exactly 600s old is still inside");
+  assert.equal(w.isEligibleWithin("r", 600, 1601), false, "601s old is outside");
+  assert.equal(w.isEligibleWithin("missing", 600, 1500), false, "a root the window does not hold");
+  assert.equal(w.isEligibleWithin("missing", 0, 1500), false, "and still refused with no age rule");
+});
+
+test("a future-dated record reads as age zero, which is grace the skew bound has to cover", () => {
+  // Stated as it behaves, not as it would be convenient. Clamping stops a negative age being
+  // compared; it does NOT make a future stamp free. Such a root is eligible until wall time reaches
+  // its timestamp and then gets the full allowance from there, so the real window is the bound plus
+  // however far ahead it was stamped, and what keeps that finite is the separate future-skew bound
+  // applied at adoption.
+  const w = new RootWindows(8);
+  w.adopt({ height: 1, root: "future", ts: 5000, order: null });
+  assert.equal(w.isEligibleWithin("future", 600, 1000), true, "far before its own timestamp, still eligible");
+  assert.equal(w.isEligibleWithin("future", 600, 5600), true, "and still eligible 600s past it");
+  assert.equal(w.isEligibleWithin("future", 600, 5601), false, "the allowance runs from the timestamp");
+});
+
+test("a root republished at a later height is judged by its NEWEST appearance", () => {
+  // One root legitimately sits at several heights: the root comes from the leaf set alone, so an
+  // unchanged masternode list across two oracle reads produces the same root twice. Judging it by
+  // the oldest appearance meant a stable network started refusing registrations once that first
+  // appearance passed the bound, which is a guard with no exit reached by ordinary operation.
+  const w = new RootWindows(8);
+  w.adopt({ height: 1, root: "same", ts: 1000, order: null });
+  w.adopt({ height: 2, root: "same", ts: 2000, order: null });
+  assert.equal(w.tsOf("same"), 2000, "the newest, not the first found");
+  assert.equal(w.isEligibleWithin("same", 600, 2500), true, "republished 500s ago, so it is eligible");
+  assert.equal(w.isEligibleWithin("same", 600, 2700), false, "and ages from that republish");
+});
+
+test("a non-numeric timestamp is refused rather than compared", () => {
+  const w = new RootWindows(8);
+  w.adopt({ height: 1, root: "bad-ts", ts: "not-a-number", order: null });
+  assert.equal(w.isEligibleWithin("bad-ts", 600, 1000), false, "an uncomparable age is not a fresh one");
+  assert.equal(w.isEligibleWithin("bad-ts", 0, 1000), true, "but with no age rule the window still accepts it");
+});

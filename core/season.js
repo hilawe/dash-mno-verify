@@ -158,6 +158,16 @@ export class SeasonMembers {
       // no durable record was written, so nothing is appended to the tree either.
       if (res.conflict) return { ok: false, reason: "statement-mismatch", declared: res.declared };
       if (res.invalid) return { ok: false, reason: "invalid-engine-statement" };
+      // The durable writer refused because the anchor stopped being eligible while this commit
+      // waited in the queue. No record was written, so nothing is appended to the tree either.
+      if (res.staleRoot) return { ok: false, reason: "stale-or-unknown-root" };
+      // FAIL CLOSED ON AN UNRECOGNISED RESULT. Every branch above names a refusal, and what follows
+      // mutates the tree, so a result shape this function does not understand must not fall through
+      // into the append: that is how a tree gains a member with no durable record behind it, which
+      // no rebuild can reproduce and nothing can revoke.
+      if (!Number.isInteger(res.index)) {
+        return { ok: false, reason: "durable-write-unrecognised" };
+      }
       c.tree.append(commitment);
       const membersRoot = c.tree.root();
       c.roots.update([{ height: c.tree.size(), root: membersRoot, ts: this.nowSec() }]);

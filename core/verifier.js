@@ -258,8 +258,29 @@ export async function verifyRegistrationCore({ claims, verifyProof, expected, re
   if (!isValidEngineStatement(expected.engine, expected.statement))
     return { ok: false, reason: "invalid-engine-statement" };
 
-  // 1) the DML root must be one the oracle published recently (engine-specific store)
-  if (!expected.rootStore.isRecent(claims.root)) return { ok: false, reason: "stale-or-unknown-root" };
+  // 1) the DML root must be one the oracle published recently (engine-specific store). `rootEligible`
+  //    is the caller's tighter rule when it has one, since a registration's anchor may be held to a
+  //    stricter age than a membership's (a stale root costs an epoch there, and the remainder of the
+  //    season here).
+  //    Optional, so a caller that supplies none behaves exactly as before.
+  //    A predicate that throws is treated as INELIGIBLE rather than allowed to propagate: it is a
+  //    security check, so its failure mode is refusal, and a caller's broken rule must not turn a
+  //    registration into a 500 either.
+  const rootOk = () => {
+    try {
+      // BOTH, not either. The window's own rule is the floor and `rootEligible` is an ADDITIONAL
+      // tighter rule, which is what the comment above promises. Treating the predicate as a
+      // replacement made the contract depend on every caller remembering to re-check recency inside
+      // its own predicate, and a caller that forgot would have widened acceptance while reading like
+      // it narrowed it.
+      if (expected.rootStore.isRecent(claims.root) !== true) return false;
+      if (typeof expected.rootEligible !== "function") return true;
+      return expected.rootEligible(claims.root) === true;
+    } catch {
+      return false;
+    }
+  };
+  if (!rootOk()) return { ok: false, reason: "stale-or-unknown-root" };
   // 2) the season must be the one being registered
   if (String(claims.season) !== String(expected.season)) return { ok: false, reason: "wrong-season" };
   // 3) the proof must be scoped to this community, platform, and role
@@ -274,6 +295,13 @@ export async function verifyRegistrationCore({ claims, verifyProof, expected, re
   //    gate wraps ONLY this crypto check, so the cheap policy rejections above never consume a slot.
   if (!(await gate(verifyProof))) return { ok: false, reason: "invalid-proof" };
 
+  // 5.5) THE ANCHOR IS RE-ASKED AFTER THE PROOF, before the durable commit. Check 1 ran before a
+  //      verification that takes real time, and the root can age out or be evicted inside it, so
+  //      without this a registration could be committed for a season against a root the gateway had
+  //      already stopped accepting. Same shape as the membership path's period recheck: a value read
+  //      before an await must be read again before the irreversible step.
+  if (!rootOk()) return { ok: false, reason: "stale-or-unknown-root" };
+
   // 6) the atomic, season-serialized commit. expected.season is the gateway's authoritative season
   //    (equal to claims.season by check 2), used for the season re-check inside commit. The engine
   //    and statement are gateway-chosen (the deployment's engine and the request's declared
@@ -285,6 +313,9 @@ export async function verifyRegistrationCore({ claims, verifyProof, expected, re
     commitment: claims.commitment,
     engine: expected.engine,
     statement: expected.statement,
+    // The anchor this proof was checked against, passed through so the caller can re-ask about it
+    // inside its own critical section without re-deriving it from an engine-specific signal layout.
+    root: claims.root,
   });
 }
 

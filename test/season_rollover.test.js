@@ -252,3 +252,28 @@ test("the season is re-read AFTER materialization, not before it", async () => {
   assert.equal(res.reason, "season-rolled-retry");
   assert.deepEqual(await store.forSeasonContext(0, CTX), [], "nothing durable was written");
 });
+
+// THE DURABLE WRITER'S RESULT DECIDES WHETHER THE TREE IS TOUCHED. Everything after the refusal
+// branches mutates the tree, so an unrecognised result shape must not fall through into the append.
+// That is how a tree gains a member with no durable record behind it, which no rebuild reproduces
+// and nothing can revoke. Found while wiring an anchor recheck whose refusal shape the commit did
+// not know: the refusal would have skipped the durable write and appended to the tree anyway.
+test("a durable writer refusing on a stale anchor appends nothing to the tree", async () => {
+  const store = newStore();
+  const sm = newSeason(store);
+  await sm.ensure(0);
+  const res = await sm.commit(0, CTX, "111", async () => ({ staleRoot: true }));
+  assert.equal(res.ok, false);
+  assert.equal(res.reason, "stale-or-unknown-root");
+  assert.equal(sm.size(CTX), 0, "the tree is untouched");
+});
+
+test("an unrecognised durable result fails closed rather than appending", async () => {
+  const store = newStore();
+  const sm = newSeason(store);
+  await sm.ensure(0);
+  const res = await sm.commit(0, CTX, "111", async () => ({ somethingNobodyAnticipated: true }));
+  assert.equal(res.ok, false);
+  assert.equal(res.reason, "durable-write-unrecognised");
+  assert.equal(sm.size(CTX), 0, "no member without a durable record behind it");
+});

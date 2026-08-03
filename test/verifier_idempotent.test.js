@@ -257,3 +257,95 @@ test("a period that ends during the ownership lookup refuses the re-grant", asyn
   assert.equal(r.ok, false, "a re-grant is a grant, so it gets the same treatment");
   assert.equal(r.reason, "epoch-rolled-over");
 });
+
+// THE REGISTRATION ANCHOR. A membership proof against a stale-but-windowed root costs one epoch. A
+// REGISTRATION proof against the same root buys the REMAINDER OF THE CURRENT SEASON, so a node that
+// left the masternode list minutes ago could keep membership for the rest of that season. The root is now re-asked after the proof and the caller may
+// impose a tighter age rule than the membership window's.
+const regArgs = (over = {}) => ({
+  vkey: {},
+  proof: {},
+  publicSignals: ["1", "2", "3", "4", "5"], // [commitment, regNullifier, root, season, contextHash]
+  verifyProof: () => true,
+  registrationStore: { has: async () => false },
+  commit: async () => ({ ok: true, index: 0, membersRoot: "r", size: 1 }),
+  expected: { rootStore: { isRecent: () => true }, season: "4", contextHash: "5", engine: "plonk", statement: "derive" },
+  ...over,
+});
+
+test("a root that ages out DURING the registration proof does not buy a season", async () => {
+  let proved = false;
+  let committed = false;
+  const r = await verifyRegistration(regArgs({
+    verifyProof: () => { proved = true; return true; },
+    commit: async () => { committed = true; return { ok: true }; },
+    expected: {
+      rootStore: { isRecent: () => true },
+      season: "4",
+      contextHash: "5",
+      engine: "plonk",
+      statement: "derive",
+      // Eligible when asked before the proof, no longer eligible when asked after it.
+      rootEligible: () => !proved,
+    },
+  }));
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, "stale-or-unknown-root");
+  assert.equal(committed, false, "and nothing durable was written for the season");
+});
+
+test("a tighter registration anchor rule refuses a root the membership window still accepts", async () => {
+  const r = await verifyRegistration(regArgs({
+    expected: {
+      rootStore: { isRecent: () => true }, // the membership window is happy
+      season: "4",
+      contextHash: "5",
+      engine: "plonk",
+      statement: "derive",
+      rootEligible: () => false, // the registration rule is not
+    },
+  }));
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, "stale-or-unknown-root");
+});
+
+test("an eligible root still registers, so the anchor rule has an exit", async () => {
+  const r = await verifyRegistration(regArgs({
+    expected: {
+      rootStore: { isRecent: () => true },
+      season: "4",
+      contextHash: "5",
+      engine: "plonk",
+      statement: "derive",
+      rootEligible: () => true,
+    },
+  }));
+  assert.equal(r.ok, true, "ordinary correct registration is unaffected");
+});
+
+test("a caller supplying no anchor rule falls back to the membership window exactly as before", async () => {
+  const r = await verifyRegistration(regArgs());
+  assert.equal(r.ok, true);
+  const stale = await verifyRegistration(regArgs({
+    expected: { rootStore: { isRecent: () => false }, season: "4", contextHash: "5", engine: "plonk", statement: "derive" },
+  }));
+  assert.equal(stale.reason, "stale-or-unknown-root");
+});
+
+test("the anchor rule is ADDITIONAL to the window, never a replacement for it", async () => {
+  // A predicate that says yes cannot rescue a root the window has dropped. Treating the predicate as
+  // a replacement made the contract depend on every caller re-checking recency inside its own rule,
+  // and a caller that forgot would have widened acceptance while reading like it narrowed it.
+  const r = await verifyRegistration(regArgs({
+    expected: {
+      rootStore: { isRecent: () => false }, // the window says no
+      season: "4",
+      contextHash: "5",
+      engine: "plonk",
+      statement: "derive",
+      rootEligible: () => true, // and the tighter rule says yes
+    },
+  }));
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, "stale-or-unknown-root", "the window is the floor");
+});

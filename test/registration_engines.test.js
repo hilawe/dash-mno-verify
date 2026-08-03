@@ -60,7 +60,13 @@ test("both decoders feed the same engine-neutral core, which runs one policy pip
   // engine and statement (which bind the bucket's durable declaration).
   const ok = await verifyRegistrationCore({ claims, verifyProof: async () => true, expected, registrationStore, commit });
   assert.deepEqual(ok, { ok: true, index: 0, membersRoot: "R", size: 1 });
-  assert.deepEqual(committed, { season: "5", contextHash: "3", regNullifier: "7", commitment: "9", engine: "plonk", statement: "derive" });
+  // `root` joined this payload deliberately: the caller re-asks whether the anchor is still
+  // eligible inside its own critical section, immediately before the durable write, and passing it
+  // through means the caller does not have to re-derive it from an engine-specific signal layout.
+  // The assertion is exact on purpose, so a field appearing here is always a decision.
+  assert.deepEqual(committed, {
+    season: "5", contextHash: "3", regNullifier: "7", commitment: "9", engine: "plonk", statement: "derive", root: "abc",
+  });
 
   // a stale root is rejected before the crypto check
   let verifyCalled = false;

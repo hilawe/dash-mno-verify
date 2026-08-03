@@ -615,6 +615,21 @@ if (twoTier) {
     seasonNow: () => timeGuard.season(),
   });
   await seasonMembers.ensure(timeGuard.season());
+  if (config.registerRootMaxAgeSeconds <= 0) {
+    console.warn(
+      `[gateway] MNO_REGISTER_ROOT_MAX_AGE is 0, so the registration anchor rule is DISABLED and a ` +
+        `registration may use any root the membership window still holds. Roots are pruned once ` +
+        `older than MNO_ORACLE_MAX_AGE (${config.oracleMaxAgeSeconds}s), on each refresh and on each ` +
+        `request, so that is the effective grace. A node that left the masternode list within it can ` +
+        `still register and keep membership for the remainder of the season.`,
+    );
+  } else {
+    console.log(
+      `[gateway] registration anchor: a root may be at most ${config.registerRootMaxAgeSeconds}s old, ` +
+        `against a membership window of ${config.oracleMaxAgeSeconds}s. A node that left the ` +
+        `masternode list within that grace can still register for the remainder of the season.`,
+    );
+  }
   if (config.registerContexts.length === 0) {
     console.warn(
       "[gateway] MNO_REGISTER_CONTEXTS is unset, so ANY context hash may be registered. One valid " +
@@ -897,15 +912,34 @@ const server = createServer(async (req, res) => {
         // the same bucket is rejected with statement-mismatch, keeping the nullifiers comparable. The
         // Poseidon root store here is the PLONK view; the zkVM path (deferred) would use
         // dmlRoots.shaView() via verifyZkvmRegistration.
-        expected: { rootStore: dmlRoots, season, contextHash: ctx, engine: config.registrationEngine, statement: config.registrationStatement },
+        expected: {
+          rootStore: dmlRoots,
+          season,
+          contextHash: ctx,
+          engine: config.registrationEngine,
+          statement: config.registrationStatement,
+          // The registration anchor rule: accepted by the window AND, when the operator has set a
+          // tighter bound, no older than that. Checked before the proof and again immediately
+          // before the durable commit, so a root that ages out or is evicted during a verify that
+          // takes real time cannot still buy a season of membership.
+          rootEligible: (root) => dmlRoots.isEligibleWithin(root, config.registerRootMaxAgeSeconds, nowSec()),
+        },
         registrationStore,
         // The durable record and the members-tree mirror happen together inside the season
         // serialization, re-checking the season so a rollover during the proof verify above cannot
         // publish a stale-season root (the M2 race). The commit targets this context's tree.
-        commit: ({ season: s, commitment, contextHash: c, regNullifier: n, engine, statement }) =>
-          seasonMembers.commit(s, c, commitment, () =>
-            registrationStore.append({ season: s, contextHash: c, regNullifier: n, commitment, engine, statement }),
-          ),
+        commit: ({ season: s, commitment, contextHash: c, regNullifier: n, engine, statement, root }) =>
+          seasonMembers.commit(s, c, commitment, () => {
+            // THE ANCHOR IS ASKED ONE LAST TIME HERE, inside the season queue and immediately before
+            // the durable append. The verifier's recheck runs after the proof but the commit is then
+            // QUEUED behind any in-flight rollover or other commit, and the root can age out or be
+            // evicted while it waits. Same lesson as the season check: the guard belongs against the
+            // irreversible write, not merely after the slow step.
+            if (!dmlRoots.isEligibleWithin(root, config.registerRootMaxAgeSeconds, nowSec())) {
+              return { staleRoot: true };
+            }
+            return registrationStore.append({ season: s, contextHash: c, regNullifier: n, commitment, engine, statement });
+          }),
       });
       if (!result.ok) return send(res, 200, result);
       return send(res, 200, { ok: true, index: result.index, membersRoot: result.membersRoot, size: result.size });
