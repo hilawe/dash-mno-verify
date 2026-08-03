@@ -30,6 +30,12 @@ export const TREE_DEPTH = 16; // up to 65536 leaves; raise if the network grows 
 // The concrete block-bound candidate is Dash Core's protx diff, whose response names the block
 // hash it describes, so the oracle could demand that hash equal the sampled tip; it needs a
 // live-node check that the diff carries the voting address and validity fields this read uses.
+// The statuses masternodelist json emits for a deterministic masternode list. ENABLED is the valid
+// set (the same one `protx list valid` returns) and POSE_BANNED is a node still in the list carrying
+// a failed proof-of-service. Enumerated so an unknown status is a loud refusal rather than a silent
+// exclusion; a Core release adding a status must be a deliberate update here.
+const KNOWN_STATUSES = new Set(["ENABLED", "POSE_BANNED"]);
+
 export async function buildSnapshot({
   call,
   depth = TREE_DEPTH,
@@ -59,9 +65,53 @@ export async function buildSnapshot({
     if (retryDelayMs > 0) await sleep(retryDelayMs);
   }
 
+  // THE RESPONSE IS VALIDATED BEFORE IT IS FILTERED. This is the live twin of the boundary the
+  // block-bound read now enforces, and it is the one actually wired in, so it matters more. Filtering
+  // first means every malformed shape leaves quietly: an ARRAY response is accepted and ordered by
+  // numeric index rather than by collateral outpoint, an entry with a missing or mistyped status is
+  // dropped as if it were PoSe-banned, and a null entry dies on a raw property access. Each of those
+  // publishes or refuses a SHORTENED member set, and no recompute downstream can notice, because the
+  // root the oracle signs is the root of exactly the set it built.
+  if (list === null || typeof list !== "object" || Array.isArray(list)) {
+    throw new Error(
+      `oracle: masternodelist json returned ${Array.isArray(list) ? "an array" : JSON.stringify(list)}, ` +
+        `not an object keyed by collateral outpoint. The key is what the canonical order sorts by.`,
+    );
+  }
+  const all = Object.entries(list);
+  for (const [key, m] of all) {
+    // "txid-index", the collateral outpoint. It is the sort key, so a malformed one makes the tree
+    // order arbitrary rather than canonical.
+    if (!/^[0-9a-f]{64}-\d+$/.test(key)) {
+      throw new Error(`oracle: masternodelist key ${JSON.stringify(key)} is not a txid-index outpoint`);
+    }
+    if (m === null || typeof m !== "object" || Array.isArray(m)) {
+      throw new Error(`oracle: masternodelist entry ${key} is ${JSON.stringify(m)}, not an object`);
+    }
+    // The status must be one this build KNOWS, not merely a non-empty string. A typo or a status a
+    // future Core adds would otherwise pass the shape check and then be filtered out as if the node
+    // were banned, which is the same silent shortening of the member set, just one step later.
+    // Refusing means a Core release that adds a status stops the oracle loudly, with the unknown
+    // value named, instead of quietly publishing a tree missing everyone who carries it.
+    if (!KNOWN_STATUSES.has(m.status)) {
+      throw new Error(
+        `oracle: masternodelist entry ${key} has status ${JSON.stringify(m.status)}, which this build ` +
+          `does not know (expected one of ${[...KNOWN_STATUSES].join(", ")}). Treating an unknown ` +
+          `status as not-ENABLED would silently drop a member from the tree.`,
+      );
+    }
+    // Only an ENABLED entry contributes a leaf, so only it needs a usable address. Demanding one
+    // from a banned entry would refuse a response that is entirely well formed.
+    if (m.status === "ENABLED" && typeof m.votingaddress !== "string") {
+      throw new Error(`oracle: masternodelist entry ${key} is ENABLED with a non-string votingaddress`);
+    }
+  }
+
   // Read each node's voting address. Sorting by the key gives every honest oracle the same tree.
-  const entries = Object.entries(list).filter(([, m]) => m.status === "ENABLED");
-  entries.sort(([a], [b]) => (a < b ? -1 : 1));
+  // The keys are validated outpoints and Object.entries cannot repeat a key, so the comparison is
+  // total and the order is canonical.
+  const entries = all.filter(([, m]) => m.status === "ENABLED");
+  entries.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
   const realLeaves = entries.map(([key, m]) => {
     const leaf = votingAddressToLeaf(m.votingaddress);
     // The empty-leaf value pads the unused tree slots, so a real leaf equal to it would vanish

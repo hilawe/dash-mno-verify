@@ -27,10 +27,37 @@ test("changing any signed field breaks the signature", () => {
   const { privateKey } = generateKeyPairSync("ed25519");
   const pub = publicKeyFromRaw(rawPublicB64(privateKey));
   const sig = signSnapshot(snapshotMessage(snap), privateKey);
-  for (const field of ["height", "blockHash", "depth", "root", "ts"]) {
+  // The string fields still tamper by appending. The numeric ones cannot be tampered this way any
+  // more, because the encoder demands a safe integer and refuses "100X" outright, which is a
+  // stronger outcome than a message that merely differs: the tampered snapshot has no signable
+  // form at all. Both outcomes are asserted rather than the test being narrowed to the survivors.
+  for (const field of ["blockHash", "root"]) {
     const tampered = { ...snap, [field]: String(snap[field]) + "X" };
     assert.equal(verifySnapshotSig(snapshotMessage(tampered), sig, pub), false, field);
   }
+  for (const field of ["height", "depth", "ts"]) {
+    const tampered = { ...snap, [field]: String(snap[field]) + "X" };
+    assert.throws(() => snapshotMessage(tampered), /must be a safe integer to be signed/, field);
+    // And a valid-typed change still produces a different message, so the field is genuinely signed.
+    assert.equal(verifySnapshotSig(snapshotMessage({ ...snap, [field]: snap[field] + 1 }), sig, pub), false, field);
+  }
+});
+
+// The signed message is newline-joined, so a value CONTAINING a newline can move a field boundary
+// and make two different snapshots encode identically. A reviewer supplied the pair, and it is
+// pinned here in both directions: the collision no longer forms, and neither member can be signed.
+test("a field carrying a newline cannot be signed, so field boundaries cannot be moved", () => {
+  const R = snap.root;
+  const S = "b".repeat(64);
+  const objectA = { ...snap, version: 2, root: `${R}\n${S}`, shaRoot: "", ts: snap.ts };
+  const objectB = { ...snap, version: 2, root: R, shaRoot: S, ts: `\n${snap.ts}` };
+  assert.throws(() => snapshotMessage(objectA), /root contains a newline/);
+  assert.throws(() => snapshotMessage(objectB), /ts must be a safe integer/);
+});
+
+test("a numeric field given as a numeric string cannot be signed, so one value has one encoding", () => {
+  assert.throws(() => snapshotMessage({ ...snap, height: String(snap.height) }), /height must be a safe integer/);
+  assert.throws(() => snapshotMessage({ ...snap, ts: snap.ts + 0.5 }), /ts must be a safe integer/);
 });
 
 test("a signature from another key does not verify", () => {

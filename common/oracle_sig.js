@@ -38,6 +38,37 @@ const DOMAIN_V3 = "mno-oracle-snapshot-v3";
 //
 // `chainlocked` is signed for the same reason. It is the claim that makes a v3 snapshot worth more
 // than a v2 one, so it must not be something a relay can add.
+// The encoding joins fields with newlines, so a field whose VALUE contains a newline can move the
+// boundary between two fields and make two different snapshots produce identical signed bytes. A
+// reviewer demonstrated the pair: root = "R\nS" with shaRoot = "" encodes exactly as root = "R"
+// with shaRoot = "S", and a signature over the first verifies over the second. The gateway's own
+// schema refuses both members of that pair today, but this function is the signing API a standalone
+// signer calls, and a message form whose unambiguity depends on the caller's validation is not
+// unambiguous. So the frame is enforced HERE: every field is checked before it is joined.
+//
+// Refusing rather than escaping keeps the bytes of every well-formed snapshot exactly as they were,
+// so existing v1, v2, and v3 signatures still verify. A length-prefixed encoding would be the
+// stronger answer and is the right shape for a future version, since changing these bytes needs a
+// new domain and version rather than a silent reinterpretation of old signatures.
+function frameSafe(value, field) {
+  const s = String(value);
+  if (s.includes("\n")) {
+    throw new Error(`snapshot ${field} contains a newline, which would move a field boundary in the signed message`);
+  }
+  return s;
+}
+
+// Height, depth, and ts are numbers in the schema, and String() maps several distinct values onto
+// one encoding ("\n1700" and 1700 both reach Number() as 1700 downstream, and a float or a numeric
+// string encodes differently than the integer it equals). Requiring a safe integer here means the
+// signed bytes name exactly one value.
+function frameInt(value, field) {
+  if (typeof value !== "number" || !Number.isSafeInteger(value)) {
+    throw new Error(`snapshot ${field} must be a safe integer to be signed, got ${JSON.stringify(value)}`);
+  }
+  return String(value);
+}
+
 export function snapshotMessage(o) {
   const version = snapshotVersion(o); // throws on any version other than absent/1/2/3
   if (version === 3) {
@@ -56,24 +87,40 @@ export function snapshotMessage(o) {
     const fields = [
       DOMAIN_V3,
       "3",
-      o.height,
-      o.blockHash ?? "",
-      o.depth,
-      o.root,
-      o.shaRoot,
-      o.order,
+      frameInt(o.height, "height"),
+      frameSafe(o.blockHash ?? "", "blockHash"),
+      frameInt(o.depth, "depth"),
+      frameSafe(o.root, "root"),
+      frameSafe(o.shaRoot, "shaRoot"),
+      frameSafe(o.order, "order"),
       "1",
-      o.ts,
+      frameInt(o.ts, "ts"),
     ];
-    return Buffer.from(fields.map((f) => String(f)).join("\n"), "utf8");
+    return Buffer.from(fields.join("\n"), "utf8");
   }
   if (version === 2) {
     if (typeof o.shaRoot !== "string") throw new Error("v2 snapshot message requires a string shaRoot");
-    const fields = [DOMAIN_V2, "2", o.height, o.blockHash ?? "", o.depth, o.root, o.shaRoot, o.ts];
-    return Buffer.from(fields.map((f) => String(f)).join("\n"), "utf8");
+    const fields = [
+      DOMAIN_V2,
+      "2",
+      frameInt(o.height, "height"),
+      frameSafe(o.blockHash ?? "", "blockHash"),
+      frameInt(o.depth, "depth"),
+      frameSafe(o.root, "root"),
+      frameSafe(o.shaRoot, "shaRoot"),
+      frameInt(o.ts, "ts"),
+    ];
+    return Buffer.from(fields.join("\n"), "utf8");
   }
-  const fields = [DOMAIN_V1, o.height, o.blockHash ?? "", o.depth, o.root, o.ts];
-  return Buffer.from(fields.map((f) => String(f)).join("\n"), "utf8");
+  const fields = [
+    DOMAIN_V1,
+    frameInt(o.height, "height"),
+    frameSafe(o.blockHash ?? "", "blockHash"),
+    frameInt(o.depth, "depth"),
+    frameSafe(o.root, "root"),
+    frameInt(o.ts, "ts"),
+  ];
+  return Buffer.from(fields.join("\n"), "utf8");
 }
 
 // The canonical snapshot version, failing closed. An absent version or the integer 1 is v1, the

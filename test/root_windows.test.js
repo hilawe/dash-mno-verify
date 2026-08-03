@@ -139,10 +139,16 @@ test("two orders coexist only when block and leaf set both match", () => {
     false,
     "a different member set is the case this check exists for",
   );
+  // REVERSED 2026-08-02 after a four-reviewer round, one blocker and one major on this exact
+  // assertion. It used to demand false here, reading "same order twice" as a changed root. That
+  // refused an identical republish of a coexisting snapshot, so its freshness never renewed and it
+  // aged out while the oracle was still publishing it. The question this check answers is whether
+  // the candidate describes the same block and the same member set, and when it does, the answer is
+  // yes whether it arrives under the same order or the other one.
   assert.equal(
     w.mayCoexist({ height: 100, order: null, blockHash: BLOCK, setCommitment: SET }),
-    false,
-    "the SAME order twice is a changed root, not a transition",
+    true,
+    "the same order describing the same block and set is a republish, which must refresh rather than be refused",
   );
 });
 
@@ -227,4 +233,55 @@ test("current() is the last ADOPTED record at the top height, including on re-ad
   w.adopt({ height: 100, root: "legacy-root", ts: 3, order: null, blockHash: BLOCK, setCommitment: SET });
   assert.equal(w.current().root, "legacy-root", "and wins again when the legacy order is re-adopted");
   assert.equal(w.snaps.filter((s) => s.height === 100).length, 2, "still one record per ordering");
+});
+
+test("a same-order republish refreshes its record instead of being refused as a conflict", () => {
+  // The wedge. mayCoexist also demanded that the ORDERS differ, which read as tighter and was
+  // looser in effect: once v3 was adopted beside v2, an identical republish of the v2 snapshot was
+  // refused, so its freshness never renewed and it aged out WHILE THE ORACLE WAS STILL PUBLISHING
+  // IT, stranding exactly the provers the coexistence window exists to protect.
+  const w = new RootWindows(8);
+  const BLOCK = "aa".repeat(32);
+  const SET = leafSetCommitment(["111"]);
+  w.adopt({ height: 100, root: "legacy-root", ts: 10, order: null, blockHash: BLOCK, setCommitment: SET });
+  w.adopt({ height: 100, root: "v3-root", ts: 11, order: "proRegTxHash", blockHash: BLOCK, setCommitment: SET });
+  assert.equal(w.mayCoexist({ height: 100, blockHash: BLOCK, setCommitment: SET }), true, "an identical-set republish is admissible");
+  w.adopt({ height: 100, root: "legacy-root", ts: 20, order: null, blockHash: BLOCK, setCommitment: SET });
+  const legacy = w.snaps.find((s) => s.order === null && s.height === 100);
+  assert.equal(legacy.ts, 20, "the republish renewed the record's freshness");
+  assert.equal(w.snaps.filter((s) => s.height === 100).length, 2, "and did not add a record");
+});
+
+test("a different leaf set at a held height is still refused, whatever its order", () => {
+  // The narrowing must not have widened. Same block, DIFFERENT set, both orders.
+  const w = new RootWindows(8);
+  const BLOCK = "aa".repeat(32);
+  const SET = leafSetCommitment(["111"]);
+  const OTHER = leafSetCommitment(["111", "222"]);
+  w.adopt({ height: 100, root: "legacy-root", ts: 10, order: null, blockHash: BLOCK, setCommitment: SET });
+  assert.equal(w.mayCoexist({ height: 100, blockHash: BLOCK, setCommitment: OTHER }), false, "different set, other order");
+  assert.equal(w.mayCoexist({ height: 100, blockHash: "bb".repeat(32), setCommitment: SET }), false, "different block");
+  assert.equal(w.mayCoexist({ height: 100, blockHash: BLOCK, setCommitment: null }), false, "unanswerable is refused");
+});
+
+test("maxHeight is the window's own rollback floor, asked of every retained record", () => {
+  // The rollback check keyed on a SEPARATE last-adopted pointer that aged on its own rules, so when
+  // that pointer expired while a higher record survived, the check was skipped entirely and a
+  // lower-height snapshot could be adopted beside the higher one. Asking the window removes the
+  // pointer from the question.
+  //
+  // A first draft of this test asserted that current() could name a lower height than maxHeight().
+  // It cannot: adopt() sorts by height, so current() is always at the top height and the two agree
+  // whenever the window is non-empty. The assertion was rewritten rather than kept, because a test
+  // asserting a state the code cannot reach proves nothing while looking like coverage. What
+  // maxHeight() is really worth is that it answers from the records rather than from a pointer, and
+  // that it is defined when a pointer would be missing.
+  const w = new RootWindows(8);
+  assert.equal(w.maxHeight(), null, "an empty window has no floor, so nothing is refused for being below it");
+  w.adopt({ height: 200, root: "high", ts: 5, order: null });
+  w.adopt({ height: 100, root: "low", ts: 6, order: null });
+  assert.equal(w.maxHeight(), 200, "the floor is the highest retained height, not the last adopted one");
+  assert.equal(w.current().height, 200, "and current() agrees, because adoption sorts by height");
+  w.dropOlderThan(6); // the height-200 record is the older one and ages out first
+  assert.equal(w.maxHeight(), 100, "the floor follows the records, so it falls when the top one ages out");
 });

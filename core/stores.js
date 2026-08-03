@@ -96,7 +96,15 @@ export class RootWindows {
   // the check changes, and the transition is bounded by the ordinary window and age rules, so a v2
   // root ages out on its own once the oracle stops publishing them. There is no separate switch to
   // remember to turn off.
-  adopt({ height, root, shaRoot = null, ts, order = null, blockHash = null, setCommitment = null }) {
+  // `snapshot` is the whole verified snapshot object, carried in the SAME record as its roots, so
+  // one record's root and its leaves are adopted, aged, and evicted together. That is a
+  // SAME-INSTANT guarantee about one record, not a promise across requests: a caller that reads the
+  // root and then reads the leaves in a later request can straddle a refresh and see two different
+  // records. What it removes is the split that existed WITHIN one instant, when the served snapshot
+  // and the window were separate variables aged by separate rules and a record whose timestamp was
+  // older than another's cleared the snapshot while leaving a root current, so the gateway
+  // advertised a root whose leaves it would not hand out.
+  adopt({ height, root, shaRoot = null, ts, order = null, blockHash = null, setCommitment = null, snapshot = null }) {
     // Executable invariant, not a comment. An unknown ordering means the key space is no longer
     // bounded by the version enumeration, which is the only thing bounding records per height.
     if (!KNOWN_ORDERS.has(order ?? null)) {
@@ -120,6 +128,7 @@ export class RootWindows {
       order: order ?? null,
       blockHash: blockHash ?? null,
       setCommitment: setCommitment ?? null,
+      snapshot: snapshot ?? null,
     });
     // The window counts HEIGHTS, not records, so running two orders during a changeover does not
     // silently halve how far back the gateway will accept a proof.
@@ -135,6 +144,14 @@ export class RootWindows {
   current() {
     return this.snaps.at(-1) ?? null;
   }
+  // The highest height any retained record describes, which is the adoption floor for a new
+  // snapshot. This is deliberately NOT current().height: current() is the last ADOPTED record and a
+  // coexisting pair can make those differ. A rollback check keyed on the last adopted record could
+  // be skipped entirely whenever that record aged out while a higher one survived, so the floor is
+  // asked of the whole window rather than of one pointer into it.
+  maxHeight() {
+    return this.snaps.length === 0 ? null : Math.max(...this.snaps.map((s) => Number(s.height)));
+  }
   // Poseidon view. Named isRecent so a RootWindows is a drop-in for the old dmlRoots RootStore.
   isRecent(root) {
     return this.snaps.some((s) => s.root === root);
@@ -147,17 +164,26 @@ export class RootWindows {
   shaView() {
     return { isRecent: (r) => this.shaIsRecent(r) };
   }
-  // Whether a snapshot may join one already held at its height. Two roots coexist ONLY when they
-  // describe the same block and commit to the same leaf multiset, differing just in build order. That
-  // is the transition claim, checked rather than assumed.
+  // Whether a snapshot may join, or refresh, a height already held. The answer is yes ONLY when it
+  // describes the same block and commits to the same leaf multiset as every record at that height.
+  // A different ordering of that multiset is the changeover pair coexisting, and the SAME ordering
+  // is a freshness renewal or an equivalent-set replacement at its own key. Either way the member
+  // set a proof is checked against is identical, which is the transition claim, checked rather
+  // than assumed.
   //
-  // A null commitment on either side means the question cannot be answered, so the answer is no.
-  mayCoexist({ height, order = null, blockHash = null, setCommitment = null }) {
+  // An earlier version also demanded that the ORDERS differ, which read as tighter and wedged the
+  // changeover instead: once the newer order was the last adopted, even an identical republish of
+  // the older order was refused, so the older root's freshness could never renew while the oracle
+  // still published it, and it aged out while actively published, stranding its provers.
+  //
+  // A null block hash or commitment on either side means the question cannot be answered, so the
+  // answer is no. That is asymmetric on purpose: a v1 record (no block hash in its schema) at a
+  // height answers no for that height until it ages out, which errs closed.
+  mayCoexist({ height, blockHash = null, setCommitment = null }) {
     const atHeight = this.snaps.filter((s) => s.height === height);
     if (atHeight.length === 0) return true; // nothing to disagree with
     return atHeight.every(
       (s) =>
-        (s.order ?? "legacy") !== (order ?? "legacy") &&
         s.blockHash != null &&
         blockHash != null &&
         String(s.blockHash) === String(blockHash) &&
@@ -227,7 +253,13 @@ export async function loadOracle(source, { timeoutMs = 10_000, maxBytes = 16_000
       const res = await fetch(source, { signal: ctrl.signal });
       if (!res.ok) throw new Error(`oracle fetch failed: ${res.status}`);
       const declared = Number(res.headers.get("content-length") ?? 0);
-      if (declared > maxBytes) throw new Error("oracle response too large");
+      if (declared > maxBytes) {
+        // Cancel before throwing. Abandoning the body leaves the connection and its buffers open,
+        // and a source declaring an oversized length on every refresh would accumulate them.
+        ctrl.abort();
+        await res.body?.cancel().catch(() => {});
+        throw new Error("oracle response too large");
+      }
       const text = await readCapped(res, maxBytes, ctrl);
       return JSON.parse(text);
     } catch (err) {

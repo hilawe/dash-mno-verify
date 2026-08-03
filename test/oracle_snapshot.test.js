@@ -12,10 +12,18 @@ import { addSignature } from "../common/oracle_sig.js";
 
 const addr = (byte) => hash160ToAddress(Buffer.alloc(20, byte));
 
+// The keys are real "txid-index" collateral outpoints, 64 lowercase hex and an index, because that
+// is what masternodelist json emits and the builder now refuses anything else. They were "bbbb-1"
+// and friends, a shape Core cannot produce, so the suite was proving the builder against input the
+// system never sees. The relative order (a < b < c) is preserved deliberately, so the leaf order and
+// every golden constant below are unchanged by the fixture correction.
+const OUT_A = `${"aa".repeat(32)}-0`;
+const OUT_B = `${"bb".repeat(32)}-1`;
+const OUT_C = `${"cc".repeat(32)}-0`;
 const LIST = {
-  "bbbb-1": { status: "ENABLED", votingaddress: addr(2) },
-  "aaaa-0": { status: "ENABLED", votingaddress: addr(1) },
-  "cccc-0": { status: "POSE_BANNED", votingaddress: addr(3) },
+  [OUT_B]: { status: "ENABLED", votingaddress: addr(2) },
+  [OUT_A]: { status: "ENABLED", votingaddress: addr(1) },
+  [OUT_C]: { status: "POSE_BANNED", votingaddress: addr(3) },
 };
 
 // A scripted chain source. `heights` yields one entry per getblockcount call and `lists` one
@@ -87,7 +95,7 @@ test("a block landing mid-read drives a retry, and the retried snapshot is consi
   // Attempt 1 brackets 100 -> 101 (a block landed during the read), attempt 2 is stable at 101.
   // Each attempt sees a different list, so the test pins that the snapshot keeps the second
   // bracket's list, not just its height and hash.
-  const staleList = { "zzzz-0": { status: "ENABLED", votingaddress: addr(9) } };
+  const staleList = { [`${"ee".repeat(32)}-0`]: { status: "ENABLED", votingaddress: addr(9) } };
   const { calls, call } = scriptedCall([100, 101, 101, 101], [staleList, LIST]);
   const retries = [];
   const snap = await buildSnapshot({ call, now: () => 1234, retryDelayMs: 0, log: (m) => retries.push(m) });
@@ -106,7 +114,7 @@ test("a same-height branch swap mid-read drives a retry, so hash and list share 
   // The height holds at 100 the whole time, but the tip hash the read started from (branch A)
   // is gone by the end of attempt 1 (branch B), so height equality alone would publish branch
   // A's signed hash over branch B's list. Attempt 2 sees a stable branch B.
-  const staleList = { "zzzz-0": { status: "ENABLED", votingaddress: addr(9) } };
+  const staleList = { [`${"ee".repeat(32)}-0`]: { status: "ENABLED", votingaddress: addr(9) } };
   const { calls, call } = scriptedCall(
     [100, 100, 100, 100],
     [staleList, LIST],
@@ -143,7 +151,7 @@ test("only ENABLED nodes enter the tree, sorted by list key, and the root hashes
   const { call } = scriptedCall([100, 100]);
   const snap = await buildSnapshot({ call, now: () => 1234 });
 
-  // POSE_BANNED cccc-0 is excluded, and aaaa-0 sorts before bbbb-1 by key.
+  // The POSE_BANNED outpoint is excluded, and OUT_A sorts before OUT_B by key.
   assert.deepEqual(snap.leaves, [
     votingAddressToLeaf(addr(1)).toString(),
     votingAddressToLeaf(addr(2)).toString(),
@@ -153,7 +161,7 @@ test("only ENABLED nodes enter the tree, sorted by list key, and the root hashes
 });
 
 test("a voting address that decodes to the empty-leaf value is refused, not published", async () => {
-  const zeroList = { "aaaa-0": { status: "ENABLED", votingaddress: hash160ToAddress(Buffer.alloc(20, 0)) } };
+  const zeroList = { [OUT_A]: { status: "ENABLED", votingaddress: hash160ToAddress(Buffer.alloc(20, 0)) } };
   const { call } = scriptedCall([100, 100], [zeroList]);
   await assert.rejects(buildSnapshot({ call, now: () => 1234 }), /empty-leaf value/);
 });
@@ -173,4 +181,57 @@ test("signing appends sigs to the snapshot without changing the unsigned fields"
   assert.ok(signed.sigs[0].sig);
   delete signed.sigs;
   assert.equal(JSON.stringify(signed), unsigned);
+});
+
+// THE RESPONSE IS VALIDATED BEFORE IT IS FILTERED. This is the live twin of the block-bound read's
+// boundary, and it is the one actually wired in. Filtering first let every malformed shape leave
+// quietly, publishing a signed, self-consistent snapshot over a SHORTENED member set that no
+// downstream recompute can notice.
+test("an array response is refused, not ordered by numeric index", async () => {
+  const { call } = scriptedCall([100, 100], [[{ status: "ENABLED", votingaddress: addr(1) }]]);
+  await assert.rejects(buildSnapshot({ call, now: () => 1 }), /returned an array/);
+});
+
+test("a null response is refused rather than read as an empty list", async () => {
+  const { call } = scriptedCall([100, 100], [null]);
+  await assert.rejects(buildSnapshot({ call, now: () => 1 }), /not an object keyed by collateral outpoint/);
+});
+
+test("a malformed collateral key is refused, since the canonical order sorts by it", async () => {
+  const { call } = scriptedCall([100, 100], [{ "not-an-outpoint": { status: "ENABLED", votingaddress: addr(1) } }]);
+  await assert.rejects(buildSnapshot({ call, now: () => 1 }), /is not a txid-index outpoint/);
+});
+
+test("a primitive or null entry is refused by name", async () => {
+  const { call } = scriptedCall([100, 100], [{ [OUT_A]: 42 }]);
+  await assert.rejects(buildSnapshot({ call, now: () => 1 }), /is 42, not an object/);
+  const { call: c2 } = scriptedCall([100, 100], [{ [OUT_A]: null }]);
+  await assert.rejects(buildSnapshot({ call: c2, now: () => 1 }), /is null, not an object/);
+});
+
+test("a missing or mistyped status is refused rather than read as banned", async () => {
+  // This is the quiet one. Reading absence as not-ENABLED DROPS a valid masternode from the tree,
+  // and the published root is the root of exactly the set that was built, so nothing downstream
+  // can tell that a member is missing.
+  const { call } = scriptedCall([100, 100], [{ [OUT_A]: { votingaddress: addr(1) } }]);
+  await assert.rejects(buildSnapshot({ call, now: () => 1 }), /has status undefined, which this build does not know/);
+  const { call: c2 } = scriptedCall([100, 100], [{ [OUT_A]: { status: 1, votingaddress: addr(1) } }]);
+  await assert.rejects(buildSnapshot({ call: c2, now: () => 1 }), /has status 1, which this build does not know/);
+});
+
+test("an ENABLED entry with a non-string voting address is refused, a banned one need not carry one", async () => {
+  const { call } = scriptedCall([100, 100], [{ [OUT_A]: { status: "ENABLED", votingaddress: null } }]);
+  await assert.rejects(buildSnapshot({ call, now: () => 1 }), /ENABLED with a non-string votingaddress/);
+  // A banned entry carrying no address at all is a perfectly well-formed response.
+  const { call: c2 } = scriptedCall([100, 100], [{ [OUT_A]: { status: "ENABLED", votingaddress: addr(1) }, [OUT_C]: { status: "POSE_BANNED" } }]);
+  const snap = await buildSnapshot({ call: c2, now: () => 1 });
+  assert.equal(snap.leaves.length, 1, "the banned entry is excluded without being refused");
+});
+
+test("an unknown status string is refused, not filtered out as if it were banned", async () => {
+  // The subtler half of the same defect. A shape check that accepts any non-empty string lets a
+  // typo or a status a future Core adds through, and the filter below then drops that node exactly
+  // as if it were PoSe-banned, shortening the signed member set with nothing to notice it.
+  const { call } = scriptedCall([100, 100], [{ [OUT_A]: { status: "ENABLEDD", votingaddress: addr(1) } }]);
+  await assert.rejects(buildSnapshot({ call, now: () => 1 }), /"ENABLEDD", which this build does not know/);
 });

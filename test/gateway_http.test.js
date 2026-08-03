@@ -10,7 +10,7 @@ import { randomUUID, generateKeyPairSync } from "node:crypto";
 import { makeDmlRootHasher, FIELD_PRIME } from "../core/dml_root.js";
 import { shaRootFromLeaves } from "../common/dml_sha_root.js";
 import { signalHash } from "../common/index.js";
-import { addSignature, rawPublicB64, signSnapshot } from "../common/oracle_sig.js";
+import { addSignature, rawPublicB64, signSnapshot, snapshotMessage } from "../common/oracle_sig.js";
 
 // A real, self-consistent snapshot: the root is the recompute of these leaves, so it passes the
 // gateway's M3 root check. ts is stamped fresh per write so the freshness check passes.
@@ -780,7 +780,11 @@ test("signed dual-root matrix under a pinned oracle key", async () => {
 });
 
 test("an unknown snapshot version and a non-string shaRoot both fail closed", async () => {
-  const unknown = snapshot({ version: 3, shaRoot: shaRootHasher(REAL_LEAVES) });
+  // Version 4, not 3. This test named 3 as unknown, and then 3 became a supported version, so its
+  // fixture was being refused for missing v3 fields and the unknown-version dispatch it exists to
+  // cover was no longer reached at all. A test that passes for a reason its name does not describe
+  // is worse than a missing one.
+  const unknown = snapshot({ version: 4, shaRoot: shaRootHasher(REAL_LEAVES) });
   const u = await gatewayWithSnapshot(unknown, { MNO_REQUIRE_SHA_ROOT: "1" });
   try { assert.equal(await mints(u.g.base), 503, "unknown version not adopted"); } finally { await u.cleanup(); }
 
@@ -1169,6 +1173,160 @@ test("two valid snapshots drive the refresh path end to end and both roots stay 
     assert.equal(await windowHolds(BAD_ROOT), false, "and its root is not accepted");
     assert.equal(await currentRoot(), V3_ROOT, "the served root did not flap");
     assert.equal(await windowHolds(REAL_ROOT), true, "and the coexisting v2 root survived the attempt");
+  } finally {
+    g.proc.kill();
+  }
+});
+
+// THE BLOCKER FROM THE FOUR-REVIEWER ROUND, driven end to end. Two reviewers found it
+// independently: the served snapshot and the root window were separate authorities that aged on
+// separate rules, so a record could expire and leave the window populated while the served
+// snapshot went null. Two consequences, both reproduced here: /v1/challenge minted against a root
+// /v1/dml had no leaves for, and the same-height coexistence guard, being conditional on that
+// separate pointer, was SKIPPED entirely, so a snapshot over a different member set could join the
+// window beside a surviving one.
+test("an uppercase or array block hash is refused on every version, signed or not", async () => {
+  // One canonical block-hash schema. The signature path used a case-insensitive regex over
+  // String(o.blockHash), so a singleton array coerced through and uppercase passed, while v3
+  // demanded lowercase, and mayCoexist compares exactly, so an uppercase v2 record and the
+  // lowercase v3 record for the SAME block read as different blocks and the changeover was refused.
+  for (const [name, blockHash] of [["upper", "AB".repeat(32)], ["array", ["ab".repeat(32)]]]) {
+    const oracle = join(dir, `hash-${name}.json`);
+    await writeFile(oracle, JSON.stringify(snapshot({ version: 2, shaRoot: shaRootHasher(REAL_LEAVES), blockHash })));
+    const gw = await startGateway({ MNO_ORACLE_SOURCE: oracle, MNO_ORACLE_REFRESH: "3600" });
+    try {
+      const res = await post(gw.base, "/v1/challenge", { platform: "p", communityId: "c", roleId: "r", account: "alice" });
+      assert.equal(res.status, 503, `${name} block hash must be refused, not normalized downstream`);
+    } finally {
+      gw.proc.kill();
+    }
+  }
+});
+
+test("the signature quorum is judged BEFORE the roots are rebuilt", async () => {
+  // Order, not timing, so this is deterministic. The snapshot is broken in TWO ways at once: an
+  // untrusted signature AND a root that does not hash from its leaves. Whichever check runs first
+  // is the one that logs. The rebuilds are the expensive part, so an unauthenticated host must not
+  // be able to buy them: a full leaf set rebuilt before the cheap Ed25519 check stalls the event
+  // loop for seconds on every refresh, which is a denial of service against every endpoint.
+  const trusted = generateKeyPairSync("ed25519");
+  const attacker = generateKeyPairSync("ed25519");
+  const bad = snapshot({ root: "12345" }); // not the recompute of REAL_LEAVES
+  const signed = { ...bad, sigs: [{ key: rawPublicB64(attacker.privateKey), sig: signSnapshot(snapshotMessage(bad), attacker.privateKey) }] };
+  const oracle = join(dir, "sig-before-rebuild.json");
+  await writeFile(oracle, JSON.stringify(signed));
+  const gw = await startGateway({
+    MNO_ORACLE_SOURCE: oracle,
+    MNO_ORACLE_REFRESH: "1", // a refresh must land AFTER the listener below attaches
+    MNO_ORACLE_PUBKEYS: rawPublicB64(trusted.privateKey),
+  });
+  let logs = "";
+  gw.proc.stderr.on("data", (d) => (logs += d));
+  try {
+    await post(gw.base, "/v1/challenge", { platform: "p", communityId: "c", roleId: "r", account: "alice" });
+    for (let i = 0; i < 30 && !logs.includes("rejected"); i += 1) await delay(200);
+    assert.match(logs, /signature quorum not met/, "the cheap authentication check decides");
+    assert.doesNotMatch(logs, /root mismatch/, "and the expensive rebuild never ran to notice the bad root");
+  } finally {
+    gw.proc.kill();
+  }
+});
+
+test("a refresh that throws does not wedge the single-flight guard", async () => {
+  // The guard makes a tick a no-op while one is in flight, so a leaked flag would freeze refreshes
+  // for the life of the process. The reset lives in a finally, and this drives a failing fetch
+  // (missing file) followed by a good one through the real loop.
+  const oracle = join(dir, "appears-later.json");
+  const gw = await startGateway({ MNO_ORACLE_SOURCE: oracle, MNO_ORACLE_REFRESH: "1" });
+  try {
+    const first = await post(gw.base, "/v1/challenge", { platform: "p", communityId: "c", roleId: "r", account: "alice" });
+    assert.equal(first.status, 503, "no snapshot to load yet");
+    await writeFile(oracle, JSON.stringify(snapshot()));
+    let ok = false;
+    for (let i = 0; i < 40 && !ok; i += 1) {
+      await delay(250);
+      ok = (await post(gw.base, "/v1/challenge", { platform: "p", communityId: "c", roleId: "r", account: "alice" })).status === 200;
+    }
+    assert.ok(ok, "refreshes resumed after the failing one, so the guard was released");
+  } finally {
+    gw.proc.kill();
+  }
+});
+
+// WHAT THIS TEST DOES AND DOES NOT PIN, established by mutation rather than asserted. Restoring the
+// separate independently-aged pointer fails it, so the SERVING invariant is genuinely covered.
+// Re-adding the old pointer-conditional wrapper around the coexistence guard does NOT fail it,
+// because the derived pointer is null only when the window is empty, so the guard is unreachable in
+// the skipped state. The guard-skipping half of the blocker is closed BY CONSTRUCTION and cannot be
+// reproduced against this architecture, which is why no test here claims to catch it. The
+// unconditional coexistence refusal itself is covered by the store tests and the earlier
+// end-to-end test.
+test("an expired record cannot split the served snapshot from the window", async () => {
+  const H = 11;
+  const BH = "ef".repeat(32);
+  const goodLeaves = REAL_LEAVES;
+  const v3Leaves = [...REAL_LEAVES].reverse();
+  const V3_ROOT = rootHasher(v3Leaves);
+  const badLeaves = ["111", "222", "888"]; // a DIFFERENT member set, self-consistent on its own
+  const BAD_ROOT = rootHasher(badLeaves);
+
+  const oracle = join(dir, "split-authority.json");
+  const now = Math.floor(Date.now() / 1000);
+  const writeSnap = (over) => writeFile(oracle, JSON.stringify(snapshot({ height: H, blockHash: BH, ...over })));
+
+  // The v2 record is stamped comfortably fresh; the v3 record is stamped OLD but still inside the
+  // age bound, which is the staggering that made the two authorities disagree. Both pass validation.
+  await writeSnap({ version: 2, leaves: goodLeaves, shaRoot: shaRootHasher(goodLeaves), ts: now });
+  const g = await startGateway({
+    MNO_ORACLE_SOURCE: oracle,
+    MNO_ORACLE_REFRESH: "1",
+    MNO_ORACLE_MAX_AGE: "20",
+  });
+  const mint = async () => post(g.base, "/v1/challenge", { platform: "p", communityId: "c", roleId: "r", account: "split" });
+  const dml = async () => (await fetch(g.base + "/v1/dml")).json();
+  try {
+    let ch = await mint();
+    assert.equal(ch.status, 200, "the v2 snapshot is adopted");
+    let served = await dml();
+    assert.equal(served.root, ch.body.root, "the challenge root and the served leaves name one snapshot");
+
+    // The v3 snapshot at the same height, same block, same member set, but stamped 6 seconds older.
+    await writeSnap({ version: 3, leaves: v3Leaves, shaRoot: shaRootHasher(v3Leaves), root: V3_ROOT, order: "proRegTxHash", chainlocked: true, ts: now - 13 });
+    for (let i = 0; i < 40; i += 1) {
+      await delay(250);
+      ch = await mint();
+      if (ch.status === 200 && ch.body.root === V3_ROOT) break;
+    }
+    assert.equal(ch.body.root, V3_ROOT, "the older-stamped v3 is adopted and becomes current");
+
+    // Now let the v3 record age past the bound while the v2 record is still fresh. THE INVARIANT:
+    // whatever the gateway will mint a challenge against, it must be able to serve leaves for.
+    await writeSnap({ version: 3, leaves: badLeaves, shaRoot: shaRootHasher(badLeaves), root: BAD_ROOT, order: "proRegTxHash", chainlocked: true, ts: now + 2 });
+    for (let i = 0; i < 48; i += 1) {
+      await delay(250);
+      ch = await mint();
+      served = await dml();
+      if (ch.status === 200) {
+        assert.equal(
+          served.root,
+          ch.body.root,
+          "a challenge is never minted against a root whose leaves /v1/dml will not serve",
+        );
+        assert.deepEqual(served.leaves.length > 0, true, "and the served snapshot always carries its leaves");
+      }
+      assert.notEqual(ch.body.root, BAD_ROOT, "the different-set snapshot never becomes the served root");
+    }
+    // And it never entered the window at all, whatever the pointer state was along the way.
+    const probe = await mint();
+    if (probe.status === 200) {
+      const res = await post(g.base, "/v1/verify", {
+        nonce: probe.body.nonce,
+        proof: { probe: true },
+        publicSignals: signalsFor(probe.body, { root: BAD_ROOT, epoch: String(Number(probe.body.epoch) + 1) }),
+        account: "split",
+      });
+      assert.equal(res.body.reason, "stale-or-unknown-root", "the different member set is not provable against");
+    }
   } finally {
     g.proc.kill();
   }

@@ -218,7 +218,19 @@ function windowOrderKey(version, order) {
 // and cannot drift. The zkVM registration verify (deferred with the live receipt verifier) uses
 // dmlRoots.shaView() as its rootStore.
 const dmlRoots = new RootWindows(config.rootWindow);
-let latestDml = null; // the last verified oracle snapshot, so provers can fetch leaves and build paths
+// The last verified oracle snapshot, so provers can fetch leaves and build paths. DERIVED from the
+// window rather than tracked beside it: the snapshot rides in the same record as its roots, so
+// aging, eviction, and adoption move all of them together.
+//
+// WHAT THIS GUARANTEES, AND WHAT IT DOES NOT. At any single instant the served snapshot and the
+// served root are the same record, which is what was broken: as two variables aged by separate
+// rules they could split, and a record whose timestamp was older than a retained one cleared the
+// served snapshot while leaving its root current, so /v1/challenge advertised a root /v1/dml had no
+// leaves for. It does NOT make a challenge and a later /v1/dml agree, because they are separate
+// requests and a refresh can land between them. A prover that fetches leaves after a changeover can
+// still receive a different snapshot than its challenge named, and must re-challenge. Closing that
+// needs lookup by root, which is recorded in TODO.md rather than claimed here.
+const latestSnapshot = () => dmlRoots.current()?.snapshot ?? null;
 const dmlRootFromLeaves = await makeDmlRootHasher(config.treeDepth);
 
 // Reject a malformed or implausibly-timestamped snapshot before it can reach the verify path
@@ -251,6 +263,20 @@ function validateSnapshot(o, requiresSha) {
   // or number), so a malformed value cannot pass the recompute and signature paths via String().
   if (o.shaRoot != null && (typeof o.shaRoot !== "string" || !/^[0-9a-f]{64}$/.test(o.shaRoot))) {
     throw new Error("snapshot shaRoot is not a 64 lowercase hex string");
+  }
+  // ONE BLOCK-HASH SCHEMA FOR EVERY VERSION THAT CARRIES THE FIELD, checked here rather than in the
+  // signature path, so unsigned deployments get it too. Two problems came from having two rules.
+  // The signature path tested String(o.blockHash) against a case-INSENSITIVE pattern, so a singleton
+  // array holding a valid hash coerced through and an uppercase hash was accepted, while v3 demanded
+  // a lowercase string. mayCoexist then compares stored hashes exactly, so an uppercase v2 record and
+  // the lowercase v3 record for the SAME block read as different blocks and the changeover was
+  // refused for a freshness period. Canonical lowercase everywhere removes the representational
+  // difference rather than teaching each comparison to normalize.
+  //
+  // BREAKING for any deployment publishing uppercase block hashes: those snapshots are now refused,
+  // and the fix is to publish the lowercase form Core emits and re-sign.
+  if (o.blockHash != null && (typeof o.blockHash !== "string" || !/^[0-9a-f]{64}$/.test(o.blockHash))) {
+    throw new Error("snapshot blockHash is not a 64 lowercase hex string");
   }
   if (version === 2 && o.shaRoot == null) throw new Error("v2 snapshot is missing its shaRoot");
   if (version === 1 && o.shaRoot != null) throw new Error("v1 snapshot must not carry a shaRoot");
@@ -328,8 +354,9 @@ function oracleSignaturesOk(o) {
   if (config.oraclePubkeys.length === 0) return true;
   // A signed snapshot must anchor a real block, since the signature covers the block hash and the
   // chain-anchor argument rests on it. Reject a missing or malformed one rather than count signatures
-  // over an empty anchor.
-  if (!/^[0-9a-fA-F]{64}$/.test(String(o.blockHash ?? ""))) {
+  // over an empty anchor. The shape is the same canonical rule validateSnapshot applies to every
+  // version, typed rather than coerced, so a singleton array cannot pass here by stringifying.
+  if (typeof o.blockHash !== "string" || !/^[0-9a-f]{64}$/.test(o.blockHash)) {
     console.error(`[gateway] signed oracle snapshot has no valid block hash, rejected`);
     return false;
   }
@@ -345,20 +372,34 @@ function oracleSignaturesOk(o) {
 // Enforce the freshness bound on EVERY root the window will still accept, not only the newest. Each
 // root carries its own oracle timestamp (bounded at adoption to no more than oracleFutureSkewSeconds
 // in the future), so dropping those older than the bound stops a removed node from proving against
-// an aged-out root that newer snapshots happened to keep in the window, and clears latestDml when
-// its own root ages out. Called on the refresh tick and at request time, so a refresh interval
-// longer than the bound cannot leave a stale root servable between ticks.
+// an aged-out root that newer snapshots happened to keep in the window. Called on the refresh tick
+// and at request time, so a refresh interval longer than the bound cannot leave a stale root
+// servable between ticks. The served snapshot needs no separate sweep: it rides in the record, so
+// dropping the record drops its leaves at the same instant, which is what stops the two splitting.
 function enforceDmlFreshness() {
   if (config.oracleMaxAgeSeconds <= 0) return;
   const cutoff = nowSec() - config.oracleMaxAgeSeconds;
-  dmlRoots.dropOlderThan(cutoff); // one window ages both roots of each snapshot together
-  if (latestDml && Number(latestDml.ts) < cutoff) {
-    console.error(`[gateway] oracle snapshot stale (ts ${latestDml.ts}), dropping root until a fresh one arrives`);
-    latestDml = null;
+  const before = dmlRoots.current()?.root ?? null;
+  dmlRoots.dropOlderThan(cutoff); // one window ages both roots and the snapshot of each record
+  const after = dmlRoots.current()?.root ?? null;
+  if (before !== null && after === null) {
+    console.error(`[gateway] oracle snapshot stale, dropping root until a fresh one arrives`);
   }
 }
 
+// Refreshes are SERIALIZED. setInterval does not await, so two fetches could overlap and finish out
+// of publication order, letting a slow older response be adopted after a newer one and become the
+// served snapshot. A refresh already in flight makes the tick a no-op rather than queuing, because
+// the next tick is only seconds away and a queue of stale fetches has no value.
+let refreshInFlight = false;
+
 async function refreshRoots() {
+  if (refreshInFlight) {
+    // Not an error. A source slower than the refresh interval is an operational fact, and skipping
+    // is what keeps completion order equal to publication order.
+    return;
+  }
+  refreshInFlight = true;
   try {
     const o = await loadOracle(config.oracleSource);
     // Require v2 if configured OR if a durable zkVM registration exists in the current season, so a
@@ -368,6 +409,13 @@ async function refreshRoots() {
       requiresSha = await registrationStore.seasonHasEngine(timeGuard.season(), "zkvm");
     }
     validateSnapshot(o, requiresSha);
+    // THE SIGNATURE QUORUM IS CHECKED BEFORE THE TREE REBUILDS, because the rebuilds are the
+    // expensive part and an unauthenticated source must not be able to buy them. A host with no
+    // trusted key can serve a schema-valid snapshot carrying a full tree of leaves, and rebuilding
+    // both roots before rejecting it blocks the event loop for seconds per refresh, which is a
+    // denial of service against every endpoint. Ed25519 verification is cheap and decides the same
+    // question. On an unsigned deployment this is a no-op, so the order costs nothing there.
+    const signaturesOk = oracleSignaturesOk(o);
     // Always recompute the root from the published leaves and trust only a self-consistent snapshot,
     // whether the root is new or a republish of the current one. The fast hasher is O(real leaves),
     // so this runs every refresh cheaply, and a snapshot whose leaves do not hash to its root is
@@ -375,39 +423,38 @@ async function refreshRoots() {
     // stale root alive. The recompute only proves internal consistency. oracleSignaturesOk is the
     // separate check that a trusted oracle key vouched for this leaf set, so a source that forges a
     // self-consistent pair over an attacker-chosen set is rejected unless it also holds a trusted key.
-    const recomputed = dmlRootFromLeaves(o.leaves);
+    const recomputed = signaturesOk ? dmlRootFromLeaves(o.leaves) : null;
     // Recompute the SHA-256 root from the SAME leaves too, so a v2 snapshot whose shaRoot does not
-    // hash from its leaves is rejected exactly like a mismatched Poseidon root. Both roots must be
-    // self-consistent before the signature check, so a source cannot pair a good Poseidon root with a
-    // forged shaRoot. The two provably describe one leaf set only because both recompute here.
-    const shaRecomputed = o.shaRoot != null ? shaRootFromLeaves(o.leaves, config.treeDepth) : null;
-    if (recomputed !== String(o.root)) {
+    // hash from its leaves is rejected exactly like a mismatched Poseidon root. Both roots are
+    // recomputed for every snapshot that is adopted, so a source cannot pair a good Poseidon root
+    // with a forged shaRoot, and the two provably describe one leaf set.
+    const shaRecomputed = signaturesOk && o.shaRoot != null ? shaRootFromLeaves(o.leaves, config.treeDepth) : null;
+    if (!signaturesOk) {
+      console.error(`[gateway] oracle snapshot signature quorum not met (need ${config.oracleQuorum} trusted signer(s)), rejected`);
+    } else if (recomputed !== String(o.root)) {
       // Reject the inconsistent snapshot, but do not early-return: the staleness check below must
       // still run, or an aged-out accepted root would keep being served while the source is bad.
       console.error(`[gateway] oracle root mismatch, snapshot rejected: claimed ${o.root}, recomputed ${recomputed}`);
     } else if (shaRecomputed !== null && shaRecomputed !== String(o.shaRoot)) {
       console.error(`[gateway] oracle shaRoot mismatch, snapshot rejected: claimed ${o.shaRoot}, recomputed ${shaRecomputed}`);
-    } else if (!oracleSignaturesOk(o)) {
-      // Self-consistent but not vouched for by the quorum of trusted oracle keys, so the leaf set is
-      // unauthenticated. Reject, and fall through to the freshness sweep like the mismatch case.
-      console.error(`[gateway] oracle snapshot signature quorum not met (need ${config.oracleQuorum} trusted signer(s)), rejected`);
-    } else if (latestDml && Number(o.height) < Number(latestDml.height)) {
+    } else if (dmlRoots.maxHeight() !== null && Number(o.height) < dmlRoots.maxHeight()) {
       // Height regressed below the accepted root. A masternode list height is the block count and
       // only moves forward, so a lower height is a replayed old snapshot or a reorg, and the two are
       // indistinguishable without the block hash (tracked with the leaf-authentication follow-up).
-      // The safe default for a security gate is to reject: adopting it would diverge latestDml from
-      // RootStore.current(), strand provers, and re-window a stale root a node may have been evicted
-      // from. If the lower height is a genuine sustained reorg, the old root ages out within
-      // oracleMaxAgeSeconds, enforceDmlFreshness clears latestDml, and the next lower-height snapshot
-      // is then accepted, so the gateway self-heals onto the canonical branch within the bound.
-      console.error(`[gateway] oracle height regressed (${o.height} < ${latestDml.height}), snapshot rejected`);
+      // The safe default for a security gate is to reject: adopting it would strand provers and
+      // re-window a stale root a node may have been evicted from. If the lower height is a genuine
+      // sustained reorg, the old root ages out within oracleMaxAgeSeconds, the window empties, and
+      // the next lower-height snapshot is then accepted, so the gateway self-heals onto the
+      // canonical branch within the bound.
+      console.error(`[gateway] oracle height regressed (${o.height} < ${dmlRoots.maxHeight()}), snapshot rejected`);
     } else if (
-      latestDml &&
-      Number(o.height) === Number(latestDml.height) &&
-      String(o.root) !== String(latestDml.root) &&
+      // Asked of the WINDOW, unconditionally, for every candidate. The guard used to be reached only
+      // when a separate last-adopted pointer existed and disagreed, so an expired pointer beside a
+      // surviving record at the same height skipped the check entirely and let an inconsistent set
+      // in beside a consistent one. An exact republish still passes, because a record describing the
+      // same block and the same leaf multiset is what the check admits.
       !dmlRoots.mayCoexist({
         height: o.height,
-        order: windowOrderKey(snapshotVersion(o), o.order),
         blockHash: o.blockHash ?? null,
         setCommitment: leafSetCommitment(o.leaves),
       })
@@ -423,10 +470,10 @@ async function refreshRoots() {
       // coexistence would have been the hole rather than the feature.
       console.error(`[gateway] oracle root changed at height ${o.height}, snapshot rejected`);
     } else {
-      // Height is at or above the accepted root, so this snapshot becomes (or stays) current and
-      // latestDml never diverges from RootStore.current(). Only a self-consistent snapshot reaches
-      // here, so the ts that drives expiry is verified-fresh.
-      latestDml = o;
+      // Height is at or above every retained record, so this snapshot becomes (or stays) current.
+      // Only a self-consistent snapshot reaches here, so the ts that drives expiry is
+      // verified-fresh, and the snapshot itself is stored in the record so the served leaves and
+      // the served root can never name different snapshots.
       // One paired record holds both roots, so the two views stay in lockstep by construction. A v1
       // snapshot has shaRoot null and never matches the SHA-256 view.
       // `order` carries the snapshot's leaf ordering, so a v2 and a v3 root at one height coexist in
@@ -443,10 +490,14 @@ async function refreshRoots() {
         // Derived here from the leaves this gateway just recomputed both roots from, so it is never a
         // value the source chose. It is what a later snapshot at this height is checked against.
         setCommitment: leafSetCommitment(o.leaves),
+        // The verified snapshot itself, so a record's root and its leaves live and die together.
+        snapshot: o,
       });
     }
   } catch (err) {
     console.error("[gateway] root refresh failed:", err.message);
+  } finally {
+    refreshInFlight = false;
   }
   // Prune aged-out roots from the window. validateSnapshot only blocks adopting a stale snapshot;
   // this stops serving ones already accepted, so a stalled, replayed, or inconsistent source cannot
@@ -759,12 +810,17 @@ const server = createServer(async (req, res) => {
       // public DML snapshot so a prover can find its leaf and build a Merkle path. shaRoot is the
       // SHA-256 tree root for the zkVM registration statement, null on a v1 snapshot, so a zkVM
       // prover can build its SHA-256 path from the same leaves.
+      // Derived from the window's current record, so this response's root and leaves always belong
+      // to one snapshot. It is the CURRENT record at the moment of this request, which a refresh
+      // between a challenge and this call can have moved on from, so a prover comparing the two
+      // must re-challenge rather than assume they match.
+      const served = latestSnapshot();
       return send(res, 200, {
-        root: latestDml?.root ?? null,
-        shaRoot: latestDml?.shaRoot ?? null,
-        height: latestDml?.height ?? null,
-        depth: latestDml?.depth ?? config.treeDepth,
-        leaves: latestDml?.leaves ?? [],
+        root: served?.root ?? null,
+        shaRoot: served?.shaRoot ?? null,
+        height: served?.height ?? null,
+        depth: served?.depth ?? config.treeDepth,
+        leaves: served?.leaves ?? [],
       });
     }
 
