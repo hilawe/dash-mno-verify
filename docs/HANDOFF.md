@@ -5,6 +5,52 @@ counts and supersedes everything below it. Historical sections are append-only a
 only marked superseded. Read this first when picking the project back up, then `TODO.md` for the full
 prioritized punch list.
 
+## CURRENT STATE, 2026-08-02 (night, after the fresh full round)
+
+`main` at `cbbb1cd`, 420 tests green, clean tree. A FRESH FULL four-reviewer round ran on the
+chain-anchor surface and every finding is folded. Read this section, then `docs/PRECOMMIT_ADOPTION.md`.
+Everything below is superseded.
+
+### What the round found, and what it means
+
+Four reviewers, two BLOCK and two APPROVE-WITH-FIXES. The round was worth running: it found a
+blocker that four prior focused passes had missed, and the finding TWO families reached
+independently was the same one.
+
+- **The blocker.** The served snapshot and the root window were separate authorities aged by
+  separate rules. A record could expire leaving the window populated and the served snapshot null,
+  so a challenge was minted against a root whose leaves the gateway would not serve, and the
+  same-height coexistence guard, being conditional on that pointer, was skipped entirely. Fixed by
+  CONSTRUCTION: the snapshot now rides in the window record, so the two cannot be separately aged.
+- **The wedge.** `mayCoexist` demanded the leaf orders DIFFER, which read as tighter and was looser
+  in effect, refusing an identical republish so the older root aged out while still being published.
+  The check is now same block and same leaf multiset, whatever the order.
+- **Three families agreed on two more**: block hashes must be one canonical lowercase schema
+  everywhere (an uppercase v2 and a lowercase v3 for the same block read as different blocks and
+  refused the changeover), and the signed message must be self-framing (a reviewer supplied a
+  concrete collision where a newline moved a field boundary).
+- **The twin-hunt paid.** `oracle/snapshot.js`, the LIVE builder, filtered on status before
+  validating anything, so a malformed response silently shortened the signed member set. The round
+  was framed to hunt twins of the folded fixes and this was one, in the wired path.
+
+### Two things the round changed about the discipline itself
+
+- **Rule 2 caught its first author-side defects here**, both in my own tests: a mutation that did
+  NOT fail its test (revealing the test claimed coverage of a half-defect that is closed by
+  construction) and a test asserting a state the code cannot reach. Nine trial rows in, that is the
+  first time an author-side rule caught something before the external checker.
+- **Fixtures were proving the builder against input Core cannot emit.** The legacy oracle test keys
+  were "bbbb-1" and friends. They are now real outpoints in the same relative order, so every golden
+  constant is untouched.
+
+### Known residuals, stated not implied
+
+- NOT COVERED by tests: overlapping refreshes completing in reverse order, and oversized-body
+  cancellation. Each needs a seam the gateway does not expose.
+- BREAKING: a deployment publishing uppercase block hashes must republish and re-sign.
+- A prover that fetches leaves after a changeover can still receive a different snapshot than its
+  challenge named, and must re-challenge. Lookup by root is the fix and is not built.
+
 ## CURRENT STATE, 2026-08-02 (late evening)
 
 `main` at `c59efde` plus this handoff commit, ahead of `origin/main` (`e0f128c`), NOT yet pushed.
