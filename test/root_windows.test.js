@@ -373,23 +373,22 @@ test("a non-numeric timestamp is refused rather than compared", () => {
   assert.equal(w.isEligibleWithin("bad-ts", 0, 1000), true, "but with no age rule the window still accepts it");
 });
 
-test("the refresh path adopts a NORMALIZED snapshot, pinned structurally", async () => {
-  // A TRIPWIRE, not a proof, and the difference is stated because it matters. The call site lives in
-  // core/gateway.js, which starts an HTTP server the moment it is imported, so no unit test can
-  // observe what that path passes to adopt(). The pure function above is tested directly and the
-  // /v1/dml response is tested end to end, but NEITHER fails if the call site stops normalizing:
-  // the response handler rebuilds its five fields regardless. That gap is what let a measured
-  // 157 MB retention regression have two green tests, and a reviewer named the exact mutation.
-  //
-  // So the call site is pinned by reading it. This catches the mutation that matters (dropping the
-  // normalization) and would not catch a rename or a rewrite that keeps the shape, which is the
-  // honest limit of a structural check. It is the same pattern this project already uses to pin
-  // "no other file may mutate permissions".
-  const src = await readFile(new URL("../core/gateway.js", import.meta.url), "utf8");
-  assert.match(
-    src,
-    /snapshot:\s*normalizeSnapshot\(/,
-    "the window must receive a normalized snapshot, never the parsed object as it arrived",
+test("the store REFUSES an un-normalized snapshot, so this is an invariant not a convention", () => {
+  // REPLACES A SOURCE-TEXT TRIPWIRE. The previous version of this test read core/gateway.js and
+  // grepped for a normalizeSnapshot() call, because that module starts a server on import and could
+  // not be exercised. Three reviewers independently judged that a stopgap rather than an invariant:
+  // it broke on reformatting and could not notice the call being present while a different object
+  // reached adopt(). Enforcing the shape in the store catches every route in, including ones nobody
+  // has written yet, and needs no knowledge of who the caller is.
+  const w = new RootWindows(8);
+  const hostile = { ...normalizeSnapshot({ height: 1, ts: 5, root: "r", leaves: ["1"] }, 16), padding: "x".repeat(1000) };
+  assert.throws(
+    () => w.adopt({ height: 1, root: "r", ts: 5, order: null, snapshot: hostile }),
+    /unexpected field "padding"/,
   );
-  assert.doesNotMatch(src, /snapshot:\s*o\s*,/, "and never the raw object");
+  assert.equal(w.snaps.length, 0, "and nothing was stored on the way to refusing");
+
+  // The exit ordinary operation takes: a normalized snapshot is accepted.
+  w.adopt({ height: 1, root: "r", ts: 5, order: null, snapshot: normalizeSnapshot({ height: 1, ts: 5, root: "r", leaves: ["1"] }, 16) });
+  assert.equal(w.current().snapshot.leaves.length, 1);
 });

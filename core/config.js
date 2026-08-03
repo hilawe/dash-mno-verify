@@ -128,6 +128,15 @@ export const config = {
   //
   // These are per account per window, so they are deliberately small: a human verifying membership
   // needs a handful of attempts, not dozens.
+  // A cheap per-source gate checked BEFORE the request body is read, so an unauthenticated flood
+  // cannot buy body reads and JSON parsing. The account-bearing limits cannot do this job: the
+  // account is only knowable after parsing, which is exactly what needs bounding first. Generous on
+  // purpose, because it is an ingress shield rather than a fairness rule.
+  ingressRateMax: intEnv("MNO_RATE_INGRESS", 300),
+  // How many distinct windows one limiter tracks before it starts evicting the oldest. Exposed so a
+  // test can fill the table without sending fifty thousand requests, and so an operator can trade
+  // memory against accuracy deliberately.
+  rateMaxKeys: intEnv("MNO_RATE_KEYS", 50_000, { min: 16 }),
   accountChallengeRateMax: intEnv("MNO_RATE_CHALLENGE_ACCOUNT", 10),
   accountVerifyRateMax: intEnv("MNO_RATE_VERIFY_ACCOUNT", 20),
   verifyRateMax: intEnv("MNO_RATE_VERIFY", 120),

@@ -1295,6 +1295,8 @@ test("an expired record cannot split the served snapshot from the window", async
   try {
     let ch = await mint();
     assert.equal(ch.status, 200, "the v2 snapshot is adopted");
+    // Held for the assertion at the end, minted now while a root is certainly live.
+    const heldNonce = ch.body;
     let served = await dml();
     assert.equal(served.root, ch.body.root, "the challenge root and the served leaves name one snapshot");
 
@@ -1324,17 +1326,23 @@ test("an expired record cannot split the served snapshot from the window", async
       }
       assert.notEqual(ch.body.root, BAD_ROOT, "the different-set snapshot never becomes the served root");
     }
-    // And it never entered the window at all, whatever the pointer state was along the way.
-    const probe = await mint();
-    if (probe.status === 200) {
-      const res = await post(g.base, "/v1/verify", {
-        nonce: probe.body.nonce,
-        proof: { probe: true },
-        publicSignals: signalsFor(probe.body, { root: BAD_ROOT, epoch: String(Number(probe.body.epoch) + 1) }),
-        account: "split",
-      });
-      assert.equal(res.body.reason, "stale-or-unknown-root", "the different member set is not provable against");
-    }
+    // And it never entered the window at all. THE NONCE IS MINTED EARLIER, deliberately: a first
+    // version minted it here, after the loop above has spent twelve seconds, by which point every
+    // root has aged out and mint() returns 503, so the `if (status === 200)` guard skipped the
+    // assertion entirely and the test reported coverage it never exercised. A reviewer caught it.
+    // Minting while a root is live and holding the nonce across the wait is what makes this run.
+    assert.ok(heldNonce, "a nonce was minted while the window was still populated");
+    const res = await post(g.base, "/v1/verify", {
+      nonce: heldNonce.nonce,
+      proof: { probe: true },
+      publicSignals: signalsFor(heldNonce, { root: BAD_ROOT, epoch: String(Number(heldNonce.epoch) + 1) }),
+      account: "split",
+    });
+    assert.equal(
+      res.body.reason,
+      "stale-or-unknown-root",
+      "the different member set is not provable against, asserted rather than skipped",
+    );
   } finally {
     g.proc.kill();
   }
@@ -1754,6 +1762,32 @@ test("two-tier keeps durable clock marks even with an in-memory nullifier store"
     const written = await readFile(marks, "utf8").catch(() => null);
     assert.ok(written, "the marks file exists, so a restart can see the high-water mark");
     assert.match(written, /season/, "and it records the season the durable registrations belong to");
+  } finally {
+    gw.proc.kill();
+  }
+});
+
+test("a flood of invented accounts cannot lock out a caller the limiter has not seen", async () => {
+  // THE LOCKOUT. The limiter's key includes a caller-supplied account, and it used to REFUSE every
+  // new key once its table was full of live windows. So anyone able to invent enough account
+  // strings inside one window turned the limiter into a machine that denied every caller it had not
+  // already seen, which is the outcome a rate limiter exists to prevent. It now evicts the oldest
+  // window instead, which degrades accuracy rather than availability.
+  const oracle = join(dir, "rate-flood.json");
+  await writeFile(oracle, JSON.stringify(snapshot()));
+  const gw = await startGateway({
+    MNO_ORACLE_SOURCE: oracle,
+    MNO_ORACLE_REFRESH: "3600",
+    MNO_RATE_KEYS: "40", // a small table, so the flood is a few dozen requests rather than 50,000
+    MNO_RATE_CHALLENGE: "10000",
+    MNO_RATE_INGRESS: "10000",
+    MNO_RATE_CHALLENGE_ACCOUNT: "5",
+  });
+  const mint = (account) => post(gw.base, "/v1/challenge", { platform: "p", communityId: "c", roleId: "r", account });
+  try {
+    for (let i = 0; i < 120; i += 1) await mint(`flood-${i}`);
+    const victim = await mint("someone-who-just-arrived");
+    assert.equal(victim.status, 200, "a caller the table has never seen still gets its allowance");
   } finally {
     gw.proc.kill();
   }

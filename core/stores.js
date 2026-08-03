@@ -79,6 +79,11 @@ export function leafSetCommitment(leaves) {
 // retained across eight records) had two tests that BOTH passed when the normalization was removed,
 // because one inspected an HTTP response the handler rebuilds field by field anyway and the other
 // fed an already-normalized object straight into the store.
+// The exact key set a window record's snapshot may carry. Enumerated so the store can ENFORCE it
+// rather than trusting its caller to have normalized, which is what turns this from a convention
+// into an invariant.
+export const SNAPSHOT_FIELDS = ["version", "height", "blockHash", "depth", "ts", "root", "shaRoot", "leaves"];
+
 export function normalizeSnapshot(o, defaultDepth) {
   return {
     version: o?.version == null ? 1 : o.version,
@@ -130,6 +135,24 @@ export class RootWindows {
   // older than another's cleared the snapshot while leaving a root current, so the gateway
   // advertised a root whose leaves it would not hand out.
   adopt({ height, root, shaRoot = null, ts, order = null, blockHash = null, setCommitment = null, snapshot = null }) {
+    // THE STORE REFUSES AN UN-NORMALIZED SNAPSHOT, rather than trusting the caller to have passed
+    // one. Three reviewers judged the previous arrangement, a test that grepped the call site for a
+    // normalizeSnapshot() call, to be a stopgap rather than an invariant, and they were right: it
+    // broke on reformatting, and it could not notice the call being present while a different object
+    // reached this method. Enforcing here catches every route in, including ones nobody has written
+    // yet, and it is the same stance the unknown-ordering throw below takes. The regression it
+    // pins is a hostile host padding a validly signed snapshot, measured at 157 MB retained.
+    if (snapshot != null) {
+      for (const k of Object.keys(snapshot)) {
+        if (!SNAPSHOT_FIELDS.includes(k)) {
+          throw new Error(
+            `RootWindows: snapshot carries the unexpected field ${JSON.stringify(k)}. A record holds ` +
+              `only ${SNAPSHOT_FIELDS.join(", ")}, so anything else is an un-normalized object and ` +
+              `would be retained at every height, unauthenticated and unbounded.`,
+          );
+        }
+      }
+    }
     // Executable invariant, not a comment. An unknown ordering means the key space is no longer
     // bounded by the version enumeration, which is the only thing bounding records per height.
     if (!KNOWN_ORDERS.has(order ?? null)) {
@@ -353,7 +376,22 @@ export class RateLimiter {
     if (!e || now > e.reset) {
       if (!e && this.hits.size >= this.maxKeys) {
         this.sweep();
-        if (this.hits.size >= this.maxKeys) return false; // table full of live windows, shed load
+        // EVICT THE OLDEST, DO NOT REFUSE THE NEWEST. This used to return false once the table was
+        // full of live windows, which reads as prudent load-shedding and is in fact a global
+        // lockout: the keys include caller-supplied strings, so anyone able to invent 50,000 of them
+        // inside one window turns the limiter into a machine that denies EVERY caller it has not
+        // seen before, which is the outcome a rate limiter exists to prevent.
+        //
+        // Evicting instead degrades accuracy rather than availability. The cost is that a caller who
+        // churns keys can eventually push out someone else's window and hand them a fresh
+        // allowance, which is worth far less to an attacker than locking the service, and the
+        // source-keyed limiters still bound them. Map iterates in insertion order, so the front is
+        // the oldest.
+        while (this.hits.size >= this.maxKeys) {
+          const oldest = this.hits.keys().next();
+          if (oldest.done) break;
+          this.hits.delete(oldest.value);
+        }
       }
       e = { count: 0, reset: now + this.windowMs };
       this.hits.set(key, e);

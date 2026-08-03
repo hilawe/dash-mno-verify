@@ -92,11 +92,17 @@ const challenges = new ChallengeStore(config.challengeTtlSeconds, config.maxPend
 
 // Per-client rate-limit guards on the request-facing endpoints (review finding M5). The
 // account-bearing ones additionally require the adapter bearer token when MNO_ADAPTER_SECRET is set.
-const challengeLimiter = new RateLimiter({ windowSeconds: config.rateWindowSeconds, max: config.challengeRateMax });
-const verifyLimiter = new RateLimiter({ windowSeconds: config.rateWindowSeconds, max: config.verifyRateMax });
-const registerLimiter = new RateLimiter({ windowSeconds: config.rateWindowSeconds, max: config.registerRateMax });
-const membersLimiter = new RateLimiter({ windowSeconds: config.rateWindowSeconds, max: config.membersRateMax });
-const dmlLimiter = new RateLimiter({ windowSeconds: config.rateWindowSeconds, max: config.dmlRateMax });
+const challengeLimiter = new RateLimiter({ maxKeys: config.rateMaxKeys, windowSeconds: config.rateWindowSeconds, max: config.challengeRateMax });
+const verifyLimiter = new RateLimiter({ maxKeys: config.rateMaxKeys, windowSeconds: config.rateWindowSeconds, max: config.verifyRateMax });
+const registerLimiter = new RateLimiter({ maxKeys: config.rateMaxKeys, windowSeconds: config.rateWindowSeconds, max: config.registerRateMax });
+const membersLimiter = new RateLimiter({ maxKeys: config.rateMaxKeys, windowSeconds: config.rateWindowSeconds, max: config.membersRateMax });
+const dmlLimiter = new RateLimiter({ maxKeys: config.rateMaxKeys, windowSeconds: config.rateWindowSeconds, max: config.dmlRateMax });
+// Checked BEFORE the body is read on the account-bearing endpoints. Moving the shared limiters after
+// the parse (so a refused account could not drain them) left nothing at all guarding the read and
+// parse themselves, which is a worse exposure than the one it fixed: a single source could then
+// stream large bodies and buy JSON parsing without ever reaching a limit. This restores a bound on
+// that phase without re-coupling it to the fairness rule.
+const ingressLimiter = new RateLimiter({ maxKeys: config.rateMaxKeys, windowSeconds: config.rateWindowSeconds, max: config.ingressRateMax });
 // PER-ACCOUNT limiters, applied after the body is read (and after adapter authentication, where a
 // secret is configured) because the account is not known before that. The per-source limiters above
 // stay as the aggregate guard.
@@ -110,10 +116,12 @@ const dmlLimiter = new RateLimiter({ windowSeconds: config.rateWindowSeconds, ma
 // the per-source limit remains the real bound. Stated rather than implied, because a limit that only
 // works under a condition is a limit whose condition has to be written down.
 const accountChallengeLimiter = new RateLimiter({
+  maxKeys: config.rateMaxKeys,
   windowSeconds: config.rateWindowSeconds,
   max: config.accountChallengeRateMax,
 });
 const accountVerifyLimiter = new RateLimiter({
+  maxKeys: config.rateMaxKeys,
   windowSeconds: config.rateWindowSeconds,
   max: config.accountVerifyRateMax,
 });
@@ -122,6 +130,7 @@ const accountVerifyLimiter = new RateLimiter({
 // part). The separator is kept only for readability.
 // One list, so the periodic sweep cannot drift out of step with the limiters that exist.
 const ALL_LIMITERS = [
+  ingressLimiter,
   challengeLimiter,
   verifyLimiter,
   registerLimiter,
@@ -857,11 +866,13 @@ const server = createServer(async (req, res) => {
       // Auth before the rate limiter, so an unauthorized caller cannot burn the bucket for a client
       // key and block the real adapter.
       if (!authorized(req)) return send(res, 401, { error: "unauthorized" });
-      // The source limiter is charged BELOW, only once the per-account limit has accepted. Charging
+      // The ingress shield, before anything is read from the socket. The shared bucket is charged
+      // BELOW, only once the per-account limit accepts. Charging
       // it here meant a request the account limit was about to reject still consumed the shared
       // bucket, so one account could spend its own small allowance and then keep draining the
       // community's large one with requests that were never served. The per-account limit then
       // subdivided nothing, which is the opposite of what it was added for.
+      if (!ingressLimiter.allow(clientKey(req))) return send(res, 429, { error: "rate limited" });
       const { platform, communityId, roleId, account: rawAccount } = await readBody(req);
       if (!platform || !communityId || !roleId || !rawAccount) return send(res, 400, { error: "missing fields" });
       // Normalize the account to a string here, the one place it enters, so the signal hash and the
@@ -918,7 +929,9 @@ const server = createServer(async (req, res) => {
 
     if (req.method === "POST" && path === "/v1/verify") {
       if (!authorized(req)) return send(res, 401, { error: "unauthorized" });
-      // Charged below, after the per-account limit accepts. See the challenge handler for why.
+      // Charged below, after the per-account limit accepts. See the challenge handler for why. The
+      // ingress shield runs first, before the body is read.
+      if (!ingressLimiter.allow(clientKey(req))) return send(res, 429, { error: "rate limited" });
       const { nonce, proof, publicSignals, account } = await readBody(req);
       if (!nonce || !proof || !publicSignals || !account) return send(res, 400, { error: "missing fields" });
       // Per-account, for the same reason as the challenge path. Checked before the challenge is
@@ -987,7 +1000,16 @@ const server = createServer(async (req, res) => {
               // catch it. The two-tier branch below happened to observe via season(); single-tier
               // observed nothing. Confirmed directly: step the clock back without re-observing and
               // the flag stays false.
+              // BOTH PERIODS, unconditionally. The flag is only updated by the observation that is
+              // actually made, so sampling one period cannot see a step backward that moves the
+              // other. Season length is not an integer multiple of epoch length (90 days over 7 is
+              // not whole), so a step back can change the season while leaving the epoch number
+              // alone, and the reverse. Two reviewers reached this from opposite directions, one
+              // naming the season-only case and one the epoch-only case, which is the giveaway that
+              // the rule is "observe everything the decision depends on" rather than "add the one
+              // that was missing".
               timeGuard.epoch();
+              timeGuard.season();
               if (timeGuard.regressed) return "clock-regressed";
               if (nowSec() >= (pending.epoch + 1) * config.epochSeconds) return "epoch-rolled-over";
               if (twoTier) {
