@@ -47,11 +47,41 @@ prioritized punch list.
    `MNO_PLATFORM_ASSUME_SCHEDULE=1`, because the contract cannot carry a schedule marker and a
    changed schedule would otherwise be reinterpreted in silence.
 
-   **NEXT: a fresh full round.** Everything since `a3cc0ed` has had only focused screens, which are
+   **ROUND 4 IS IN AND FOLDED** (`ebc0e0c`). Four reviewers, three BLOCK and one
+   APPROVE-WITH-FIXES, reviewing the previous fold. Findings are in
+   `REVIEW_FINDINGS_dash-mno-verify_gateway_round4_2026-08-02.md` (repo-access reviewer) and
+   `~/Downloads/REVIEW_FINDINGS_dash-mno-verify_gateway_round4_2026-08-03.md` (packet reviewer).
+
+   The headline is uncomfortable and worth carrying: MOST OF WHAT ROUND 4 FOUND WAS IN THE ROUND-3
+   FIXES, not in the code those fixes were about. Sixth consecutive round with that shape. Two
+   examples. The post-proof clock guard added in round 3 read a flag that only updates when the
+   clock is actively sampled, and single-tier verifies sampled nothing, so the check added to catch
+   a clock regression could not see one. And the torn-tail recovery fixed one process lifetime and
+   broke every later one, because the discarded bytes stayed in the file and the next append
+   concatenated onto them.
+
+   A BLOCKER FROM ROUND 3 WAS SKIPPED BY THE ROUND-3 FOLD and re-reported: clock marks went
+   ephemeral based on the nullifier store while two-tier keeps a durable registration file. Folding
+   from a list lost it. It is fixed now (`ebc0e0c`), but the lesson is that a fold needs a
+   checklist checked off against the findings, not a narrative.
+
+   **STILL OPEN from round 4**, recorded rather than folded: a close error after a successful
+   durable write can duplicate a registration; a challenge can be minted for a season that ended
+   during materialization; registration readiness ignores the anchor age; and the gateway remains
+   one uninjectable module (which is why several fixes needed structural tripwires instead of unit
+   tests, and is the root cause behind more than one finding).
+
+   **FIVE NEW OR CHANGED OPERATOR SETTINGS SO FAR.** `MNO_REGISTER_CONTEXTS` (two-tier now REFUSES
+   to boot without it, or `MNO_ALLOW_ANY_REGISTER_CONTEXTS=1`), `MNO_REGISTER_ROOT_MAX_AGE` (900s),
+   `MNO_RATE_CHALLENGE_ACCOUNT` (10), `MNO_RATE_VERIFY_ACCOUNT` (20), `MNO_RATE_DML` (60), and
+   `MNO_PLATFORM_ASSUME_SCHEDULE` which must now NAME the schedule (e.g. `e604800s7776000`) rather
+   than being `1`.
+
+   **NEXT: another full round.** Everything since `a3cc0ed` has had only focused screens, which are
    a screen and not a round, and this project's record is five consecutive rounds finding the newest
-   fixes to be the highest-risk surface. That held again throughout this fold: the worst defect in
-   the registration-anchor work existed only in the fix, and three tests of mine were caught vacuous
-   by their own mutations. Build packets from `45ebc02` or later.
+   fixes to be the highest-risk surface, now six. Build packets from `ebc0e0c` or later. Given that
+   round 4 found most of its material in round 3's fixes, expect the same again and frame the packet
+   that way.
 3. **The fold itself has had no independent round.** Two focused artifact checks screened it, which
    is not a round. Build fresh packets from the current commit once the contained items are folded,
    and remember this project's own record: five consecutive rounds found the newest fixes to be the
