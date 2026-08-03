@@ -25,8 +25,8 @@
 //   GET  /v1/health     -> { ok, mode, root, dmlRoot, season, contexts? }
 import { createServer } from "node:http";
 import { randomUUID, createHash, timingSafeEqual } from "node:crypto";
-import { config } from "./config.js";
-import { leafSetCommitment, RootWindows, NullifierStore, ChallengeStore, RateLimiter, Semaphore, loadOracle } from "./stores.js";
+import { config, MAX_SNAPSHOT_SIGS } from "./config.js";
+import { leafSetCommitment, RootWindows, NullifierStore, ChallengeStore, RateLimiter, Semaphore, loadOracle, normalizeSnapshot } from "./stores.js";
 import { loadVerificationKey, verifyMembership, verifyRegistration, readSignals } from "./verifier.js";
 import { SeasonMembers } from "./season.js";
 import { makeDmlRootHasher } from "./dml_root.js";
@@ -70,8 +70,19 @@ if (config.oraclePubkeys.length === 0 && !config.allowUnsignedOracle) {
 // a backward step cannot quietly rebuild a past season's members tree or reopen an epoch whose spent
 // nullifiers have already been pruned. In ephemeral mode there is no durable state to protect, so
 // the marks stay in memory and vanish with the process.
+// THE CLOCK MARKS ARE DURABLE WHENEVER ANY DURABLE STATE DEPENDS ON THEM, which is not the same
+// question as which nullifier backend is configured. `MNO_STORE=memory` makes the per-epoch spent
+// set ephemeral, and the marks used to follow it. But TWO-TIER MODE opens a file-backed registration
+// store regardless, and that file outlives the process: a gateway could finish season N, restart
+// after the host clock stepped back into season N-1, and rebuild N-1's members tree from those
+// durable records with no mark to notice the regression, so memberships that had ended became usable
+// again. That is the opposite of the stated rule that a past season stops verifying, and the
+// ephemeral-nullifier opt-in never authorized it, because it says nothing about registrations.
+//
+// So the marks are ephemeral only when NOTHING durable depends on them.
+const durableStateExists = config.store !== "memory" || twoTier;
 const timeGuard = new TimeGuard({
-  path: config.store === "memory" ? null : config.timeMarksPath,
+  path: durableStateExists ? config.timeMarksPath : null,
   epochSeconds: config.epochSeconds,
   seasonSeconds: config.seasonSeconds,
   nowSec,
@@ -109,6 +120,17 @@ const accountVerifyLimiter = new RateLimiter({
 // A rate-limit key whose parts cannot run together: the length prefix makes ("a", "bc") and
 // ("ab", "c") different keys, which the separator alone would not (a separator can appear inside a
 // part). The separator is kept only for readability.
+// One list, so the periodic sweep cannot drift out of step with the limiters that exist.
+const ALL_LIMITERS = [
+  challengeLimiter,
+  verifyLimiter,
+  registerLimiter,
+  membersLimiter,
+  dmlLimiter,
+  accountChallengeLimiter,
+  accountVerifyLimiter,
+];
+
 const rateKey = (...parts) => parts.map((p) => `${String(p).length}:${p}`).join("\u0000");
 // Global cap on concurrent expensive verifies, so a distributed flood cannot exhaust CPU or memory
 // with unbounded parallel proof checks. The expensive verify is run inside verifyProofGated, which
@@ -194,16 +216,53 @@ if (config.store === "platform") {
   // the honest position rather than shipping a check that cannot check. The override exists for a
   // deployment that knows its shared state was written under this exact schedule, and it is an
   // ASSERTION by the operator, in the same style as the registration file's.
-  if (!config.platformAssumeSchedule) {
+  if (config.platformAssumeSchedule !== SCHEDULE) {
     throw new Error(
       `refusing Platform nullifier mode: the contract's nullifier document cannot carry an ` +
         `epoch/season schedule marker, so this gateway cannot verify that the shared state was ` +
         `written under its own schedule (${SCHEDULE}). Changing MNO_EPOCH_SECONDS or ` +
         `MNO_SEASON_SECONDS renumbers every period, and reinterpreting existing Platform records ` +
         `under new numbering can either re-open a spent tag or permanently deny a legitimate one. ` +
-        `Set MNO_PLATFORM_ASSUME_SCHEDULE=1 to assert that the shared state was written under this ` +
-        `schedule, or migrate the contract to carry the marker.`,
+        `Set MNO_PLATFORM_ASSUME_SCHEDULE=${SCHEDULE} to assert that the shared state was written ` +
+        `under THIS schedule, or migrate the contract to carry the marker. The value names the ` +
+        `schedule rather than being a bare flag, so an assertion made for one schedule cannot wave ` +
+        `a later one through` + (config.platformAssumeSchedule ? `, and this one names ${config.platformAssumeSchedule}.` : `.`),
     );
+  }
+  // THE ASSERTION IS PINNED TO THE SCHEDULE IT WAS MADE FOR. An operator sets the flag once, in an
+  // environment file, to get the gateway to boot, and it then stands for every later boot. Left
+  // there, a later change to MNO_EPOCH_SECONDS or MNO_SEASON_SECONDS would be waved through by an
+  // assertion made about a different schedule entirely, which is the exact silent reinterpretation
+  // the refusal above exists to prevent. A reviewer called that a footgun and was right.
+  //
+  // So the first assertion is RECORDED locally, and a later boot whose schedule differs from the
+  // recorded one refuses even with the flag still set. This is a local file, so it does not prove
+  // anything about the shared Platform state (only a marker in the contract could, and the contract
+  // has no field for it). What it does is stop one operator's own schedule change from passing
+  // unnoticed, which is the reachable half of the problem.
+  {
+    const { readFile, writeFile, mkdir } = await import("node:fs/promises");
+    const { dirname } = await import("node:path");
+    let recorded = null;
+    try {
+      recorded = JSON.parse(await readFile(config.platformSchedulePath, "utf8"))?.schedule ?? null;
+    } catch (err) {
+      if (err.code !== "ENOENT") throw err;
+    }
+    if (recorded != null && String(recorded) !== String(SCHEDULE)) {
+      throw new Error(
+        `refusing Platform nullifier mode: MNO_PLATFORM_ASSUME_SCHEDULE asserts this gateway's ` +
+          `schedule (${SCHEDULE}), but ${config.platformSchedulePath} records that the assertion was ` +
+          `first made for ${recorded}. The epoch or season length has changed since, which renumbers ` +
+          `every period, so the existing Platform records mean something different now. Point the ` +
+          `deployment at fresh Platform state, or delete that file only if you know the shared state ` +
+          `was rewritten for the new schedule.`,
+      );
+    }
+    if (recorded == null) {
+      await mkdir(dirname(config.platformSchedulePath), { recursive: true });
+      await writeFile(config.platformSchedulePath, JSON.stringify({ schedule: SCHEDULE }) + "\n");
+    }
   }
   const { connectPlatform, DocumentNullifierStore } = await import("./platform_store.js");
   const backend = await connectPlatform({
@@ -405,11 +464,6 @@ function validateSnapshot(o, requiresSha) {
 // signature covers the root, which commits to the leaves, so a met quorum means trusted oracle keys
 // vouched for this membership set, and a host that merely serves the JSON cannot forge one. With no
 // keys configured (allowUnsignedOracle let the gateway boot), signing is not enforced.
-// A snapshot needs one signature per trusted signer and no more. The cap is generous next to any
-// real quorum and exists so a malformed or hostile array is refused by length before anything is
-// indexed or verified.
-const MAX_SNAPSHOT_SIGS = 64;
-
 function oracleSignaturesOk(o) {
   if (config.oraclePubkeys.length === 0) return true;
   // A signed snapshot must anchor a real block, since the signature covers the block hash and the
@@ -483,23 +537,6 @@ function enforceDmlFreshness() {
   if (before !== null && after === null) {
     console.error(`[gateway] oracle snapshot stale, dropping root until a fresh one arrives`);
   }
-}
-
-// The only shape a window record retains. Built field by field rather than by deleting the ones we
-// dislike, so a property nobody anticipated cannot ride along: an allowlist stays correct when the
-// snapshot schema grows, a denylist silently stops being.
-function normalizeSnapshot(o) {
-  return {
-    version: snapshotVersion(o),
-    height: o.height,
-    blockHash: o.blockHash ?? null,
-    depth: o.depth ?? config.treeDepth,
-    ts: o.ts,
-    root: String(o.root),
-    shaRoot: o.shaRoot ?? null,
-    // Copied, not aliased, so nothing downstream can mutate the array the window is holding.
-    leaves: [...o.leaves],
-  };
 }
 
 // Refreshes are SERIALIZED. setInterval does not await, so two fetches could overlap and finish out
@@ -613,7 +650,7 @@ async function refreshRoots() {
         // eight padded records. Copying only the fields /v1/dml serves bounds what a record can
         // cost to the leaves it is actually for, and drops the signatures too, which have no
         // consumer after adoption.
-        snapshot: normalizeSnapshot(o),
+        snapshot: normalizeSnapshot(o, config.treeDepth),
       });
     }
   } catch (err) {
@@ -685,12 +722,34 @@ if (twoTier) {
         `masternode list within that grace can still register for the remainder of the season.`,
     );
   }
+  // FAIL CLOSED ON AN UNSET ALLOWLIST, in the same style as the unauthenticated-gateway and
+  // unsigned-oracle opt-ins. A warning was not enough: an existing deployment upgrading to this
+  // version would keep the unbounded path simply by not knowing about a new setting, which leaves
+  // the very defect the allowlist exists to close, and the cost is not theoretical because each
+  // fresh context forces a full members-tree build.
+  if (config.registerContexts.length === 0 && !config.allowAnyRegisterContext) {
+    throw new Error(
+      "refusing to start two-tier mode with no MNO_REGISTER_CONTEXTS: registration is " +
+        "proof-authenticated but the caller chooses the context, so with no allowlist one valid " +
+        "masternode holder can allocate unlimited context trees, each costing a durable record and a " +
+        "full members-tree build. Set MNO_REGISTER_CONTEXTS to the context hashes this deployment " +
+        "serves, or MNO_ALLOW_ANY_REGISTER_CONTEXTS=1 to run open on purpose (local dev, demos).",
+    );
+  }
   if (config.registerContexts.length === 0) {
     console.warn(
-      "[gateway] MNO_REGISTER_CONTEXTS is unset, so ANY context hash may be registered. One valid " +
-        "masternode holder can then allocate unlimited context trees, each costing a durable record " +
-        "and a cached tree. Set it to the context hashes this deployment serves.",
+      "[gateway] MNO_ALLOW_ANY_REGISTER_CONTEXTS=1: ANY context hash may be registered, so one valid " +
+        "masternode holder can allocate unlimited context trees. Local dev and demos only.",
     );
+  }
+  for (const c of config.registerContexts) {
+    if (!isCanonicalField(c)) {
+      throw new Error(
+        `MNO_REGISTER_CONTEXTS entry ${JSON.stringify(c)} is not a canonical field element. A context ` +
+          `hash that no proof can ever carry would silently admit nobody, which reads as a working ` +
+          `allowlist that refuses everyone.`,
+      );
+    }
   }
 } else {
   vkey = await loadVerificationKey(config.verificationKeyPath);
@@ -699,7 +758,14 @@ if (twoTier) {
 await refreshRoots();
 setInterval(refreshRoots, config.oracleRefreshSeconds * 1000);
 setInterval(() => challenges.sweep(), 60_000);
-setInterval(() => { challengeLimiter.sweep(); verifyLimiter.sweep(); registerLimiter.sweep(); membersLimiter.sweep(); }, 60_000);
+// EVERY limiter, from one list, so adding a limiter cannot silently omit it from the sweep. Three
+// limiters added in the previous fold were missed exactly that way (two reviewers found it
+// independently): they grew until the hard maxKeys ceiling forced a synchronous sweep, which both
+// costs more memory in the meantime and reaches the shed-load path under milder pressure than the
+// swept ones. The list is built where the limiters are, so the next one joins it by construction.
+setInterval(() => {
+  for (const l of ALL_LIMITERS) l.sweep();
+}, 60_000);
 // Roll the members tree over at a season boundary even when no request arrives to trigger it.
 if (twoTier) setInterval(() => seasonMembers.ensure(timeGuard.season()).catch(() => {}), 60_000);
 
@@ -791,7 +857,11 @@ const server = createServer(async (req, res) => {
       // Auth before the rate limiter, so an unauthorized caller cannot burn the bucket for a client
       // key and block the real adapter.
       if (!authorized(req)) return send(res, 401, { error: "unauthorized" });
-      if (!challengeLimiter.allow(clientKey(req))) return send(res, 429, { error: "rate limited" });
+      // The source limiter is charged BELOW, only once the per-account limit has accepted. Charging
+      // it here meant a request the account limit was about to reject still consumed the shared
+      // bucket, so one account could spend its own small allowance and then keep draining the
+      // community's large one with requests that were never served. The per-account limit then
+      // subdivided nothing, which is the opposite of what it was added for.
       const { platform, communityId, roleId, account: rawAccount } = await readBody(req);
       if (!platform || !communityId || !roleId || !rawAccount) return send(res, 400, { error: "missing fields" });
       // Normalize the account to a string here, the one place it enters, so the signal hash and the
@@ -805,6 +875,8 @@ const server = createServer(async (req, res) => {
       if (!accountChallengeLimiter.allow(rateKey(clientKey(req), account, ctx))) {
         return send(res, 429, { error: "rate limited" });
       }
+      // ONLY NOW the shared bucket, so a refused request costs the community nothing.
+      if (!challengeLimiter.allow(clientKey(req))) return send(res, 429, { error: "rate limited" });
       // Two-tier challenges run against this context's own members tree (review finding B2), so a
       // member registered for another community cannot prove here.
       let cur;
@@ -846,14 +918,24 @@ const server = createServer(async (req, res) => {
 
     if (req.method === "POST" && path === "/v1/verify") {
       if (!authorized(req)) return send(res, 401, { error: "unauthorized" });
-      if (!verifyLimiter.allow(clientKey(req))) return send(res, 429, { error: "rate limited" });
+      // Charged below, after the per-account limit accepts. See the challenge handler for why.
       const { nonce, proof, publicSignals, account } = await readBody(req);
       if (!nonce || !proof || !publicSignals || !account) return send(res, 400, { error: "missing fields" });
       // Per-account, for the same reason as the challenge path. Checked before the challenge is
-      // TAKEN, so a rate-limited caller does not consume the one-time nonce it was holding.
+      // TAKEN, so a rate-limited caller does not consume the one-time nonce it was holding. The
+      // Keyed by ACCOUNT ALONE, deliberately, and not by context. A reviewer suggested adding the
+      // context so a user in two communities does not share one bucket. Rejected: the context is
+      // only knowable by TAKING the challenge, which is the thing that must not happen before the
+      // limit is checked, and keying on the nonce instead would be worse than useless because a
+      // caller mints a fresh nonce per attempt and would get a fresh bucket with it. Sharing across
+      // a user's communities is also the conservative direction: the alternative lets someone
+      // multiply their allowance by joining more communities, and the cost being limited here is
+      // proof verification, which is per-user work whatever community it is for.
       if (!accountVerifyLimiter.allow(rateKey(clientKey(req), String(account)))) {
         return send(res, 429, { error: "rate limited" });
       }
+      // Both limiters run BEFORE challenges.take(), so neither refusal consumes the one-time nonce.
+      if (!verifyLimiter.allow(clientKey(req))) return send(res, 429, { error: "rate limited" });
       const pending = challenges.take(nonce);
       if (!pending) return send(res, 410, { ok: false, reason: "unknown-or-expired-challenge" });
 
@@ -897,6 +979,15 @@ const server = createServer(async (req, res) => {
             // the proof; the point is that it is checked AGAIN at the moment the irreversible write
             // happens. Returns null while the period still holds, or the refusal reason.
             stillCurrent: async () => {
+              // OBSERVE THE CLOCK, then read the flag. `regressed` is a getter over a mark that only
+              // moves inside TimeGuard's own observation, which happens when epoch() or season() is
+              // CALLED. Reading the flag alone therefore reported whatever the last observation
+              // concluded, which for a single-tier verify was before the proof started, so a clock
+              // that stepped backward DURING the proof was invisible to the very check added to
+              // catch it. The two-tier branch below happened to observe via season(); single-tier
+              // observed nothing. Confirmed directly: step the clock back without re-observing and
+              // the flag stays false.
+              timeGuard.epoch();
               if (timeGuard.regressed) return "clock-regressed";
               if (nowSec() >= (pending.epoch + 1) * config.epochSeconds) return "epoch-rolled-over";
               if (twoTier) {
@@ -1004,6 +1095,18 @@ const server = createServer(async (req, res) => {
             if (!dmlRoots.isEligibleWithin(root, config.registerRootMaxAgeSeconds, nowSec())) {
               return { staleRoot: true };
             }
+            // WHERE THIS CHECK STOPS, stated because the boundary is real and moving it does not
+            // remove it. `append()` still awaits opening the file, writing, and fsync, and the
+            // anchor could age out or the season roll during those awaits. Checking again after the
+            // write would not help either: the record is durable by then, so a late refusal would
+            // have to be a compensating delete, and a delete that can itself be interrupted is a
+            // worse failure than a slightly stale admission.
+            //
+            // So the rule is DECIDED AT WRITE INITIATION, not at durable completion, and the
+            // residual is bounded by how long one append takes rather than by how long a proof
+            // takes, which is the difference this whole item was about (minutes down to a file
+            // write). Closing it properly needs a reversible or tombstoned admission record, which
+            // is a format change and is recorded in TODO.md rather than smuggled in here.
             return registrationStore.append({ season: s, contextHash: c, regNullifier: n, commitment, engine, statement });
           }),
       });

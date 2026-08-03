@@ -22,6 +22,10 @@ function oraclePubkeys(name) {
 }
 
 // A comma-separated list setting, trimmed, empties dropped, duplicates collapsed.
+// A snapshot needs one signature per trusted signer and no more. Exported so the boot check below
+// and the gateway's own refusal cannot drift apart.
+export const MAX_SNAPSHOT_SIGS = 64;
+
 function listEnv(name) {
   const raw = process.env[name];
   if (!raw) return [];
@@ -90,7 +94,18 @@ export const config = {
   allowUnsignedOracle: process.env.MNO_ALLOW_UNSIGNED_ORACLE === "1",
   // An operator's assertion that the shared Platform nullifier state was written under THIS
   // epoch/season schedule. See the refusal in gateway.js for why it cannot be checked automatically.
-  platformAssumeSchedule: process.env.MNO_PLATFORM_ASSUME_SCHEDULE === "1",
+  // The operator's assertion, which must NAME the schedule it is asserting rather than being a bare
+  // "1". A boolean stands for whatever the config later says, so an operator who set it once to boot
+  // and then changed the epoch or season length would have their old assertion wave the new schedule
+  // through, which is the exact silent reinterpretation the refusal exists to prevent.
+  platformAssumeSchedule: process.env.MNO_PLATFORM_ASSUME_SCHEDULE ?? "",
+  platformSchedulePath: process.env.MNO_PLATFORM_SCHEDULE_PATH ?? "data/platform_schedule.json",
+  // Explicit opt-in to the pre-allowlist behaviour, in the same style as MNO_ALLOW_UNAUTH_GATEWAY
+  // and MNO_ALLOW_UNSIGNED_ORACLE: an unset allowlist is a misconfiguration, not a default.
+  allowAnyRegisterContext: process.env.MNO_ALLOW_ANY_REGISTER_CONTEXTS === "1",
+  // Where the asserted Platform schedule is recorded locally, so the assertion is pinned to ONE
+  // schedule rather than standing open for whatever the config later says.
+  platformSchedulePath: process.env.MNO_PLATFORM_SCHEDULE_PATH ?? "data/platform_schedule.json",
   // Deployment-scoped requirement for the zkVM dual-root snapshot. When any zkVM registration
   // context is served, the gateway MUST adopt only a v2 snapshot carrying the SHA-256 root under a
   // v2 quorum signature, so a downgraded v1 snapshot (which lacks the root the zkVM statement needs)
@@ -269,6 +284,17 @@ if (!MODES.has(config.mode)) {
   throw new Error(
     `MNO_MODE must be one of ${[...MODES].join(", ")}, got ${JSON.stringify(config.mode)}. Refusing ` +
       `rather than defaulting, because the default would be the other implementation.`,
+  );
+}
+
+// The signature cap must not make a configured quorum unreachable. The cap exists to bound work on a
+// hostile array, so a deployment pinning more signers than the cap would refuse every snapshot,
+// which is a guard with no exit that ordinary correct operation reaches.
+if (config.oraclePubkeys.length > MAX_SNAPSHOT_SIGS) {
+  throw new Error(
+    `MNO_ORACLE_PUBKEYS names ${config.oraclePubkeys.length} keys, above the ${MAX_SNAPSHOT_SIGS} ` +
+      `signature cap, so no snapshot carrying one signature per key could ever be accepted. Raise the ` +
+      `cap deliberately or pin fewer keys.`,
   );
 }
 

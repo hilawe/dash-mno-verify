@@ -68,6 +68,31 @@ export function leafSetCommitment(leaves) {
   return createHash("sha256").update(sorted.join("\n"), "utf8").digest("hex");
 }
 
+// The only shape a window record retains. Built field by field rather than by deleting the ones we
+// dislike, so a property nobody anticipated cannot ride along: an allowlist stays correct when the
+// snapshot schema grows, a denylist silently stops being.
+//
+// It lives here, beside the window that holds the result, rather than in the gateway, because the
+// gateway module starts a server when imported and a pure function nobody can import without
+// booting a server is a pure function nobody can unit-test. That was not a style preference: the
+// regression this prevents (a hostile host padding a validly signed snapshot, measured at 157 MB
+// retained across eight records) had two tests that BOTH passed when the normalization was removed,
+// because one inspected an HTTP response the handler rebuilds field by field anyway and the other
+// fed an already-normalized object straight into the store.
+export function normalizeSnapshot(o, defaultDepth) {
+  return {
+    version: o?.version == null ? 1 : o.version,
+    height: o.height,
+    blockHash: o.blockHash ?? null,
+    depth: o.depth ?? defaultDepth,
+    ts: o.ts,
+    root: String(o.root),
+    shaRoot: o.shaRoot ?? null,
+    // Copied, not aliased, so nothing downstream can mutate the array the window is holding.
+    leaves: [...o.leaves],
+  };
+}
+
 // The orderings this build understands, and therefore the entire key space of the window.
 //
 // The bound on records per height is a property of THIS SET, not of a counter. The gateway derives

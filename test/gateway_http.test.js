@@ -2,14 +2,14 @@ import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, writeFile, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID, generateKeyPairSync } from "node:crypto";
 import { makeDmlRootHasher, FIELD_PRIME } from "../core/dml_root.js";
 import { shaRootFromLeaves } from "../common/dml_sha_root.js";
-import { signalHash, contextHash } from "../common/index.js";
+import { signalHash, contextHash, scheduleId } from "../common/index.js";
 import { addSignature, rawPublicB64, signSnapshot, snapshotMessage } from "../common/oracle_sig.js";
 
 // A real, self-consistent snapshot: the root is the recompute of these leaves, so it passes the
@@ -194,7 +194,7 @@ test("a non-canonical public signal is rejected before the proof verify", async 
 
 test("two-tier with the Platform store fails loud at boot, before any Platform connection", async () => {
   // The guard must reject this combination up front rather than fall back to a non-shared store.
-  await assert.rejects(startGateway({ MNO_MODE: "two-tier", MNO_STORE: "platform" }), /not wired yet/);
+  await assert.rejects(startGateway({ MNO_MODE: "two-tier", MNO_ALLOW_ANY_REGISTER_CONTEXTS: "1", MNO_STORE: "platform" }), /not wired yet/);
 });
 
 test("the ephemeral nullifier store refuses to boot without an explicit opt-in", async () => {
@@ -255,14 +255,14 @@ test("a backward clock refuses the state-bearing endpoints and reports itself un
 
 test("a zkVM registration engine refuses to boot until the receipt verifier is wired", async () => {
   await assert.rejects(
-    startGateway({ MNO_MODE: "two-tier", MNO_REGISTRATION_ENGINE: "zkvm", MNO_REGISTRATION_STATEMENT: "custody" }),
+    startGateway({ MNO_MODE: "two-tier", MNO_ALLOW_ANY_REGISTER_CONTEXTS: "1", MNO_REGISTRATION_ENGINE: "zkvm", MNO_REGISTRATION_STATEMENT: "custody" }),
     /needs the RISC Zero receipt verifier/,
   );
 });
 
 test("an invalid registration engine/statement pair fails config validation at boot", async () => {
   await assert.rejects(
-    startGateway({ MNO_MODE: "two-tier", MNO_REGISTRATION_ENGINE: "plonk", MNO_REGISTRATION_STATEMENT: "custody" }),
+    startGateway({ MNO_MODE: "two-tier", MNO_ALLOW_ANY_REGISTER_CONTEXTS: "1", MNO_REGISTRATION_ENGINE: "plonk", MNO_REGISTRATION_STATEMENT: "custody" }),
     /is not a valid pair/,
   );
 });
@@ -566,7 +566,7 @@ test("the challenge endpoint rate-limits a single client", async () => {
 test("the registration endpoint is rate-limited in two-tier mode", async () => {
   const oracle = join(dir, "root.json");
   const reg = await startGateway({
-    MNO_MODE: "two-tier",
+    MNO_MODE: "two-tier", MNO_ALLOW_ANY_REGISTER_CONTEXTS: "1",
     MNO_STORE: "memory",
     MNO_REG_PATH: join(dir, "reg.jsonl"),
     MNO_ORACLE_SOURCE: oracle,
@@ -588,7 +588,7 @@ test("the registration endpoint is rate-limited in two-tier mode", async () => {
 test("two-tier /v1/members requires a context and serves that context's tree", async () => {
   const oracle = join(dir, "root.json");
   const gw2 = await startGateway({
-    MNO_MODE: "two-tier",
+    MNO_MODE: "two-tier", MNO_ALLOW_ANY_REGISTER_CONTEXTS: "1",
     MNO_STORE: "memory",
     MNO_REG_PATH: join(dir, "reg-members.jsonl"),
     MNO_ORACLE_SOURCE: oracle,
@@ -615,7 +615,7 @@ test("two-tier /v1/members requires a context and serves that context's tree", a
 test("two-tier /v1/members is rate-limited per client", async () => {
   const oracle = join(dir, "root.json");
   const gw2 = await startGateway({
-    MNO_MODE: "two-tier",
+    MNO_MODE: "two-tier", MNO_ALLOW_ANY_REGISTER_CONTEXTS: "1",
     MNO_STORE: "memory",
     MNO_REG_PATH: join(dir, "reg-members-rl.jsonl"),
     MNO_ORACLE_SOURCE: oracle,
@@ -1549,7 +1549,13 @@ test("one account exhausting its own limit does not deny challenges to another a
     MNO_ORACLE_SOURCE: oracle,
     MNO_ORACLE_REFRESH: "3600",
     MNO_RATE_CHALLENGE_ACCOUNT: "3",
-    MNO_RATE_CHALLENGE: "1000", // the aggregate guard is not what this test is about
+    // The shared bucket is deliberately SMALL, and this is the point of the test. A first version
+    // set it to 1000 to "keep the aggregate guard out of the way", which removed the very
+    // interaction the fairness fix is about: the source limiter used to be charged BEFORE the
+    // account limiter, so a request the account limit rejected still drained the shared bucket, and
+    // one account could exhaust the community's allowance with requests that were never served. A
+    // reviewer caught the test masking its own subject.
+    MNO_RATE_CHALLENGE: "6",
   });
   const mint = (account) => post(gw.base, "/v1/challenge", { platform: "p", communityId: "c", roleId: "r", account });
   try {
@@ -1557,10 +1563,15 @@ test("one account exhausting its own limit does not deny challenges to another a
     assert.equal((await mint("noisy")).status, 200);
     assert.equal((await mint("noisy")).status, 200);
     assert.equal((await mint("noisy")).status, 200);
-    assert.equal((await mint("noisy")).status, 429, "its own bucket is spent");
+    // Keep hammering well past its own allowance. Each of these is refused, and each must cost the
+    // shared bucket NOTHING, or the six shared slots would be gone before the other user arrives.
+    for (let i = 0; i < 10; i += 1) {
+      assert.equal((await mint("noisy")).status, 429, "its own bucket is spent");
+    }
 
     // The other user, behind the very same adapter and therefore the same source address, is
-    // unaffected. Before the per-account limit this returned 429 too.
+    // unaffected. Before the per-account limit this returned 429 because the bucket was shared;
+    // before the ORDERING fix it returned 429 because the refusals above had drained it anyway.
     assert.equal((await mint("quiet")).status, 200, "a different account keeps its own allowance");
     assert.equal((await mint("quiet")).status, 200);
   } finally {
@@ -1671,10 +1682,22 @@ test("Platform nullifier mode refuses without a schedule assertion, and starts w
   }
   assert.match(refused, /refusing Platform nullifier mode|gateway exited early/);
   assert.match(refused, /MNO_PLATFORM_ASSUME_SCHEDULE/, "the refusal names the way out");
+  assert.match(refused, /e604800s7776000/, "and names the exact schedule to assert, not a bare flag");
+
+  // A bare "1", which used to be the whole assertion, must no longer be accepted: an assertion made
+  // once for one schedule would otherwise wave a later, different schedule through.
+  let bareFlag = null;
+  try {
+    const g = await startGateway({ ...base, MNO_PLATFORM_ASSUME_SCHEDULE: "1" });
+    g.proc.kill();
+  } catch (err) {
+    bareFlag = String(err.message);
+  }
+  assert.match(String(bareFlag), /refusing Platform nullifier mode/, "a bare flag asserts nothing");
 
   let withAssertion = null;
   try {
-    const g = await startGateway({ ...base, MNO_PLATFORM_ASSUME_SCHEDULE: "1" });
+    const g = await startGateway({ ...base, MNO_PLATFORM_ASSUME_SCHEDULE: scheduleId(7 * 24 * 3600, 90 * 24 * 3600) });
     g.proc.kill();
   } catch (err) {
     withAssertion = String(err.message);
@@ -1692,13 +1715,45 @@ test("two-tier health separates registration readiness from verification readine
   // while registration is unavailable because no DML root is adopted. One boolean cannot say that.
   const oracle = join(dir, "health-2t.json");
   await writeFile(oracle, JSON.stringify({ not: "a snapshot" }));
-  const gw = await startGateway({ MNO_ORACLE_SOURCE: oracle, MNO_ORACLE_REFRESH: "3600", MNO_MODE: "two-tier" });
+  const gw = await startGateway({ MNO_ORACLE_SOURCE: oracle, MNO_ORACLE_REFRESH: "3600", MNO_MODE: "two-tier", MNO_ALLOW_ANY_REGISTER_CONTEXTS: "1" });
   try {
     const h = await (await fetch(gw.base + "/v1/health")).json();
     assert.equal(h.dmlRoot, null, "no DML root, so nobody can register");
     assert.equal(h.canRegister, false);
     assert.equal(h.canChallenge, true, "but existing members still have a members tree to prove against");
     assert.equal(h.ok, true);
+  } finally {
+    gw.proc.kill();
+  }
+});
+
+test("two-tier keeps durable clock marks even with an in-memory nullifier store", async () => {
+  // A BLOCKER TWO ROUNDS RUNNING, and it survived the first fold because the fold worked from a
+  // list. MNO_STORE=memory makes the per-epoch spent set ephemeral and the clock marks used to
+  // follow it, but two-tier opens a file-backed REGISTRATION store regardless, and that file
+  // outlives the process. So a gateway could finish season N, restart after the host clock stepped
+  // back into N-1, and rebuild N-1's members tree from durable records with no mark to notice, which
+  // is exactly the "a past season stops verifying" rule inverted. The marks are now durable whenever
+  // anything durable depends on them, which is a different question from which nullifier backend is
+  // configured.
+  const oracle = join(dir, "marks-2t.json");
+  await writeFile(oracle, JSON.stringify(snapshot()));
+  const marks = join(dir, "marks-2t.json.marks");
+  const gw = await startGateway({
+    MNO_ORACLE_SOURCE: oracle,
+    MNO_ORACLE_REFRESH: "3600",
+    MNO_MODE: "two-tier",
+    MNO_ALLOW_ANY_REGISTER_CONTEXTS: "1",
+    MNO_STORE: "memory",
+    MNO_TIME_MARKS_PATH: marks,
+  });
+  try {
+    // Touch a state-bearing path so the guard observes and writes its mark.
+    await post(gw.base, "/v1/challenge", { platform: "p", communityId: "c", roleId: "r", account: "alice" });
+    await delay(300);
+    const written = await readFile(marks, "utf8").catch(() => null);
+    assert.ok(written, "the marks file exists, so a restart can see the high-water mark");
+    assert.match(written, /season/, "and it records the season the durable registrations belong to");
   } finally {
     gw.proc.kill();
   }

@@ -5,7 +5,8 @@
 // independent windows (the full-review blocker).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { leafSetCommitment, RootWindows } from "../core/stores.js";
+import { readFile } from "node:fs/promises";
+import { leafSetCommitment, RootWindows, normalizeSnapshot } from "../core/stores.js";
 
 test("a v2 snapshot is recent in both views; a v1 snapshot only in the Poseidon view", () => {
   const w = new RootWindows(8);
@@ -286,6 +287,28 @@ test("maxHeight is the window's own rollback floor, asked of every retained reco
   assert.equal(w.maxHeight(), 100, "the floor follows the records, so it falls when the top one ages out");
 });
 
+test("normalizeSnapshot drops an unknown field, and is testable without booting a gateway", () => {
+  // THE TEST THAT ACTUALLY OBSERVES THE THING. Two earlier tests claimed this coverage and neither
+  // had it: one inspected the /v1/dml response, whose handler rebuilds a five-field object anyway
+  // and so omits padding whatever the window holds, and the other passed an ALREADY normalized
+  // object into adopt(). Both stayed green with the normalization removed from the refresh path.
+  // A reviewer named the mutation; this is the assertion that fails under it.
+  const hostile = {
+    version: 3, height: 5, blockHash: "ab".repeat(32), depth: 16, ts: 99,
+    root: "123", shaRoot: "c".repeat(64), leaves: ["1", "2"],
+    padding: "x".repeat(50_000),
+    sigs: [{ key: "k", sig: "s" }],
+  };
+  const clean = normalizeSnapshot(hostile, 16);
+  assert.deepEqual(Object.keys(clean).sort(), [
+    "blockHash", "depth", "height", "leaves", "root", "shaRoot", "ts", "version",
+  ]);
+  assert.equal("padding" in clean, false, "the field a signature never covered is not retained");
+  assert.equal("sigs" in clean, false, "and the signatures have no consumer after adoption");
+  clean.leaves.push("999");
+  assert.deepEqual(hostile.leaves, ["1", "2"], "the leaves are copied, not aliased");
+});
+
 test("a record retains only the normalized snapshot fields, not whatever the source sent", () => {
   // A REGRESSION FROM THE PREVIOUS ROUND'S FIX, caught by the next round. Moving the snapshot into
   // the window record fixed a real split, and retained the parsed object as it arrived. Snapshot
@@ -348,4 +371,25 @@ test("a non-numeric timestamp is refused rather than compared", () => {
   w.adopt({ height: 1, root: "bad-ts", ts: "not-a-number", order: null });
   assert.equal(w.isEligibleWithin("bad-ts", 600, 1000), false, "an uncomparable age is not a fresh one");
   assert.equal(w.isEligibleWithin("bad-ts", 0, 1000), true, "but with no age rule the window still accepts it");
+});
+
+test("the refresh path adopts a NORMALIZED snapshot, pinned structurally", async () => {
+  // A TRIPWIRE, not a proof, and the difference is stated because it matters. The call site lives in
+  // core/gateway.js, which starts an HTTP server the moment it is imported, so no unit test can
+  // observe what that path passes to adopt(). The pure function above is tested directly and the
+  // /v1/dml response is tested end to end, but NEITHER fails if the call site stops normalizing:
+  // the response handler rebuilds its five fields regardless. That gap is what let a measured
+  // 157 MB retention regression have two green tests, and a reviewer named the exact mutation.
+  //
+  // So the call site is pinned by reading it. This catches the mutation that matters (dropping the
+  // normalization) and would not catch a rename or a rewrite that keeps the shape, which is the
+  // honest limit of a structural check. It is the same pattern this project already uses to pin
+  // "no other file may mutate permissions".
+  const src = await readFile(new URL("../core/gateway.js", import.meta.url), "utf8");
+  assert.match(
+    src,
+    /snapshot:\s*normalizeSnapshot\(/,
+    "the window must receive a normalized snapshot, never the parsed object as it arrived",
+  );
+  assert.doesNotMatch(src, /snapshot:\s*o\s*,/, "and never the raw object");
 });

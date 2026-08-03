@@ -259,6 +259,14 @@ export class FileBackend {
               `as committed and the member can register again.`,
           );
           this.tornTailDiscarded = true;
+          // AND REPAIR THE FILE, not just this read. Ignoring the bytes fixed one process lifetime
+          // and broke every later one: the next append opens the same file in append mode and writes
+          // its record straight after the torn fragment, producing a single malformed line that now
+          // ENDS IN A NEWLINE, so it is no longer a torn tail and the boot after that refuses
+          // permanently. Truncating to the last complete newline is what makes the recovery durable.
+          // Byte offset, not string length, because a multi-byte character anywhere earlier in the
+          // file would otherwise put the cut in the wrong place.
+          this._truncateTo = Buffer.byteLength(lines.slice(0, i).join("\n"), "utf8") + (i > 0 ? 1 : 0);
           break;
         }
         throw new Error(
@@ -280,6 +288,13 @@ export class FileBackend {
         continue;
       }
       this.#remember(rec);
+    }
+    // Apply the repair before anything can append. ready() is awaited by every writer, so a torn
+    // tail cannot survive into the next write.
+    if (this._truncateTo != null) {
+      const { truncate } = await import("node:fs/promises");
+      await truncate(this.path, this._truncateTo);
+      this._truncateTo = null;
     }
     // A store that predates the header cannot be checked retroactively: stamping it ASSERTS that its
     // existing records were written under the current schedule, which nobody verified. An empty store
