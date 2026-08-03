@@ -10,7 +10,7 @@ import { randomUUID, generateKeyPairSync } from "node:crypto";
 import { makeDmlRootHasher, FIELD_PRIME } from "../core/dml_root.js";
 import { shaRootFromLeaves } from "../common/dml_sha_root.js";
 import { signalHash } from "../common/index.js";
-import { addSignature, rawPublicB64 } from "../common/oracle_sig.js";
+import { addSignature, rawPublicB64, signSnapshot } from "../common/oracle_sig.js";
 
 // A real, self-consistent snapshot: the root is the recompute of these leaves, so it passes the
 // gateway's M3 root check. ts is stamped fresh per write so the freshness check passes.
@@ -979,6 +979,114 @@ test("a v2 snapshot carrying a chainlock claim is rejected", async () => {
   try {
     const res = await post(gw.base, "/v1/challenge", { platform: "p", communityId: "c", roleId: "r", account: "alice" });
     assert.equal(res.status, 503, "v2 does not sign this claim, so it must not carry it");
+  } finally {
+    gw.proc.kill();
+  }
+});
+
+// The chainlock claim is signed, but signing it was never requiring it: a v3 snapshot with the claim
+// absent, false, or mistyped still formed a valid signed message (encoding "0") and validateSnapshot
+// accepted it, so a v3 could be adopted without making the claim v3 exists to carry.
+test("a v3 snapshot with no chainlock claim is rejected", async () => {
+  const oracle = join(dir, "v3-no-cl.json");
+  await writeFile(
+    oracle,
+    JSON.stringify(snapshot({ version: 3, shaRoot: shaRootHasher(REAL_LEAVES), order: "proRegTxHash" })),
+  );
+  const gw = await startGateway({ MNO_ORACLE_SOURCE: oracle, MNO_ORACLE_REFRESH: "3600" });
+  try {
+    const res = await post(gw.base, "/v1/challenge", { platform: "p", communityId: "c", roleId: "r", account: "alice" });
+    assert.equal(res.status, 503, "absent chainlocked must refuse, not default to accepted");
+  } finally {
+    gw.proc.kill();
+  }
+});
+
+test("a v3 snapshot with a mistyped chainlock claim is rejected", async () => {
+  // "true" the string is not true the statement. Coercion here would make the weakest producer the
+  // one that defines the claim.
+  const oracle = join(dir, "v3-string-cl.json");
+  await writeFile(
+    oracle,
+    JSON.stringify(snapshot({ version: 3, shaRoot: shaRootHasher(REAL_LEAVES), order: "proRegTxHash", chainlocked: "true" })),
+  );
+  const gw = await startGateway({ MNO_ORACLE_SOURCE: oracle, MNO_ORACLE_REFRESH: "3600" });
+  try {
+    const res = await post(gw.base, "/v1/challenge", { platform: "p", communityId: "c", roleId: "r", account: "alice" });
+    assert.equal(res.status, 503);
+  } finally {
+    gw.proc.kill();
+  }
+});
+
+test("a v3 snapshot claiming chainlocked false is rejected", async () => {
+  // False is not merely unproven, it is the snapshot saying its own anchor is not locked, and v3
+  // exists to carry the opposite claim.
+  const oracle = join(dir, "v3-false-cl.json");
+  await writeFile(
+    oracle,
+    JSON.stringify(snapshot({ version: 3, shaRoot: shaRootHasher(REAL_LEAVES), order: "proRegTxHash", chainlocked: false })),
+  );
+  const gw = await startGateway({ MNO_ORACLE_SOURCE: oracle, MNO_ORACLE_REFRESH: "3600" });
+  try {
+    const res = await post(gw.base, "/v1/challenge", { platform: "p", communityId: "c", roleId: "r", account: "alice" });
+    assert.equal(res.status, 503);
+  } finally {
+    gw.proc.kill();
+  }
+});
+
+test("a SIGNED unlocked v3 snapshot is refused and the gateway survives it", async () => {
+  // The old message form encoded chainlocked false as "0", so an unlocked v3 could carry a VALID
+  // signature. This crafts exactly that artifact, the signature computed over the old encoding, and
+  // proves two things on a signed deployment: the snapshot is refused (validateSnapshot refuses the
+  // claim before signatures are consulted, and snapshotMessage now refuses to even form for it), and
+  // the refusal is contained, the gateway keeps answering rather than crashing out of its refresh.
+  const kp = generateKeyPairSync("ed25519");
+  const snap = snapshot({ version: 3, shaRoot: shaRootHasher(REAL_LEAVES), order: "proRegTxHash", chainlocked: false });
+  const oldFormMessage = Buffer.from(
+    ["mno-oracle-snapshot-v3", "3", snap.height, snap.blockHash, snap.depth, snap.root, snap.shaRoot, snap.order, "0", snap.ts]
+      .map(String)
+      .join("\n"),
+    "utf8",
+  );
+  snap.sigs = [{ key: rawPublicB64(kp.privateKey), sig: signSnapshot(oldFormMessage, kp.privateKey) }];
+  const oracle = join(dir, "v3-signed-unlocked.json");
+  await writeFile(oracle, JSON.stringify(snap));
+  const gw = await startGateway({
+    MNO_ORACLE_SOURCE: oracle,
+    MNO_ORACLE_REFRESH: "3600",
+    MNO_ORACLE_PUBKEYS: rawPublicB64(kp.privateKey),
+  });
+  try {
+    const first = await post(gw.base, "/v1/challenge", { platform: "p", communityId: "c", roleId: "r", account: "alice" });
+    assert.equal(first.status, 503, "a signed unlocked v3 must not be adopted");
+    const second = await post(gw.base, "/v1/challenge", { platform: "p", communityId: "c", roleId: "r", account: "bob" });
+    assert.equal(second.status, 503, "and the gateway is still answering, the refusal was contained");
+  } finally {
+    gw.proc.kill();
+  }
+});
+
+test("a v3 snapshot with a malformed block hash is rejected even with no oracle keys pinned", async () => {
+  // A v3 snapshot is a block-bound read, so the block it names must be well formed regardless of
+  // deployment mode. Before, only signed deployments checked this (in the signature path), so
+  // unsigned mode could adopt a v3 snapshot anchored to nothing.
+  const oracle = join(dir, "v3-bad-hash.json");
+  await writeFile(
+    oracle,
+    JSON.stringify(snapshot({
+      version: 3,
+      shaRoot: shaRootHasher(REAL_LEAVES),
+      order: "proRegTxHash",
+      chainlocked: true,
+      blockHash: "not-a-hash",
+    })),
+  );
+  const gw = await startGateway({ MNO_ORACLE_SOURCE: oracle, MNO_ORACLE_REFRESH: "3600" });
+  try {
+    const res = await post(gw.base, "/v1/challenge", { platform: "p", communityId: "c", roleId: "r", account: "alice" });
+    assert.equal(res.status, 503, "an unanchored v3 snapshot must not be adopted in unsigned mode");
   } finally {
     gw.proc.kill();
   }

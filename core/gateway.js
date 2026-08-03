@@ -277,6 +277,21 @@ function validateSnapshot(o, requiresSha) {
     // than filed under a label nothing understands, because the window keys on it to hold two orders
     // apart and a label it cannot interpret makes that separation meaningless.
     if (o.order !== "proRegTxHash") throw new Error(`v3 snapshot has an unknown leaf order: ${o.order}`);
+    // The ChainLock claim is what a v3 snapshot exists to carry, and it is in the signed bytes, so a
+    // v3 snapshot without it is either torn or built by something that did not read a ChainLock.
+    // The signature covering the claim is not enough on its own: with it false, missing, or
+    // mistyped, the signed message still formed (encoding "0") and this function accepted the
+    // snapshot, so a v3 could be adopted without making the claim v3 exists to make.
+    if (o.chainlocked !== true) {
+      throw new Error("v3 snapshot does not claim a ChainLocked block (chainlocked must be boolean true)");
+    }
+    // A v3 snapshot is a BLOCK-BOUND read, so the block it names must be well formed regardless of
+    // deployment mode. Before this check, only signed deployments validated the hash (in
+    // oracleSignaturesOk), so unsigned mode could adopt a v3 snapshot anchored to nothing.
+    // Lowercase-hex strict, the same canonical-form rule shaRoot follows, and what Core emits.
+    if (typeof o.blockHash !== "string" || !/^[0-9a-f]{64}$/.test(o.blockHash)) {
+      throw new Error("v3 snapshot blockHash is not a 64 lowercase hex string");
+    }
   }
   // Deployment-scoped dual-root requirement (docs/ZKVM_INTEGRATION.md). A zkVM deployment refuses a
   // v1 snapshot outright, since it lacks the SHA-256 root the zkVM statement is checked against, so a

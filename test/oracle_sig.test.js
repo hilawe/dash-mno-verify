@@ -88,6 +88,7 @@ test("a v3 message signs the leaf order and the chainlock claim, not just the ro
   const base = snapshotMessage(snapV3).toString();
   assert.match(base, /mno-oracle-snapshot-v3/, "its own domain, so no cross-version replay");
   assert.match(base, /proRegTxHash/, "the ordering rule is signed");
+  assert.match(base, /proRegTxHash\n1\n/, "the claim stays encoded as the same 1 byte, so signatures made before the requirement still verify");
 
   // Change only the order label. A different message means a signature over one cannot authenticate
   // the other, which is the whole point: the window accepts both orders at a height, so the LABEL is
@@ -95,9 +96,14 @@ test("a v3 message signs the leaf order and the chainlock claim, not just the ro
   const relabelled = snapshotMessage({ ...snapV3, order: "collateralOutpoint" }).toString();
   assert.notEqual(base, relabelled);
 
-  // And the chainlock claim, which is what makes a v3 snapshot worth more than a v2 one.
-  const unlocked = snapshotMessage({ ...snapV3, chainlocked: false }).toString();
-  assert.notEqual(base, unlocked);
+  // And the chainlock claim, which is what makes a v3 snapshot worth more than a v2 one. A message
+  // for an unlocked snapshot does not merely differ any more, it refuses to FORM, so an unlocked v3
+  // can be neither signed nor verified. The claim used to be encoded as "0" and the message still
+  // formed, which is how a snapshot could be adopted without making the claim v3 exists to carry.
+  assert.throws(() => snapshotMessage({ ...snapV3, chainlocked: false }), /chainlocked to be boolean true/);
+  const { chainlocked, ...noLock } = snapV3;
+  assert.throws(() => snapshotMessage(noLock), /chainlocked to be boolean true/);
+  assert.throws(() => snapshotMessage({ ...snapV3, chainlocked: "true" }), /chainlocked to be boolean true/);
 });
 
 test("a v3 snapshot cannot be presented as v2, nor a v2 as v3", () => {

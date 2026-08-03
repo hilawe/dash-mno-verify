@@ -45,6 +45,14 @@ export function snapshotMessage(o) {
     if (typeof o.order !== "string" || o.order.length === 0) {
       throw new Error("v3 snapshot message requires a non-empty string order");
     }
+    // The ChainLock claim is the reason v3 exists, so a message refuses to form without it rather
+    // than encoding its absence. A snapshot claiming anything else cannot be signed and cannot have
+    // a signature checked, which fails earlier and harder than a downstream policy check. The "1" is
+    // kept in the signed bytes so a message for a valid snapshot is byte-identical to those already
+    // signed, and existing v3 signatures keep verifying.
+    if (o.chainlocked !== true) {
+      throw new Error("v3 snapshot message requires chainlocked to be boolean true");
+    }
     const fields = [
       DOMAIN_V3,
       "3",
@@ -54,7 +62,7 @@ export function snapshotMessage(o) {
       o.root,
       o.shaRoot,
       o.order,
-      o.chainlocked === true ? "1" : "0",
+      "1",
       o.ts,
     ];
     return Buffer.from(fields.map((f) => String(f)).join("\n"), "utf8");
