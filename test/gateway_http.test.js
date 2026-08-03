@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { randomUUID, generateKeyPairSync } from "node:crypto";
 import { makeDmlRootHasher, FIELD_PRIME } from "../core/dml_root.js";
 import { shaRootFromLeaves } from "../common/dml_sha_root.js";
-import { signalHash } from "../common/index.js";
+import { signalHash, contextHash } from "../common/index.js";
 import { addSignature, rawPublicB64, signSnapshot, snapshotMessage } from "../common/oracle_sig.js";
 
 // A real, self-consistent snapshot: the root is the recompute of these leaves, so it passes the
@@ -1354,6 +1354,174 @@ test("an unknown field on a signed snapshot is not retained in the window", asyn
     assert.equal(served.root, ch.body.root, "and still served consistently");
     assert.equal(JSON.stringify(served).includes("xxxxx"), false, "but the padding is not retained or served");
     assert.deepEqual(Object.keys(served).sort(), ["depth", "height", "leaves", "root", "shaRoot"]);
+  } finally {
+    gw.proc.kill();
+  }
+});
+
+test("a snapshot carrying many signatures is refused, and a valid one among them is still found", async () => {
+  // WHAT THIS PROVES AND WHAT IT CANNOT. The defect was WORK, not verdict: sigs had no length bound
+  // and entries' key labels were ignored, so the gateway verified the whole array once per trusted
+  // key (a reviewer measured 10,000 invalid checks at about 1.28 s, times the pinned keys, on every
+  // refresh). The fix is the key-indexed lookup, which verifies at most one signature per trusted
+  // key, plus a length cap as cheap defence in depth.
+  //
+  // Neither is observable in the response. A large array of non-matching signatures yields 503
+  // whether the gateway checked one of them or all of them, so the length cap has NO discriminating
+  // test and its mutation passes; that is recorded rather than papered over with a timing assertion
+  // that would flake. What IS asserted here is the half that can be: a large array is refused, and
+  // a genuinely valid signature buried among many is still found rather than lost to the indexing.
+  // DISTINCT key labels, deliberately. A first version reused one label 500 times, which the
+  // duplicate-key check rejects, so the test passed with the cap removed and proved nothing about
+  // the cap. Distinct labels are exactly the shape that reaches the verification loop.
+  const kp = generateKeyPairSync("ed25519");
+  const snap = snapshot();
+  snap.sigs = Array.from({ length: 500 }, (_, i) => ({
+    key: rawPublicB64(generateKeyPairSync("ed25519").privateKey),
+    sig: `bogus${i}`,
+  }));
+  const oracle = join(dir, "many-sigs.json");
+  await writeFile(oracle, JSON.stringify(snap));
+  const gw = await startGateway({
+    MNO_ORACLE_SOURCE: oracle,
+    MNO_ORACLE_REFRESH: "3600",
+    MNO_ORACLE_PUBKEYS: rawPublicB64(kp.privateKey),
+  });
+  try {
+    const res = await post(gw.base, "/v1/challenge", { platform: "p", communityId: "c", roleId: "r", account: "alice" });
+    assert.equal(res.status, 503, "no trusted key signed it, so the quorum is unmet");
+  } finally {
+    gw.proc.kill();
+  }
+
+  // The same snapshot, but with the trusted key's real signature buried among the bogus ones and
+  // the array back under the cap. The indexing must find it.
+  const buried = snapshot();
+  buried.sigs = [
+    ...Array.from({ length: 20 }, () => ({ key: rawPublicB64(generateKeyPairSync("ed25519").privateKey), sig: "bogus" })),
+    ...addSignature(buried, kp.privateKey),
+  ];
+  const oracle2 = join(dir, "buried-sig.json");
+  await writeFile(oracle2, JSON.stringify(buried));
+  const gw2 = await startGateway({
+    MNO_ORACLE_SOURCE: oracle2,
+    MNO_ORACLE_REFRESH: "3600",
+    MNO_ORACLE_PUBKEYS: rawPublicB64(kp.privateKey),
+  });
+  try {
+    const res = await post(gw2.base, "/v1/challenge", { platform: "p", communityId: "c", roleId: "r", account: "alice" });
+    assert.equal(res.status, 200, "a valid signature must not be lost among unrelated ones");
+  } finally {
+    gw2.proc.kill();
+  }
+});
+
+test("a valid signature still verifies when its key label uses a different base64 spelling", async () => {
+  // Indexing by label made spelling load-bearing where it never was before, so a base64url label
+  // for the very same key could have made a valid signature invisible. The label is canonicalized.
+  const kp = generateKeyPairSync("ed25519");
+  const snap = snapshot();
+  snap.sigs = addSignature(snap, kp.privateKey);
+  snap.sigs[0].key = snap.sigs[0].key.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  const oracle = join(dir, "b64url-label.json");
+  await writeFile(oracle, JSON.stringify(snap));
+  const gw = await startGateway({
+    MNO_ORACLE_SOURCE: oracle,
+    MNO_ORACLE_REFRESH: "3600",
+    MNO_ORACLE_PUBKEYS: rawPublicB64(kp.privateKey),
+  });
+  try {
+    const res = await post(gw.base, "/v1/challenge", { platform: "p", communityId: "c", roleId: "r", account: "alice" });
+    assert.equal(res.status, 200, "a genuinely signed snapshot must still be adopted");
+  } finally {
+    gw.proc.kill();
+  }
+});
+
+test("two signatures labelled with one key are refused rather than resolved", async () => {
+  const kp = generateKeyPairSync("ed25519");
+  const snap = snapshot();
+  snap.sigs = addSignature(snap, kp.privateKey);
+  snap.sigs.push({ key: snap.sigs[0].key, sig: snap.sigs[0].sig });
+  const oracle = join(dir, "dup-key.json");
+  await writeFile(oracle, JSON.stringify(snap));
+  const gw = await startGateway({
+    MNO_ORACLE_SOURCE: oracle,
+    MNO_ORACLE_REFRESH: "3600",
+    MNO_ORACLE_PUBKEYS: rawPublicB64(kp.privateKey),
+  });
+  try {
+    const res = await post(gw.base, "/v1/challenge", { platform: "p", communityId: "c", roleId: "r", account: "alice" });
+    assert.equal(res.status, 503, "picking a winner would be inventing a rule");
+  } finally {
+    gw.proc.kill();
+  }
+});
+
+test("an unrecognised MNO_MODE refuses to boot instead of silently running single-tier", async () => {
+  // LEAK-SAFE ON THE FAILING PATH. Written first as a bare assert.rejects, which leaves the spawned
+  // gateway running whenever the guard is absent, and node --test will not exit while that child
+  // holds its port. Under mutation the run hung instead of failing, which is the project's
+  // documented orphaned-suite gotcha reproduced by a test meant to catch a config bug. A test whose
+  // failure mode is a hang cannot be mutation-checked, so it captures and terminates instead.
+  const oracle = join(dir, "mode.json");
+  await writeFile(oracle, JSON.stringify(snapshot()));
+  let started = null;
+  try {
+    started = await startGateway({ MNO_ORACLE_SOURCE: oracle, MNO_MODE: "two_tier" });
+  } catch (err) {
+    assert.match(String(err.message), /MNO_MODE must be one of|gateway exited early/);
+    return;
+  } finally {
+    started?.proc.kill();
+  }
+  assert.fail("a typo must not boot the opposite implementation and echo the typo to clients");
+});
+
+// THE CONTEXT ALLOWLIST. Registration is unauthenticated by design (the proof is the credential)
+// and the caller chooses the platform, community, and role that form the context, so the
+// once-per-context registration nullifier bounds nothing: a valid masternode holder picks a fresh
+// context each time and gets another durable record and another cached tree, without limit. Two
+// reviewers reached this independently and one called it a blocker. An allowlist rather than a cap,
+// because a cap lets an attacker fill it first and lock out the real communities.
+test("a registration for a context this gateway does not serve is refused before the proof", async () => {
+  const oracle = join(dir, "allowlist.json");
+  await writeFile(oracle, JSON.stringify(snapshot()));
+  const served = contextHash({ platform: "p", communityId: "served", roleId: "r" }).toString();
+  const gw = await startGateway({
+    MNO_ORACLE_SOURCE: oracle,
+    MNO_ORACLE_REFRESH: "3600",
+    MNO_MODE: "two-tier",
+    MNO_REGISTER_CONTEXTS: served,
+  });
+  try {
+    const res = await post(gw.base, "/v1/register", {
+      platform: "p", communityId: "not-served", roleId: "r", proof: {}, publicSignals: ["1"],
+    });
+    assert.equal(res.status, 403);
+    assert.equal(res.body.reason, "context-not-served");
+  } finally {
+    gw.proc.kill();
+  }
+});
+
+test("a registration for a served context passes the allowlist and reaches the proof check", async () => {
+  // The guard must have an exit ordinary correct operation reaches. A served context gets past the
+  // allowlist and is then refused on its (deliberately bogus) proof, which is a DIFFERENT refusal.
+  const oracle = join(dir, "allowlist-ok.json");
+  await writeFile(oracle, JSON.stringify(snapshot()));
+  const served = contextHash({ platform: "p", communityId: "served", roleId: "r" }).toString();
+  const gw = await startGateway({
+    MNO_ORACLE_SOURCE: oracle,
+    MNO_ORACLE_REFRESH: "3600",
+    MNO_MODE: "two-tier",
+    MNO_REGISTER_CONTEXTS: served,
+  });
+  try {
+    const res = await post(gw.base, "/v1/register", {
+      platform: "p", communityId: "served", roleId: "r", proof: {}, publicSignals: ["1"],
+    });
+    assert.notEqual(res.body.reason, "context-not-served", "the served context is past the allowlist");
   } finally {
     gw.proc.kill();
   }

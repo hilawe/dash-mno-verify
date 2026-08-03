@@ -21,6 +21,13 @@ function oraclePubkeys(name) {
   return out;
 }
 
+// A comma-separated list setting, trimmed, empties dropped, duplicates collapsed.
+function listEnv(name) {
+  const raw = process.env[name];
+  if (!raw) return [];
+  return [...new Set(raw.split(",").map((s) => s.trim()).filter(Boolean))];
+}
+
 // Read an integer setting from the environment, failing loud at boot on a malformed value rather
 // than letting a silent NaN through. A NaN here is not harmless: NaN as a cap or limit makes every
 // `size >= cap` comparison false, which would quietly disable the very guard the setting controls.
@@ -135,6 +142,13 @@ export const config = {
   // "single" runs the one-tier membership proof every epoch. "two-tier" splits it into a
   // heavy seasonal registration plus a cheap per-epoch members proof.
   mode: process.env.MNO_MODE ?? "single",
+  // The contexts this gateway will accept a registration for, as context hashes, empty meaning no
+  // allowlist is configured. Registration is deliberately unauthenticated (the proof is the
+  // credential), and the caller chooses the platform, community, and role that form the context, so
+  // without a list one valid masternode holder can create unlimited context trees, each costing a
+  // durable record and a cached tree. An operator already knows which communities they gate, so the
+  // list is the smallest thing that bounds it.
+  registerContexts: listEnv("MNO_REGISTER_CONTEXTS"),
 
   // Two-tier keys and season length.
   registrationVkeyPath: process.env.MNO_REG_VKEY ?? "circuits/build/mno_registration_vkey.json",
@@ -206,6 +220,18 @@ if (!isValidEngineStatement(config.registrationEngine, config.registrationStatem
 
 // A quorum larger than the number of trusted keys can never be met, so the gateway would never adopt
 // a root. Catch that at boot rather than letting it look like a perpetually stale oracle.
+// MNO_MODE selects which implementation runs, so an unrecognised value must not quietly pick one.
+// Every value other than "two-tier" selected the single-tier keys and handlers while the challenge
+// response echoed the unvalidated string back to clients, so a typo booted the opposite gateway
+// from the operator's intent and said so in a field nobody reads.
+const MODES = new Set(["single", "two-tier"]);
+if (!MODES.has(config.mode)) {
+  throw new Error(
+    `MNO_MODE must be one of ${[...MODES].join(", ")}, got ${JSON.stringify(config.mode)}. Refusing ` +
+      `rather than defaulting, because the default would be the other implementation.`,
+  );
+}
+
 if (config.oraclePubkeys.length > 0 && config.oracleQuorum > config.oraclePubkeys.length) {
   throw new Error(
     `config: MNO_ORACLE_QUORUM (${config.oracleQuorum}) exceeds the number of trusted oracle keys (${config.oraclePubkeys.length})`,

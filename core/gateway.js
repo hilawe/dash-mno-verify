@@ -34,7 +34,7 @@ import { shaRootFromLeaves } from "../common/dml_sha_root.js";
 import { isCanonicalField } from "../common/field.js";
 import { contextHash, signalHash, epochNow, seasonNow, scheduleId } from "../common/index.js";
 import { TimeGuard } from "./time_guard.js";
-import { snapshotMessage, verifySnapshotSig, snapshotVersion } from "../common/oracle_sig.js";
+import { snapshotMessage, verifySnapshotSig, snapshotVersion, publicKeyFromRaw, rawPublicB64 } from "../common/oracle_sig.js";
 
 const twoTier = config.mode === "two-tier";
 const nowSec = () => Math.floor(Date.now() / 1000);
@@ -350,6 +350,11 @@ function validateSnapshot(o, requiresSha) {
 // signature covers the root, which commits to the leaves, so a met quorum means trusted oracle keys
 // vouched for this membership set, and a host that merely serves the JSON cannot forge one. With no
 // keys configured (allowUnsignedOracle let the gateway boot), signing is not enforced.
+// A snapshot needs one signature per trusted signer and no more. The cap is generous next to any
+// real quorum and exists so a malformed or hostile array is refused by length before anything is
+// indexed or verified.
+const MAX_SNAPSHOT_SIGS = 64;
+
 function oracleSignaturesOk(o) {
   if (config.oraclePubkeys.length === 0) return true;
   // A signed snapshot must anchor a real block, since the signature covers the block hash and the
@@ -360,11 +365,49 @@ function oracleSignaturesOk(o) {
     console.error(`[gateway] signed oracle snapshot has no valid block hash, rejected`);
     return false;
   }
-  const msg = snapshotMessage(o);
+  // THE WORK HERE IS BOUNDED BY THE CONFIGURED KEYS, NOT BY THE RESPONSE. `sigs` had no length
+  // bound and the entries' own key labels were ignored, so the gateway scanned and verified the
+  // whole array once per trusted key. A host that cannot forge a quorum could therefore still buy
+  // synchronous Ed25519 work with a large array (a reviewer measured 10,000 invalid checks at about
+  // 1.28 s, multiplied by the number of pinned keys), blocking the event loop at boot and on every
+  // refresh. That partly reverses the point of checking signatures before the tree rebuild.
+  //
+  // Each entry names the key it was made with, so the array is indexed by that label and at most
+  // ONE signature is checked per trusted key. A duplicate label is refused outright rather than
+  // resolved, because two entries claiming one key is not something an honest signer produces and
+  // picking a winner would be inventing a rule. The cost is now O(configured keys) verifications
+  // whatever the source sends.
   const sigs = Array.isArray(o.sigs) ? o.sigs : [];
+  if (sigs.length > MAX_SNAPSHOT_SIGS) {
+    console.error(`[gateway] oracle snapshot carries ${sigs.length} signatures, over the ${MAX_SNAPSHOT_SIGS} cap, rejected`);
+    return false;
+  }
+  const byKey = new Map();
+  for (const entry of sigs) {
+    if (!entry || typeof entry.key !== "string" || typeof entry.sig !== "string") continue;
+    // CANONICALIZE THE LABEL before matching. The same 32-byte key has several base64 spellings
+    // (padding, base64url), and the previous code was immune to that because it ignored labels and
+    // tried every signature against every key. Indexing by a raw label would have made a valid
+    // signature invisible purely because its spelling differed, which is a fail-closed bug rather
+    // than a security one but a real outage. Decoding is cheap and bounded by the cap above; it is
+    // signature VERIFICATION that this whole change exists to bound.
+    let id;
+    try {
+      id = rawPublicB64(publicKeyFromRaw(entry.key));
+    } catch {
+      continue; // an unparseable label cannot match any trusted key
+    }
+    if (byKey.has(id)) {
+      console.error(`[gateway] oracle snapshot carries two signatures for one key, rejected`);
+      return false;
+    }
+    byKey.set(id, entry.sig);
+  }
+  const msg = snapshotMessage(o);
   let met = 0;
   for (const trusted of config.oraclePubkeys) {
-    if (sigs.some((s) => s && typeof s.sig === "string" && verifySnapshotSig(msg, s.sig, trusted.key))) met += 1;
+    const candidate = byKey.get(trusted.b64);
+    if (candidate != null && verifySnapshotSig(msg, candidate, trusted.key)) met += 1;
   }
   return met >= config.oracleQuorum;
 }
@@ -572,6 +615,13 @@ if (twoTier) {
     seasonNow: () => timeGuard.season(),
   });
   await seasonMembers.ensure(timeGuard.season());
+  if (config.registerContexts.length === 0) {
+    console.warn(
+      "[gateway] MNO_REGISTER_CONTEXTS is unset, so ANY context hash may be registered. One valid " +
+        "masternode holder can then allocate unlimited context trees, each costing a durable record " +
+        "and a cached tree. Set it to the context hashes this deployment serves.",
+    );
+  }
 } else {
   vkey = await loadVerificationKey(config.verificationKeyPath);
 }
@@ -818,6 +868,22 @@ const server = createServer(async (req, res) => {
       if (!platform || !communityId || !roleId || !proof || !publicSignals) return send(res, 400, { error: "missing fields" });
 
       const ctx = contextHash({ platform, communityId, roleId }).toString();
+      // THE CONTEXT MUST BE ONE THIS GATEWAY SERVES, checked BEFORE the expensive proof verify and
+      // before any state is allocated for it. Registration is deliberately unauthenticated, because
+      // the proof is the credential, and the caller chooses the platform, community, and role that
+      // form the context. So the registration nullifier being once-per-context bounds nothing: a
+      // valid masternode holder picks a fresh context each time and gets another durable record and
+      // another cached tree, without limit. Two reviewers reached this independently and one called
+      // it a blocker.
+      //
+      // An allowlist rather than a cap, decided 2026-08-03. A cap lets an attacker fill it first and
+      // lock out the real communities, which converts a resource problem into a denial-of-service
+      // one. An operator already knows which communities they gate, so naming them costs nothing
+      // they do not already know. An EMPTY list means unconfigured, which stays open and warns at
+      // boot rather than refusing every registration on a dev or demo deployment.
+      if (config.registerContexts.length > 0 && !config.registerContexts.includes(ctx)) {
+        return send(res, 403, { ok: false, reason: "context-not-served" });
+      }
       const season = timeGuard.season();
       await seasonMembers.ensure(season);
       const result = await verifyRegistration({
