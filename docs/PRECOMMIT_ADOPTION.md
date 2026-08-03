@@ -113,6 +113,26 @@ refuses to land unless `npm test` passes, with the hook's exit code as the decis
 - INSTALL, ONCE PER CHECKOUT: git does not adopt a hooks path automatically after a clone, so run
   `git config core.hooksPath tools/hooks` in each fresh checkout. `CLAUDE.md` records the same.
 
+## 6b. The three-agent fix review, ON TRIAL here from 2026-08-03
+
+This repository is the trial site for the three-agent stage described in the
+playbook. It runs BEFORE the external artifact check, on behaviour-changing commits
+touching `core/`, `oracle/`, `common/`, `circuits/`, or `contract/`.
+
+- The three charters are ordering, durability, and tests. Each agent gets the diff,
+  the invariant list, and the changed tests. None gets the author's reasoning, and
+  none sees another's findings before finishing.
+- Findings are UNIONED and then verified against the code. Neither dismissed by
+  majority nor accepted on assertion.
+- THE ENDPOINT: ten qualifying commits. If the stage never catches something first,
+  it is deleted rather than kept as ceremony. Each pass adds a row to the trial log
+  below with a `3AGENT` prefix so its record is separable from the external one.
+
+Why three and not the five originally proposed: the agents share this author's
+model family and blind spots, so more of them mostly buys correlated opinions.
+Ordering, durability, and tests are the three shapes this repository's own defect
+history actually produces.
+
 ## 7. Checker setup
 
 - Prompt at `/tmp/precommit_check_dash-mno-verify.md`, staged diff at
@@ -135,6 +155,7 @@ column is "no" for every rule is a real result and is recorded rather than omitt
 | --- | --- | --- | --- | --- | --- | --- |
 | 2026-08-03 | fold round 3 item 6, rate-limit keying, dml limit, Platform schedule, health readiness (`45ebc02`) | external caught 2 real (a false claim about NUL bytes in the key format, and comments asserting the fairness property generally when it holds only for an authenticated adapter) plus two missing test branches. Rule 2 caught one first: the nonce-ordering test PASSED under mutation because a 429 body carries no `reason` field, so asserting "reason is not X" was trivially true. | 0 | about 1.5 h | 24,000 over one pass (FIX-FIRST) | yes. The conditional nature of the fairness guarantee is now stated in the code rather than assumed, and the nonce test was rewritten to actually use the nonce. Thirteenth data point. |
 | 2026-08-03 | fold round 3 item 5, registration anchor policy (`60036fd`) | external caught 8 real across two passes (a recheck at the wrong level, since the commit is queued after it; no test of the actual age bound; a throwing predicate; four claims wider than the code; the first-match timestamp bug; and the predicate replacing rather than adding to the window rule). Rule 1 caught one first: wiring the recheck exposed that the commit's refusal branches mutate the tree, so an unrecognised refusal shape would have appended a member with no durable record. | 0 | about 2 h | 46,000 over two passes (FIX-FIRST twice) | yes, decisively. The first-match timestamp would have refused registrations on any stable network, and it existed only in the fix. Twelfth data point. |
+| 2026-08-03 | 3AGENT trial pass 1: round-5 leftovers, /v1/members regression path and the atomic Platform marker | rule 2 caught one first: the clock-marks fixture omitted the schedule fields, so TimeGuard discarded it as a different numbering and the test passed against an unregressed clock. The fixture rule (derive it from what the real writer produces) is what named it. | 0 | about 40 min | 0, no external pass on this one | the three-agent stage was NOT yet run as separate agents here; this row records the two findings folded and the fixture catch, and the stage's own endpoint (ten qualifying commits) starts from the next behaviour-changing commit. Recorded honestly rather than claiming a trial that did not happen. |
 | 2026-08-03 | fold round 3 items 3-4, signature bound, mode validation, context allowlist (`e313aa2`) | rule 2 caught BOTH, before any external pass: a test that HUNG under mutation instead of failing (a bare assert.rejects leaking the spawned gateway, reproducing this repo's own orphaned-suite gotcha), and a test that passed under mutation because it reused one key label 500 times and was caught by the duplicate check rather than the cap. A third mutation passing revealed the length cap has no verdict-level test at all, which is now stated in the test rather than implied. | 0 | about 1.5 h, most of it mutation runs | 0 (no external pass; the three changes are contained and rule 2 did the work) | yes. Three of the four artifacts changed as a result, two tests rewritten and one claim narrowed. Eleventh data point, and the first where the author-side rules caught everything and no external pass was run. |
 | 2026-08-03 | fold round 3 items 1-3, torn tail and period rechecks (`da56e1d`) | external caught 7 real (a season check placed before an await that made it prove nothing, a falsy empty-string reason that would have granted, two unchecked awaits before a grant, a claim wider than its stated model, a candidate rule that refused on trailing whitespace, and a missing mutation). Rule 2 caught one first: a mutation PASSED, revealing a test that seeded the tag and took the early branch, never reaching the code under test. | 0 | about 2.5 h | 42,000 over two passes (FIX-FIRST twice) | yes, materially. Three of the seven were defects in the fix itself, not the original code. Tenth data point, and the second time rule 2's mutation step caught something before the checker. |
 | 2026-08-02 | fold the four-reviewer chain-anchor round (`cbbb1cd`) | external caught 3 real (an unknown status string still silently dropped, four comments claiming cross-request consistency the design does not provide, and missing coverage for five changed behaviours). Rule 2 caught two on its own, the FIRST author-side catches recorded here: a mutation that did NOT fail its test, revealing the test claimed coverage of a half-defect that is closed by construction, and a test asserting a state the code cannot reach (current() below maxHeight). | 1 refuted (a coercion the type guard above already prevents) | about 2 h including six suite runs | 110,000 over three passes (FIX-FIRST, FIX-FIRST, FIX-FIRST with two of three resolved) | yes, materially. The fold restructured the store, made the coexistence guard unconditional, and corrected two of my own tests. NINTH data point, and the first where an author-side rule caught something first, both times rule 2's mutation step rather than the invariant list. |

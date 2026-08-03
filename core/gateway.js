@@ -250,7 +250,7 @@ if (config.store === "platform") {
   // has no field for it). What it does is stop one operator's own schedule change from passing
   // unnoticed, which is the reachable half of the problem.
   {
-    const { readFile, writeFile, mkdir } = await import("node:fs/promises");
+    const { readFile, mkdir, open, rename } = await import("node:fs/promises");
     const { dirname } = await import("node:path");
     let recorded = null;
     try {
@@ -269,8 +269,21 @@ if (config.store === "platform") {
       );
     }
     if (recorded == null) {
+      // WRITE, FLUSH, RENAME. The marker is the thing a later boot compares against, so a marker
+      // half-written by an interruption is worse than no marker: it either refuses a correct
+      // schedule or, if the truncation happens to leave parseable JSON, records the wrong one. A
+      // temp file in the same directory plus a rename makes the appearance atomic, and the fsync
+      // before it is what makes the CONTENT durable rather than merely queued.
       await mkdir(dirname(config.platformSchedulePath), { recursive: true });
-      await writeFile(config.platformSchedulePath, JSON.stringify({ schedule: SCHEDULE }) + "\n");
+      const tmpPath = `${config.platformSchedulePath}.tmp`;
+      const fh = await open(tmpPath, "w");
+      try {
+        await fh.writeFile(JSON.stringify({ schedule: SCHEDULE }) + "\n");
+        await fh.sync();
+      } finally {
+        await fh.close();
+      }
+      await rename(tmpPath, config.platformSchedulePath);
     }
   }
   const { connectPlatform, DocumentNullifierStore } = await import("./platform_store.js");
@@ -1144,6 +1157,19 @@ const server = createServer(async (req, res) => {
       if (!membersLimiter.allow(clientKey(req))) return send(res, 429, { error: "rate limited" });
       const ctx = url.searchParams.get("context");
       if (!ctx || !isCanonicalField(ctx)) return send(res, 400, { error: "context must be a canonical field element" });
+      // A CLOCK REGRESSION IS REPORTED, NOT THROWN THROUGH. This is a read, and the comments around
+      // the state-bearing endpoints say the reads stay up during a regression so an operator can see
+      // what the gateway holds. They did not: ensureContext passes the regressed season to the
+      // members cache, whose monotonic guard throws "refusing to roll the members tree back", which
+      // surfaced as a generic 400 about a malformed context. So the endpoint blamed the caller for
+      // the host's clock, and the diagnostic path was the one that broke.
+      if (timeGuard.regressed) {
+        return send(res, 503, {
+          error: "clock regression",
+          reason: "clock-regressed",
+          regression: timeGuard.regression,
+        });
+      }
       await seasonMembers.ensureContext(timeGuard.season(), ctx);
       return send(res, 200, { membersRoot: seasonMembers.root(ctx), size: seasonMembers.size(ctx), commitments: seasonMembers.commitments(ctx) });
     }

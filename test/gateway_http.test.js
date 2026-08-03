@@ -1792,3 +1792,42 @@ test("a flood of invented accounts cannot lock out a caller the limiter has not 
     gw.proc.kill();
   }
 });
+
+test("a clock regression makes /v1/members report the regression, not blame the caller", async () => {
+  // The comments around the state-bearing endpoints say the READS stay up during a regression so an
+  // operator can see what the gateway holds. They did not. ensureContext passed the regressed season
+  // into the members cache, whose monotonic guard throws, and that surfaced as a generic 400 about a
+  // malformed context, so the endpoint blamed the caller for the host's clock and the diagnostic
+  // path was the one that broke.
+  const oracle = join(dir, "regress-members.json");
+  await writeFile(oracle, JSON.stringify(snapshot()));
+  const marks = join(dir, "regress-marks.json");
+  // Seed a mark far in the future, so the gateway's first observation is a backward step. The
+  // schedule fields are REQUIRED: marks written under a different epoch or season length describe a
+  // different numbering and are discarded rather than compared, so a fixture omitting them is
+  // silently ignored and the test passes for no reason. That is the fixture rule (derive it from
+  // what the real writer produces) and a first version of this test omitted them.
+  await writeFile(marks, JSON.stringify({
+    epochSeconds: 7 * 24 * 3600,
+    seasonSeconds: 90 * 24 * 3600,
+    epoch: 9_999_999,
+    season: 9_999_999,
+    regression: null,
+  }));
+  const gw = await startGateway({
+    MNO_ORACLE_SOURCE: oracle,
+    MNO_ORACLE_REFRESH: "3600",
+    MNO_MODE: "two-tier",
+    MNO_ALLOW_ANY_REGISTER_CONTEXTS: "1",
+    MNO_TIME_MARKS_PATH: marks,
+  });
+  try {
+    const res = await fetch(`${gw.base}/v1/members?context=12345`);
+    const body = await res.json();
+    assert.notEqual(res.status, 400, "a host clock problem is not a malformed request");
+    assert.equal(res.status, 503);
+    assert.equal(body.reason, "clock-regressed", "and it says what is actually wrong");
+  } finally {
+    gw.proc.kill();
+  }
+});
