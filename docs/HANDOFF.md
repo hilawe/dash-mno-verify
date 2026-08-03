@@ -5,6 +5,76 @@ counts and supersedes everything below it. Historical sections are append-only a
 only marked superseded. Read this first when picking the project back up, then `TODO.md` for the full
 prioritized punch list.
 
+## CURRENT STATE, 2026-08-03, whole-gateway round is IN, folding is PAUSED on purpose
+
+`main` at `ff2b663`, 422 tests green, clean tree. Read this section first.
+
+### PICK UP EXACTLY HERE
+
+1. **Three packet reviews are OUTSTANDING** and the fold is deliberately waiting on them. The
+   packets are `~/Downloads/{gemini,grok,codexapp}_dash-mno-verify_gateway_round3_2026-08-03.md`,
+   built from `2c73d1f`. Cross-check all four reviews before folding, per the rule for
+   architecture-bearing rounds. Note the code has moved one commit since the packets were built
+   (`ff2b663` folds M2), so check any finding against current code before acting.
+2. **One blocker and five majors are OPEN**, listed below and in
+   `REVIEW_FINDINGS_dash-mno-verify_gateway_full_2026-08-03.md`, which is committed.
+3. **A decision is already taken** on the context-admission major: a CONFIGURED ALLOWLIST. Hilawe
+   chose it on 2026-08-03. Do not re-open it, implement it.
+
+### What the whole-gateway round found
+
+Verdict BLOCK, nine findings, most reproduced with measurements rather than reasoned. It read the
+two-tier path, which no previous round had covered at all, and it found a regression in the
+PREVIOUS round's own fix, which is the fifth consecutive round where the newest fixes were the
+highest-risk surface.
+
+FOLDED ALREADY (`ff2b663`): the window retained the parsed snapshot object as it arrived, so a host
+with no signing key could pad a legitimately signed snapshot and have the gateway hold it at every
+height (157 MB measured from eight records). Records now hold a normalized, field-by-field copy.
+
+STILL OPEN, in the order recommended for folding:
+
+- **B1, blocker. Two-tier memory mode drops the durable clock guard while keeping durable
+  registrations.** `MNO_STORE=memory` gives TimeGuard a null path, but two-tier still constructs the
+  file-backed registration store and reloads historical seasons. A gateway can finish season N,
+  restart after a backward clock step into N-1, and rebuild N-1's members tree without noticing.
+  Members whose season ended can prove again, which breaks the stated season rule.
+- **M1, major. A registration can commit after its season has ended.** The handler samples the
+  season before the proof verify, and `commit()` compares only against cached state without
+  re-sampling the clock. Reproduced: a commit returned ok and wrote a season-zero record while the
+  external season was one.
+- **M3, major. The signature precheck permits attacker-chosen work.** `sigs` has no count bound and
+  the verifier ignores each entry's own key label, so it scans and verifies the whole array per
+  trusted key. 10,000 invalid checks measured at 1.28 s, and a 16 MB body carries far more. This
+  partly reverses the point of checking the quorum before the tree rebuild.
+- **M4, major. Authenticated adapter traffic shares one rate-limit bucket.** Every adapter makes the
+  request itself, so the gateway sees one client for all users behind it, and one visitor can deny
+  challenges to everyone else behind that adapter.
+- **M5, major. Unbounded context trees.** DECIDED: implement a configured allowlist of context
+  hashes, rejecting an unknown context BEFORE the proof verify.
+- **M6, major. Platform nullifiers are not bound to the epoch schedule.** Both local durable stores
+  refuse to open under a changed schedule; the Platform backend silently reinterprets.
+- **m1, minor.** Health reports ready in single-tier mode with no DML root, hiding an oracle outage.
+- **A1, major (architecture).** Every members-root update rebuilds a full depth-16 tree on the event
+  loop. Measured: about 9 s per root, 19.6 s for a first-context commit, 32.7 MiB retained. One
+  ordinary first registration blocks every HTTP handler for roughly 20 seconds. The fix is an
+  incremental Merkle frontier, which is a real rewrite and should be its own change.
+- **A2, minor.** The registration store retains and rescans every historical season.
+
+### Two ideas from the round worth keeping
+
+- `/v1/dml` lookup BY ROOT, which would close the documented challenge-to-refresh race without
+  re-challenging, using state the gateway already holds.
+- A generated state-machine test over clock, commit, rollover, refresh, and restart interleavings.
+  The round's own blocker came from wall time advancing with no explicit call, which is exactly the
+  shape example-based tests keep missing.
+
+### One caveat on the round's own evidence
+
+The reviewer could not run the 70 loopback tests (its sandbox forbids binding 127.0.0.1) and
+treated them as unexecuted rather than failing. They pass here. Its focused probes are what carry
+its measured claims, not the suite.
+
 ## CURRENT STATE, 2026-08-02 (night, after the fresh full round)
 
 `main` at `cbbb1cd`, 420 tests green, clean tree. A FRESH FULL four-reviewer round ran on the
