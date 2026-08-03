@@ -5,16 +5,22 @@ counts and supersedes everything below it. Historical sections are append-only a
 only marked superseded. Read this first when picking the project back up, then `TODO.md` for the full
 prioritized punch list.
 
-## CURRENT STATE, 2026-08-02 (evening)
+## CURRENT STATE, 2026-08-02 (late evening)
 
-`main` at `e0f128c`, pushed, 386 tests green. Clean tree. Everything below is superseded.
+`main` at `c59efde` plus this handoff commit, ahead of `origin/main` (`e0f128c`), NOT yet pushed.
+386 tests were green at `e0f128c`, no test files changed since, and the full suite passed inside the
+new pre-commit gate when `c59efde` landed, which is the only way that commit could land with the hook
+installed. Everything below is superseded.
 
 ### START HERE, in this order
 
-1. **Read `~/.claude/playbooks/pre-commit-self-verification.md` before writing anything.** It was added
-   today and it is aimed squarely at how this project has been failing. Applying it in one session
-   changed two fixes for the better and exposed a hole in a test I had just written. The four rules,
-   and what each caught here, are in "The playbook, and what it is worth" below.
+1. **Read `~/.claude/playbooks/pre-commit-self-verification.md` before writing anything**, then this
+   repository's instantiation of it, `docs/PRECOMMIT_ADOPTION.md` (scope, oracles, invariant classes,
+   gates, trial log). The playbook was added today and it is aimed squarely at how this project has
+   been failing. Applying it in one session changed two fixes for the better and exposed a hole in a
+   test I had just written. The rules, and what each caught here, are in "The playbook, and what it
+   is worth" below. In a fresh checkout, run `git config core.hooksPath tools/hooks` once, or the
+   test gate does not run at all.
 2. **Two blockers remain open from the chain-anchor review**, listed under "Open findings". Fold those
    before starting anything new.
 3. **The end-to-end refresh-path test does not exist** and three commits say so. See "Claims that are
@@ -41,6 +47,28 @@ its answer, and refuses unless the diff's own `blockHash` matches.
 **A review of that work returned six blockers and twelve majors.** Four blockers are folded. The
 review is the most valuable this project has had and its findings are worth reading before touching
 any of it.
+
+### What the late-evening session added, 2026-08-02
+
+The playbook is now INSTANTIATED here, not just referenced. Three things landed in `c59efde` plus
+this handoff commit:
+
+- `docs/PRECOMMIT_ADOPTION.md`, the adoption note, written from an external draft and then vetted
+  claim by claim against this repository before placement. Both quoted git-log specimens are
+  verbatim real, the test command matches `package.json`, and the no-hook finding was confirmed.
+  One material correction was made: the recommended gate scope was widened from the draft's four
+  directories to include `adapters/` and `oracle/`, because rounds 9 through 12 were all adapter
+  findings and both open blockers are in the oracle, so the draft would have left the most
+  defect-dense code ungated.
+- `tools/hooks/pre-commit`, the first gate that BLOCKS. It runs `npm test` when staged files touch
+  gated paths, refuses instead of hanging when another suite is active, and fails closed on a
+  failed staged-diff read. Its failing path was watched refusing a deliberately broken test (pass
+  380, fail 1, HEAD unchanged) before the adopting commit went through it.
+- The trial log has its first row. A focused external artifact check (a different model family)
+  returned FIX-FIRST twice on the gate itself and all findings were folded before landing. No
+  author-side rule caught a defect before the checker did, the sixth consecutive data point for
+  that pattern, which is exactly the question the re-trial protocol says this repository exists to
+  answer.
 
 ### The correction that matters most
 
@@ -104,7 +132,8 @@ Three commits say what they do NOT prove, and a future session should not read p
    space, so the store enforces it. The reproduction that produced a thousand records now produces a
    thousand refusals.
 
-Use the focused Codex artifact check at `/tmp/precommit_check_dash-mno-verify.md` for changes whose
+Use the focused external artifact check (a different model family) at
+`/tmp/precommit_check_dash-mno-verify.md` for changes whose
 reasoning is not mechanical. I skipped it for the contained ones and said so, which the playbook
 allows and asks to be stated.
 
@@ -135,6 +164,26 @@ datadir's condition and not the copy's. Two gotchas already paid for:
   the evodb rebuild needs more than this machine will give a VM and the answer is a different route to
   a synced node entirely.
 
+  **THE RESTART IS PARKED ON A CROSS-PROJECT DECISION, checked 2026-08-02 late evening.** Two facts,
+  both measured this session, block just running the command:
+
+  - The colima VM is shared, and `colima stop` ends every container in it. Live right now: the full
+    dashmate local network (about 22 containers, up 11 days), `tegara-fork-live` (up 3 weeks),
+    `shoal-l1` (up 3 weeks), and `inspiring_lewin` (up 2 weeks), all belonging to other projects.
+    Whether those can be bounced, and when, is not this project's call.
+  - `docker stats` shows the other containers holding about 3.2 GB of the VM's 5.772 GB, so dashd
+    was effectively reindexing inside roughly 2.5 GB. That is consistent with both deaths at the
+    same height and strengthens the bigger-VM diagnosis. The host has 16 GB total, so a 12 GB VM is
+    at the host's edge, and keeping dashmate stopped during the reindex is the way to make the new
+    headroom real rather than nominal.
+
+  The recommended sequence, once the owner of the other work says the window is open: stop the
+  dashmate group cleanly (`dashmate group stop`), note that `tegara-fork-live` and `shoal-l1` will
+  be stopped by the VM restart, `colima stop && colima start --memory 12 --cpu 4`, remove the dead
+  container (`docker rm dash-mno-node`), rerun the `docker run` recipe below, and only restart the
+  dashmate group after the reindex passes height 1,047,206 or finishes. If it dies at the same
+  height again with the whole 12 GB, take the different route to a synced node.
+
 ```
 docker run -d --name dash-mno-node \
   -v "$HOME/dashcore-node-datadir":/home/dash/.dashcore -p 127.0.0.1:9998:9998 \
@@ -159,16 +208,24 @@ the shape question.
 
 ### Punch list
 
-1. The two open chain-anchor blockers, then the majors.
-2. The end-to-end refresh-path test.
-3. The record-format design covering NF2, NF3, and the exclusion gap. All three share one root cause:
+1. Push `main` (two unpushed commits, the adoption and this handoff update), after Hilawe's nod.
+2. The two open chain-anchor blockers, then the majors.
+3. The end-to-end refresh-path test.
+4. The record-format design covering NF2, NF3, and the exclusion gap. All three share one root cause:
    a grant record holds ONE deadline and ONE target set and these need per-target state. Each has
    already had one patch fail in a new place. Change the format once.
-4. Wire direct node mode, once the node can confirm the response shape.
-5. The `merkleRootMNList` check, an increment from there.
-6. The parser decision, whether to add a dependency so the permission module boundary is enforced
+5. The node restart, parked on the cross-project VM decision above. Hilawe decides the window, then
+   the recommended sequence in "The node, and how to restart it".
+6. Wire direct node mode, once the node can confirm the response shape.
+7. The `merkleRootMNList` check, an increment from there.
+8. The parser decision, whether to add a dependency so the permission module boundary is enforced
    rather than tripwired.
-7. An audit. Still none.
+9. Decide what to do about external model names in committed review records. The authorship rule
+   says committed artifacts describe reviewers generically, and this file's CURRENT section now
+   does, but the append-only historical sections (three mentions) and one committed round-10
+   findings file still carry product names. Rewriting history conflicts with the append-only rule,
+   so this is a deliberate decision, not a cleanup to do in passing.
+10. An audit. Still none.
 
 ## CURRENT STATE, 2026-08-01 (evening, session paused mid-cycle)
 

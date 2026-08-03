@@ -133,3 +133,4 @@ column is "no" for every rule is a real result and is recorded rather than omitt
 
 | date | change | rule that caught it FIRST, or external, or escaped | false alarms | author-side time | checker tokens | did the rule change the outcome |
 | --- | --- | --- | --- | --- | --- | --- |
+| 2026-08-02 | adopt the discipline, add the test gate (`c59efde`) | external, all four (fail-open staged-diff read; concurrency claim wider than the code; a passing-path claim written before the event, twice, the second time inside the fix for the first; lock cleanup that could remove a lock it did not own) | 0 | about 30 min including two suite runs | 32,976 over two passes | yes for rule 5 (the failing path was watched refusing before the external pass ran) and for the fold (hook hardened, two claims narrowed, before landing). No author-side rule caught a defect before the checker, the sixth consecutive data point for that pattern. |
