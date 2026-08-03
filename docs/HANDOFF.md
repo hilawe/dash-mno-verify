@@ -25,9 +25,17 @@ prioritized punch list.
    which warns loudly at boot in two-tier mode. It is the bound on how many context trees one valid
    masternode holder can allocate.
 
-   Continue at item 5: the registration anchor policy (a registration currently accepts any
-   windowed root, so a masternode that just left the list can hold a season-long membership), the
-   rate-limit keying, the Platform schedule binding, the `/v1/dml` limiter, and health readiness.
+   `60036fd`: the registration anchor policy. Suite 452.
+
+   **SECOND NEW OPERATOR SETTING.** `MNO_REGISTER_ROOT_MAX_AGE` defaults to 900 seconds and bounds
+   how old the DML root a registration anchors to may be, separately from the membership window.
+   A deployment whose provers are slower than that will see registrations refused as
+   `stale-or-unknown-root` and should raise it. Setting 0 disables the rule and restores the old
+   behaviour, with a loud boot warning.
+
+   Continue at item 6: the rate-limit keying (every adapter makes the request itself, so one user
+   can deny challenges to everyone behind that adapter), the Platform schedule binding, the
+   `/v1/dml` limiter, and health readiness.
 3. **The fold itself has had no independent round.** Two focused artifact checks screened it, which
    is not a round. Build fresh packets from the current commit once the contained items are folded,
    and remember this project's own record: five consecutive rounds found the newest fixes to be the
