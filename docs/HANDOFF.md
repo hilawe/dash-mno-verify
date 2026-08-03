@@ -5,6 +5,158 @@ counts and supersedes everything below it. Historical sections are append-only a
 only marked superseded. Read this first when picking the project back up, then `TODO.md` for the full
 prioritized punch list.
 
+## CURRENT STATE, 2026-08-02 (evening)
+
+`main` at `e0f128c`, pushed, 386 tests green. Clean tree. Everything below is superseded.
+
+### START HERE, in this order
+
+1. **Read `~/.claude/playbooks/pre-commit-self-verification.md` before writing anything.** It was added
+   today and it is aimed squarely at how this project has been failing. Applying it in one session
+   changed two fixes for the better and exposed a hole in a test I had just written. The four rules,
+   and what each caught here, are in "The playbook, and what it is worth" below.
+2. **Two blockers remain open from the chain-anchor review**, listed under "Open findings". Fold those
+   before starting anything new.
+3. **The end-to-end refresh-path test does not exist** and three commits say so. See "Claims that are
+   deliberately narrower than they look".
+
+### Where the project is
+
+Anonymous zero-knowledge proof of masternode control gating a private community. Working prototype,
+validated on real mainnet data, NOT audited. Do not gate anything of value.
+
+### What happened this session
+
+**The chain anchor got its answer.** The Dash Core lead confirmed `merkleRootMNList` in the coinbase
+special transaction is the canonical, consensus-enforced commitment, and that it commits `keyIDVoting`,
+which is the exact field this project's leaf is built from. So the design needs no rework to be
+anchorable. Full detail and his four foot-guns are in `TODO.md`. One of them, that `isValid` is part of
+the commitment so a PoSe-banned node is IN the list, is already handled by the oracle's `ENABLED`
+filter.
+
+**Direct node mode was started, on `protx diff`.** `oracle/diff_snapshot.js` is a block-bound,
+ChainLock-gated read. NOT wired in. It reads the ChainLock first so a node cannot pick a block to suit
+its answer, and refuses unless the diff's own `blockHash` matches.
+
+**A review of that work returned six blockers and twelve majors.** Four blockers are folded. The
+review is the most valuable this project has had and its findings are worth reading before touching
+any of it.
+
+### The correction that matters most
+
+I documented a security guarantee that was FALSE, and a reviewer caught it the same day. It said
+role-level denies were the supported, safe way to exclude somebody from a gated channel.
+`GuildChannel.memberPermissions` applies the member overwrite's ALLOW last, after every role deny, so
+the bot's own grant outranks the exclusion. Combined with member-level denies being unprotectable,
+THERE IS NO DISCORD-NATIVE EXCLUSION that survives this bot's grant. Retracted in `CLAUDE.md`, the
+README, this file, and the code comments. Do not restore it. `TODO.md` holds the only design that can
+work.
+
+### Open findings, chain-anchor review
+
+Two blockers:
+
+- **`chainlocked` is signed but never required.** A v3 snapshot with it false, missing, or non-boolean
+  forms a valid signed message and `validateSnapshot` accepts it, so a snapshot can be adopted without
+  making the claim v3 exists to carry. Fix: require `o.chainlocked === true` in both `snapshotMessage`
+  and `validateSnapshot`, and validate a 64-character block hash for v3 regardless of unsigned mode.
+- **The RPC boundary accepts missing and mistyped security fields.** In `oracle/diff_snapshot.js`.
+
+Plus most of twelve majors, including a comparator that is not total for malformed `proRegTxHash`
+input, `current()` not actually being the last adopted snapshot, and tests that prove isolated
+mechanics while naming end-to-end guarantees.
+
+### Claims that are deliberately narrower than they look
+
+Three commits say what they do NOT prove, and a future session should not read past that.
+
+- The coexistence tests drive `RootWindows`, not the gateway refresh path. The rule is proved correct;
+  that the refresh path reaches it is NOT proved. The reviewer asked for two valid snapshots driven end
+  to end and that test does not exist.
+- `oracle/diff_snapshot.js`'s block-bound check closes the A to B to A residual **against an honest
+  node only**. One server answers the ChainLock query, `known_block`, `diff.blockHash`, and `mnList`,
+  so a dishonest one can return matching hashes with an arbitrary list. It is a trusted-node read, not
+  a chain-authenticated one, and pinned signer trust is still load-bearing until the
+  `merkleRootMNList` check exists.
+- The `protx diff` field names are UNOBSERVED. They come from DIP4 and are corroborated by the Core
+  lead, but nobody has seen the JSON. `getbestchainlock`'s shape IS observed from mainnet and matches.
+
+### The playbook, and what it is worth
+
+`~/.claude/playbooks/pre-commit-self-verification.md`, four rules, all four earned their place today.
+
+1. **Enumerate invariants before committing a fix.** This changed two fixes. Allowing two roots at one
+   height looked like a one-line relaxation until the invariant list showed the old blanket rejection
+   was the only thing guaranteeing a source cannot present two different LISTS at a height. That is
+   why `mayCoexist` checks the block and the leaf multiset instead of just letting the pair through.
+   And keying the window on height alone silently guaranteed one record per height, which I had
+   destroyed two commits earlier without noticing, and which a reviewer reproduced at 1,002 records.
+2. **Mutation-check every test as it is written.** Recorded as a table in each commit message. It
+   found that admitting v1 to the dual-root set fails NOTHING, because v1 is caught by the shaRoot
+   check before the version enumeration is reached, so that invariant has no covering test and cannot
+   have one until a version exists that carries a root and should not be trusted.
+3. **Claims come from outputs, not intent.** The highest-value rule and the one I broke twice today. I
+   told Hilawe "the node is syncing" when it had exited an hour earlier, and I wrote "385 tests pass"
+   in commit `2b4e132` when the actual number was 386, from a stale reading. Re-derive anything
+   time-varying at the moment of writing.
+4. **Make design invariants executable.** `RootWindows.adopt` now throws on an unknown leaf ordering.
+   The gateway deriving a safe key is a property of ONE caller; the store's bound depends on the key
+   space, so the store enforces it. The reproduction that produced a thousand records now produces a
+   thousand refusals.
+
+Use the focused Codex artifact check at `/tmp/precommit_check_dash-mno-verify.md` for changes whose
+reasoning is not mechanical. I skipped it for the contained ones and said so, which the playbook
+allows and asks to be stated.
+
+### The node, and how to restart it
+
+A wallet-free copy of the mainnet datadir is at `~/dashcore-node-datadir`, 50 GB. The ORIGINAL at
+`~/Library/Application Support/DashCore` holds two wallets and must never be mounted. It was last
+written by v23.0.2 in December and the container image is v23.1.7, which would upgrade it
+irreversibly.
+
+The copy needs `-reindex-chainstate` because its evolution database is inconsistent, which is the
+datadir's condition and not the copy's. Two gotchas already paid for:
+
+- `-reindex-chainstate` is incompatible with the datadir's transaction index. Pass `-txindex=0`.
+- The colima VM has 5.77 GB. `-dbcache=4096` was killed by the OOM reaper at 19%. `-dbcache=1024
+  -par=2` sits at about 1.35 GB and survives.
+
+```
+docker run -d --name dash-mno-node \
+  -v "$HOME/dashcore-node-datadir":/home/dash/.dashcore -p 127.0.0.1:9998:9998 \
+  dashpay/dashd:latest dashd -printtoconsole -disablewallet -reindex-chainstate -txindex=0 \
+  -server -rpcuser=probe -rpcpassword=probe -rpcbind=0.0.0.0 -rpcallowip=0.0.0.0/0 \
+  -dbcache=1024 -par=2
+```
+
+After the reindex it still has about 121,000 blocks to catch up. `rpc.digitalcash.dev` answers
+`getblockcount` and `getbestchainlock` but REFUSES `protx diff`, so a public endpoint cannot settle
+the shape question.
+
+### Gotchas that cost real time
+
+- **Never run two `npm test` suites at once.** They contend for the same loopback port,
+  `gateway_http` waits rather than failing, and `--test-timeout=0` means nothing cuts it off. Two
+  orphaned runs had to be terminated by hand.
+- **A scripted edit whose replacement string has the wrong indentation matches nothing and reports no
+  error**, and if the script asserts before its write call the file is not touched at all. This bit
+  four times. Grep for the change after every scripted edit.
+- A `python3` heredoc with no `open(...).write(...)` silently changes nothing.
+
+### Punch list
+
+1. The two open chain-anchor blockers, then the majors.
+2. The end-to-end refresh-path test.
+3. The record-format design covering NF2, NF3, and the exclusion gap. All three share one root cause:
+   a grant record holds ONE deadline and ONE target set and these need per-target state. Each has
+   already had one patch fail in a new place. Change the format once.
+4. Wire direct node mode, once the node can confirm the response shape.
+5. The `merkleRootMNList` check, an increment from there.
+6. The parser decision, whether to add a dependency so the permission module boundary is enforced
+   rather than tripwired.
+7. An audit. Still none.
+
 ## CURRENT STATE, 2026-08-01 (evening, session paused mid-cycle)
 
 `main` at `5d08856`, pushed, 354 tests green. Working tree clean apart from two untracked reviewer
