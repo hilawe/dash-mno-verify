@@ -95,6 +95,28 @@ export async function verifyMembership({
   if (String(s.signalHash) !== String(expected.signalHash))
     return { ok: false, reason: "wrong-signal" };
 
+  // 4.5) THE PERIOD MUST STILL BE THE ONE THE POLICY CHECKS PASSED IN. Checks 1 through 4 run
+  //      BEFORE the expensive proof, and nothing re-read them afterwards, so a proof that finished
+  //      after an epoch or season boundary could spend a nullifier and return success against a
+  //      period that had already ended, with an expiry in the past. In two-tier mode the verifier
+  //      also held a detached root store that a rollover had already cleared. The proof verify is
+  //      the only slow step here, so re-asking immediately before the spend closes the whole gap.
+  //
+  //      Supplied by the caller (the gateway owns the clock and the season), and OPTIONAL so a
+  //      direct caller that does not supply it behaves exactly as before rather than failing shut on
+  //      an interface it never knew about.
+  const periodStillCurrent = async () => {
+    if (typeof expected.stillCurrent !== "function") return null;
+    const verdict = await expected.stillCurrent();
+    // null (or undefined) means the period still holds. ANYTHING ELSE is a refusal reason, compared
+    // against null rather than tested for truthiness: an empty-string reason is falsy, so a
+    // truthiness test would have read "no longer current, reason unstated" as "still current" and
+    // granted. A guard whose failure mode is to pass is worse than no guard.
+    if (verdict == null) return null;
+    const reason = String(verdict);
+    return reason.length > 0 ? reason : "period-changed";
+  };
+
   const claimedBySameAccount = async () => {
     const prior = await nullifiers.get(s.epoch, s.contextHash, s.nullifier);
     return prior != null && String(prior.account) === String(expected.account);
@@ -106,17 +128,41 @@ export async function verifyMembership({
   if (await nullifiers.has(s.epoch, s.contextHash, s.nullifier)) {
     if (!(await claimedBySameAccount())) return { ok: false, reason: "already-used" };
     if (!(await gate(() => verifyProof(vkey, publicSignals, proof)))) return { ok: false, reason: "invalid-proof" };
+    // Re-grants are period-checked too. Handing back a grant whose epoch ended is the same defect as
+    // issuing one, and the adapter is told it may trust the response without re-checking expiry.
+    const staleRegrant = await periodStillCurrent();
+    if (staleRegrant !== null) return { ok: false, reason: staleRegrant };
     return { ok: true, nullifier: s.nullifier, epoch: s.epoch, regranted: true };
   }
 
   // 6) first claim: verify the proof, then record the spend and the granting account together.
   if (!(await gate(() => verifyProof(vkey, publicSignals, proof)))) return { ok: false, reason: "invalid-proof" };
 
+  // BEFORE the spend, not after. The nullifier write is the irreversible step, so a period that
+  // moved while the proof ran must refuse here rather than burn the member's one membership for an
+  // epoch that has ended.
+  const stale = await periodStillCurrent();
+  if (stale !== null) return { ok: false, reason: stale };
+
   // With a shared store, a duplicate here means another request recorded the spend first in a race.
   // Re-grant only if that prior claim belongs to this same account, otherwise it is already used.
   const dup = await nullifiers.add(s.epoch, s.contextHash, s.nullifier, { account: expected.account });
+  // The add() itself is an await, and against a shared backend it is a network round trip, so the
+  // period can end inside it. Every path from here returns a GRANT, so each one is period-checked.
+  // The spend stays recorded either way: for this account it is the same tag it would spend next
+  // time, and un-spending on a boundary would need a compensating delete that could itself be
+  // interrupted, which is a worse failure than a refused grant.
+  const after = await periodStillCurrent();
+  if (after !== null) return { ok: false, reason: after };
   if (dup && dup.duplicate) {
-    if (await claimedBySameAccount()) return { ok: true, nullifier: s.nullifier, epoch: s.epoch, regranted: true };
+    if (await claimedBySameAccount()) {
+      // The ownership lookup is itself an await, so the period can move inside it too. Every await
+      // between the last check and a returned grant needs its own, which is why this sits here
+      // rather than being folded into the one above.
+      const afterLookup = await periodStillCurrent();
+      if (afterLookup !== null) return { ok: false, reason: afterLookup };
+      return { ok: true, nullifier: s.nullifier, epoch: s.epoch, regranted: true };
+    }
     return { ok: false, reason: "already-used" };
   }
   return { ok: true, nullifier: s.nullifier, epoch: s.epoch };

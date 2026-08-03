@@ -215,11 +215,58 @@ export class FileBackend {
     // length, so records written under a different length are not comparable: a duration change can
     // make today's season number equal an old one and rebuild those registrations, reviving members
     // who never re-proved. Refuse rather than reinterpret.
+    // A TORN FINAL LINE IS TOLERATED, ANY OTHER MALFORMED LINE IS NOT.
+    //
+    // THE ASSUMPTION THIS RESTS ON, STATED because it is doing the work: a CORRECT WRITER crashing
+    // is the model. This file is append-only, each record is one line written by one append, and a
+    // caller is told a registration succeeded only after the fsync that completes that line. Under
+    // that model an interruption can truncate only the last line, and the truncated record was
+    // never reported as committed, so discarding it loses nothing a member was promised.
+    //
+    // What this canNOT distinguish, and does not claim to: a previously complete, committed record
+    // that was later truncated by something else (a filesystem fault, an editor, a partial copy)
+    // presents identically and would also be discarded. That is a real loss of a promised
+    // registration. The trade is deliberate, because the alternative refused every boot after an
+    // ordinary crash, but it is a trade rather than a free recovery, and the discard is logged and
+    // flagged rather than silent so an operator can see it happened.
+    //
+    // Every other position is different. A malformed line in the MIDDLE means the file was edited,
+    // corrupted, or written by something else, and silently skipping it would drop a member who WAS
+    // promised their registration, quietly shrinking the tree. That still refuses.
+    //
+    // Before this, one truncated line refused the boot outright, so a transient crash became a
+    // durable outage of the whole two-tier path until an operator hand-edited the file. Two
+    // reviewers found it independently and it reproduces by truncating the last line.
     let seenHeader = false;
-    for (const line of raw.split("\n")) {
+    const lines = raw.split("\n");
+    for (let i = 0; i < lines.length; i += 1) {
+      const line = lines[i];
       const t = line.trim();
       if (!t) continue;
-      const rec = JSON.parse(t);
+      // The last non-empty line, and only when the file does not end in a newline, which is exactly
+      // the shape an interrupted append leaves. Computed as "no later line has content" rather than
+      // "is the final split element", so trailing whitespace after a torn record does not turn a
+      // recoverable tail into a refused boot.
+      const isTornCandidate = !raw.endsWith("\n") && lines.slice(i + 1).every((l) => l.trim() === "");
+      let rec;
+      try {
+        rec = JSON.parse(t);
+      } catch (err) {
+        if (isTornCandidate) {
+          console.error(
+            `[registration-store] discarding a torn final line in ${this.path} (${err.message}). An ` +
+              `append was interrupted before it completed, so that registration was never reported ` +
+              `as committed and the member can register again.`,
+          );
+          this.tornTailDiscarded = true;
+          break;
+        }
+        throw new Error(
+          `${this.path} line ${i + 1} is not valid JSON (${err.message}). A malformed line anywhere ` +
+            `but the end is not an interrupted append, so it is not discarded: doing so would drop a ` +
+            `registration that WAS reported committed. Repair the file rather than starting without it.`,
+        );
+      }
       if (rec && rec.type === "schedule") {
         seenHeader = true;
         if (this.schedule != null && String(rec.schedule) !== String(this.schedule)) {

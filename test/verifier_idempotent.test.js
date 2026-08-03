@@ -141,3 +141,119 @@ test("Platform-backed store does not re-grant; a spent tag is already-used even 
   assert.equal(sameGateway.ok, false);
   assert.equal(sameGateway.reason, "already-used");
 });
+
+// THE PERIOD MUST STILL HOLD AT THE MOMENT OF THE SPEND. Every policy check runs BEFORE the
+// expensive proof and nothing re-read them afterwards, so a proof that finished after an epoch or
+// season boundary could spend a nullifier and return success for a period that had already ended,
+// handing the adapter a grant whose expiry was already in the past. The proof verify is the only
+// slow step, so the gap is exactly as wide as a PLONK verification. These drive it by having the
+// stubbed proof cross the boundary itself, which is what a real slow verify does.
+
+test("a period that ends while the proof runs refuses BEFORE the nullifier is spent", async () => {
+  const nullifiers = new NullifierStore();
+  let ended = false;
+  const r = await verifyMembership({
+    ...args("alice", { nullifiers, verifyProof: () => { ended = true; return true; } }),
+    expected: { ...baseExpected("alice"), stillCurrent: async () => (ended ? "epoch-rolled-over" : null) },
+  });
+  assert.equal(r.ok, false, "no grant for a period that has ended");
+  assert.equal(r.reason, "epoch-rolled-over");
+  assert.equal(
+    await nullifiers.has("7", "333", "111"),
+    false,
+    "and the tag is NOT spent, so the member keeps their one membership for the next epoch",
+  );
+});
+
+test("a re-grant is period-checked too, not just a first spend", async () => {
+  // The adapter is told it may trust an ok response without re-checking expiry, so handing back a
+  // re-grant whose epoch ended is the same defect as issuing one.
+  const nullifiers = new NullifierStore();
+  await verifyMembership(args("alice", { nullifiers })); // first spend, period current
+  let ended = false;
+  const again = await verifyMembership({
+    ...args("alice", { nullifiers, verifyProof: () => { ended = true; return true; } }),
+    expected: { ...baseExpected("alice"), stillCurrent: async () => (ended ? "season-rolled-over" : null) },
+  });
+  assert.equal(again.ok, false);
+  assert.equal(again.reason, "season-rolled-over");
+});
+
+test("a caller that supplies no period check behaves exactly as before", async () => {
+  // The hook is optional on purpose: a direct caller that never knew about it must not start
+  // failing shut on an interface it does not implement.
+  const nullifiers = new NullifierStore();
+  const r = await verifyMembership(args("alice", { nullifiers }));
+  assert.equal(r.ok, true);
+  assert.equal(await nullifiers.has("7", "333", "111"), true);
+});
+
+test("a period that still holds grants normally, so the guard has an exit", async () => {
+  const nullifiers = new NullifierStore();
+  const r = await verifyMembership({
+    ...args("alice", { nullifiers }),
+    expected: { ...baseExpected("alice"), stillCurrent: async () => null },
+  });
+  assert.equal(r.ok, true, "ordinary correct operation reaches the exit");
+});
+
+test("a period that ends during the nullifier write refuses the grant", async () => {
+  // add() is an await, and against a shared backend it is a network round trip, so the period can
+  // end inside it. Every path past it returns a grant, so each is checked.
+  const nullifiers = new NullifierStore();
+  let written = false;
+  const wrapped = {
+    has: (...a) => nullifiers.has(...a),
+    get: (...a) => nullifiers.get(...a),
+    add: async (...a) => { const r = await nullifiers.add(...a); written = true; return r; },
+  };
+  const r = await verifyMembership({
+    ...args("alice", { nullifiers: wrapped }),
+    expected: { ...baseExpected("alice"), stillCurrent: async () => (written ? "epoch-rolled-over" : null) },
+  });
+  assert.equal(r.ok, false, "no grant for a period that ended during the write");
+  assert.equal(r.reason, "epoch-rolled-over");
+  assert.equal(await nullifiers.has("7", "333", "111"), true, "the spend stays recorded, deliberately");
+});
+
+test("an empty-string refusal reason is still a refusal, not a grant", async () => {
+  // The reason is compared against null, never tested for truthiness. An empty string is falsy, so
+  // a truthiness test would have read "no longer current, reason unstated" as "still current".
+  const nullifiers = new NullifierStore();
+  const r = await verifyMembership({
+    ...args("alice", { nullifiers }),
+    expected: { ...baseExpected("alice"), stillCurrent: async () => "" },
+  });
+  assert.equal(r.ok, false, "a guard whose failure mode is to pass is worse than no guard");
+  assert.equal(r.reason, "period-changed");
+  assert.equal(await nullifiers.has("7", "333", "111"), false);
+});
+
+test("a period that ends during the ownership lookup refuses the re-grant", async () => {
+  // The last await before a grant. The duplicate branch checks after add(), then awaits
+  // claimedBySameAccount(), and the period can move inside THAT. Every await between the last check
+  // and a returned grant needs its own check, which is the general rule this case pins.
+  // It must be the CONCURRENT-DUPLICATE branch, reached when has() says free but add() reports a
+  // duplicate because another request won the race. A first version of this test seeded the tag so
+  // has() returned true, which takes the EARLY re-grant branch and never reaches the code under
+  // test: the mutation passed and the test proved nothing. has() is forced false here so add() is
+  // the thing that discovers the duplicate.
+  const nullifiers = new NullifierStore();
+  await verifyMembership(args("alice", { nullifiers })); // alice owns the tag
+  let lookedUp = false;
+  const wrapped = {
+    has: async () => false, // pretend the early check saw a free tag
+    add: (...a) => nullifiers.add(...a), // ...and the insert discovers otherwise
+    get: async (...a) => { const r = await nullifiers.get(...a); lookedUp = true; return r; },
+  };
+  const r = await verifyMembership({
+    ...args("alice", { nullifiers: wrapped }),
+    expected: {
+      ...baseExpected("alice"),
+      // Current until the ownership lookup happens, so only a check placed AFTER it can catch this.
+      stillCurrent: async () => (lookedUp ? "epoch-rolled-over" : null),
+    },
+  });
+  assert.equal(r.ok, false, "a re-grant is a grant, so it gets the same treatment");
+  assert.equal(r.reason, "epoch-rolled-over");
+});

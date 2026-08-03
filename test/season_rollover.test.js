@@ -185,3 +185,70 @@ test("concurrent commits in the same season and context get distinct, ordered le
   const recs = await store.forSeasonContext(0, CTX);
   for (const rec of recs) assert.equal(recs[rec.index].commitment, rec.commitment);
 });
+
+// THE WALL-CLOCK BOUNDARY, which is a different race from the serialization one above. The commit
+// compared the caller's season against SeasonMembers' own CACHE, and that cache only moves when an
+// ensure() runs, with the background rollover firing once a minute. So a registration that started
+// before a boundary and finished after it passed the check, durably appended a record for a season
+// that had already ended, and returned success for a membership the next rollover made unusable,
+// after the member had paid the heavy proving cost. Two reviewers reproduced it independently.
+test("a commit refuses when WALL TIME has left the season, even while the cache still holds it", async () => {
+  const store = newStore();
+  let season = 0;
+  const sm = new SeasonMembers({
+    store,
+    rootWindow: 8,
+    nowSec: () => 0,
+    emptyRoot: EMPTY_ROOT,
+    seasonNow: () => season, // the guarded clock, authoritative
+  });
+  await sm.ensure(0);
+  assert.equal(sm.current, 0, "the cache holds season 0");
+
+  // The boundary passes while the caller's proof is being verified. Nothing calls ensure(), so the
+  // cache is untouched and the old check would still have compared 0 against 0 and passed.
+  season = 1;
+  const res = await sm.commit(0, CTX, "111", async () => ({ duplicate: false, index: 0 }));
+
+  assert.equal(res.ok, false, "the registration is refused rather than written to a dead season");
+  assert.equal(res.reason, "season-rolled-retry");
+  assert.equal(sm.current, 0, "and the cache is left alone, so the rollover still owns that move");
+  assert.deepEqual(await store.forSeasonContext(0, CTX), [], "nothing durable was written");
+});
+
+test("a commit still succeeds when wall time agrees with the claimed season", async () => {
+  // The guard must not refuse ordinary correct operation, which is the other half of every guard.
+  const store = newStore();
+  const sm = new SeasonMembers({
+    store, rootWindow: 8, nowSec: () => 0, emptyRoot: EMPTY_ROOT, seasonNow: () => 3,
+  });
+  await sm.ensure(3);
+  const res = await sm.commit(3, CTX, "111", async () => ({ duplicate: false, index: 0 }));
+  assert.equal(res.ok, true, "the normal path is unaffected");
+  assert.equal(res.size, 1);
+});
+
+test("the season is re-read AFTER materialization, not before it", async () => {
+  // Position, not just presence. A first draft checked the clock before `_materialize()`, which is
+  // itself an await and can take seconds on a first-use context, so the season could end inside
+  // that await and the guard would look correct while proving nothing. This moves the boundary
+  // during materialization specifically.
+  const store = newStore();
+  let season = 0;
+  const sm = new SeasonMembers({
+    store, rootWindow: 8, nowSec: () => 0, emptyRoot: EMPTY_ROOT, seasonNow: () => season,
+  });
+  await sm.ensure(0);
+  const realMaterialize = sm._materialize.bind(sm);
+  sm._materialize = async (ctx) => {
+    const c = await realMaterialize(ctx);
+    season = 1; // the boundary passes inside the await the guard used to sit before
+    return c;
+  };
+  const res = await sm.commit(0, CTX, "111", async () => {
+    throw new Error("the durable append must never be reached for a season that has ended");
+  });
+  assert.equal(res.ok, false);
+  assert.equal(res.reason, "season-rolled-retry");
+  assert.deepEqual(await store.forSeasonContext(0, CTX), [], "nothing durable was written");
+});

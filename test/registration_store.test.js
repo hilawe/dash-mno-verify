@@ -261,3 +261,50 @@ test("a different season rebuilds an empty tree (stale-season access cannot carr
     assert.equal(next.root(), empty.root());
   });
 });
+
+// A TORN FINAL LINE IS TOLERATED, ANY OTHER MALFORMED LINE IS NOT. Two reviewers found this
+// independently and it reproduces in one command. The file is append-only and each record is one
+// line, so an interrupted append can only truncate the LAST line, and that record was never
+// reported committed (the caller is told success only after the fsync). Discarding it loses nothing
+// a member was promised. A malformed line anywhere else means the file was edited or corrupted, and
+// skipping it would silently drop a member who WAS promised their registration.
+test("a torn final line is discarded on load, so a crash mid-append does not refuse boot", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "mno-torn-"));
+  const path = join(dir, "regs.jsonl");
+  const header = JSON.stringify({ type: "schedule", schedule: "sch1" });
+  const good = JSON.stringify({
+    season: 0, contextHash: "ctx", regNullifier: "nf1", commitment: "11", engine: "groth16", statement: "st", index: 0,
+  });
+  await writeFile(path, `${header}\n${good}\n{"season":0,"contextHa`);
+  const b = new FileBackend(path, "sch1");
+  await b.ready();
+  const recs = await b.forSeasonContext(0, "ctx");
+  assert.equal(recs.length, 1, "the complete record before the torn one survives");
+  assert.equal(recs[0].regNullifier, "nf1");
+  assert.equal(b.tornTailDiscarded, true, "and the discard is recorded rather than silent");
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("a malformed line in the MIDDLE still refuses, because that is not an interrupted append", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "mno-mid-"));
+  const path = join(dir, "regs.jsonl");
+  const header = JSON.stringify({ type: "schedule", schedule: "sch1" });
+  const good = JSON.stringify({
+    season: 0, contextHash: "ctx", regNullifier: "nf1", commitment: "11", engine: "groth16", statement: "st", index: 0,
+  });
+  await writeFile(path, `${header}\n{"broken\n${good}\n`);
+  const b = new FileBackend(path, "sch1");
+  await assert.rejects(() => b.ready(), /line 2 is not valid JSON/);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("a file ending in a newline has no torn tail, so its last line must parse", async () => {
+  // The discriminator is the missing trailing newline. A complete file always ends with one, so a
+  // malformed last line in a newline-terminated file is corruption, not an interrupted append.
+  const dir = await mkdtemp(join(tmpdir(), "mno-nl-"));
+  const path = join(dir, "regs.jsonl");
+  await writeFile(path, `${JSON.stringify({ type: "schedule", schedule: "sch1" })}\n{"broken\n`);
+  const b = new FileBackend(path, "sch1");
+  await assert.rejects(() => b.ready(), /not valid JSON/);
+  await rm(dir, { recursive: true, force: true });
+});

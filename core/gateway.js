@@ -27,7 +27,7 @@ import { createServer } from "node:http";
 import { randomUUID, createHash, timingSafeEqual } from "node:crypto";
 import { config } from "./config.js";
 import { leafSetCommitment, RootWindows, NullifierStore, ChallengeStore, RateLimiter, Semaphore, loadOracle } from "./stores.js";
-import { loadVerificationKey, verifyMembership, verifyRegistration } from "./verifier.js";
+import { loadVerificationKey, verifyMembership, verifyRegistration, readSignals } from "./verifier.js";
 import { SeasonMembers } from "./season.js";
 import { makeDmlRootHasher } from "./dml_root.js";
 import { shaRootFromLeaves } from "../common/dml_sha_root.js";
@@ -567,6 +567,9 @@ if (twoTier) {
     // The gateway's seasons come from the guarded clock, so a backward roll here would mean the
     // guard was bypassed. Refuse rather than rebuild a season that has already ended.
     monotonic: true,
+    // The authoritative season, re-read inside the serialized commit so a registration cannot
+    // append a record for a season wall time has already left.
+    seasonNow: () => timeGuard.season(),
   });
   await seasonMembers.ensure(timeGuard.season());
 } else {
@@ -692,7 +695,10 @@ const server = createServer(async (req, res) => {
       const nonce = randomUUID();
       const epoch = timeGuard.epoch();
       const sig = signalHash(nonce, account).toString();
-      if (!challenges.put(nonce, { account, signalHash: sig, epoch, contextHash: ctx }))
+      // The season is recorded with the challenge so the verify path can tell whether the season it
+      // was minted in is still current. Without it a two-tier verify could only compare root store
+      // identity, which a rollover-then-rematerialize could make equal again.
+      if (!challenges.put(nonce, { account, signalHash: sig, epoch, contextHash: ctx, season: challengeSeason }))
         return send(res, 429, { error: "too many pending challenges" });
       return send(res, 200, {
         nonce,
@@ -755,6 +761,27 @@ const server = createServer(async (req, res) => {
             epoch: pending.epoch,
             contextHash: pending.contextHash,
             signalHash: pending.signalHash,
+            // Re-asked immediately before the nullifier spend, after the proof verify has yielded
+            // the event loop for however long it took. Everything here was already checked before
+            // the proof; the point is that it is checked AGAIN at the moment the irreversible write
+            // happens. Returns null while the period still holds, or the refusal reason.
+            stillCurrent: async () => {
+              if (timeGuard.regressed) return "clock-regressed";
+              if (nowSec() >= (pending.epoch + 1) * config.epochSeconds) return "epoch-rolled-over";
+              if (twoTier) {
+                // A season rollover clears the context trees, and this verify has been holding a
+                // root store object that the rollover may already have detached.
+                if (Number(timeGuard.season()) !== Number(pending.season)) return "season-rolled-over";
+                const live = seasonMembers.rootStore(pending.contextHash);
+                if (live !== rootStore) return "season-rolled-over";
+              }
+              // The root must still be one the window accepts. It can age out or be evicted while a
+              // proof runs, and a grant against a root the gateway would no longer accept is the
+              // same defect as accepting it in the first place.
+              const s = readSignals(publicSignals);
+              if (!rootStore.isRecent(s.root)) return "stale-or-unknown-root";
+              return null;
+            },
             account: pending.account,
           },
         });

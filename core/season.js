@@ -26,12 +26,17 @@ export class SeasonMembers {
   // durable-records property stays directly testable.
   // `treeDepth` exists so the capacity boundary can be exercised at a small depth; production uses
   // the MembersTree default, which is the depth the circuits are compiled for.
-  constructor({ store, rootWindow, nowSec, emptyRoot, monotonic = false, treeDepth }) {
+  constructor({ store, rootWindow, nowSec, emptyRoot, monotonic = false, treeDepth, seasonNow = null }) {
     this.store = store;
     this.monotonic = monotonic;
     this.treeDepth = treeDepth;
     this.rootWindow = rootWindow;
     this.nowSec = nowSec;
+    // The AUTHORITATIVE season, read from the guarded clock rather than from this object's cache.
+    // `current` only changes when an ensure() runs, and the background rollover runs once a minute,
+    // so a commit that compares against the cache alone can append to a season wall time has already
+    // left. Optional so the unit tests that drive rollovers explicitly keep working unchanged.
+    this.seasonNow = seasonNow;
     this.emptyRoot = emptyRoot;
     this.emptyRoots = new RootStore(rootWindow);
     this.emptyRoots.update([{ height: 0, root: emptyRoot, ts: nowSec() }]);
@@ -131,6 +136,21 @@ export class SeasonMembers {
       // materialized again, so the order here is the whole point of the check.
       if (c.tree.full()) {
         return { ok: false, reason: "members-tree-full", capacity: c.tree.capacity() };
+      }
+      // RE-READ THE CLOCK HERE, immediately before the durable write and after every await above.
+      // The cached check at the top compares the caller's season with this object's CACHE, and the
+      // cache only moves when an ensure() runs, with the background rollover firing once a minute,
+      // so a registration that started before a boundary and finished after it passed and appended a
+      // record for a season that had ended. Two reviewers reproduced that independently.
+      //
+      // The position matters as much as the check. A first draft put this before
+      // `_materialize()`, which itself awaits and can take seconds on a first-use context, so the
+      // season could end inside that await and the guard would have looked correct while proving
+      // nothing. The durable record is the commit point, so the check belongs against it and
+      // nothing else. Refusing costs the caller a retry.
+      if (this.seasonNow != null) {
+        const live = Number(this.seasonNow());
+        if (live !== season) return { ok: false, reason: "season-rolled-retry", live };
       }
       const res = await appendDurable();
       if (res.duplicate) return { ok: false, reason: "already-registered" };
