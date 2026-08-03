@@ -285,3 +285,18 @@ test("maxHeight is the window's own rollback floor, asked of every retained reco
   w.dropOlderThan(6); // the height-200 record is the older one and ages out first
   assert.equal(w.maxHeight(), 100, "the floor follows the records, so it falls when the top one ages out");
 });
+
+test("a record retains only the normalized snapshot fields, not whatever the source sent", () => {
+  // A REGRESSION FROM THE PREVIOUS ROUND'S FIX, caught by the next round. Moving the snapshot into
+  // the window record fixed a real split, and retained the parsed object as it arrived. Snapshot
+  // validation does not reject unknown properties and the signed message ignores them, so a host
+  // holding no signing key could append a large field to a legitimately signed snapshot and have it
+  // held at every height in the window. A reviewer measured 157 MB of resident growth from eight
+  // padded records. The store is not where that is fixed, but this pins the shape it receives.
+  const w = new RootWindows(8);
+  const normalized = { version: 2, height: 1, blockHash: null, depth: 16, ts: 5, root: "r", shaRoot: null, leaves: ["1"] };
+  w.adopt({ height: 1, root: "r", ts: 5, order: null, snapshot: normalized });
+  assert.deepEqual(Object.keys(w.current().snapshot).sort(), [
+    "blockHash", "depth", "height", "leaves", "root", "shaRoot", "ts", "version",
+  ]);
+});

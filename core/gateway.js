@@ -387,6 +387,23 @@ function enforceDmlFreshness() {
   }
 }
 
+// The only shape a window record retains. Built field by field rather than by deleting the ones we
+// dislike, so a property nobody anticipated cannot ride along: an allowlist stays correct when the
+// snapshot schema grows, a denylist silently stops being.
+function normalizeSnapshot(o) {
+  return {
+    version: snapshotVersion(o),
+    height: o.height,
+    blockHash: o.blockHash ?? null,
+    depth: o.depth ?? config.treeDepth,
+    ts: o.ts,
+    root: String(o.root),
+    shaRoot: o.shaRoot ?? null,
+    // Copied, not aliased, so nothing downstream can mutate the array the window is holding.
+    leaves: [...o.leaves],
+  };
+}
+
 // Refreshes are SERIALIZED. setInterval does not await, so two fetches could overlap and finish out
 // of publication order, letting a slow older response be adopted after a newer one and become the
 // served snapshot. A refresh already in flight makes the tick a no-op rather than queuing, because
@@ -490,8 +507,15 @@ async function refreshRoots() {
         // Derived here from the leaves this gateway just recomputed both roots from, so it is never a
         // value the source chose. It is what a later snapshot at this height is checked against.
         setCommitment: leafSetCommitment(o.leaves),
-        // The verified snapshot itself, so a record's root and its leaves live and die together.
-        snapshot: o,
+        // A NORMALIZED snapshot, never the parsed object as it arrived. Retaining `o` retained
+        // whatever else the source had put in it: snapshot validation does not reject unknown
+        // properties and the signed message ignores them, so a host holding no signing key could
+        // append a large padding field to a legitimately signed snapshot and have the gateway keep
+        // it at every height in the window. A reviewer measured 157 MB of resident growth from
+        // eight padded records. Copying only the fields /v1/dml serves bounds what a record can
+        // cost to the leaves it is actually for, and drops the signatures too, which have no
+        // consumer after adoption.
+        snapshot: normalizeSnapshot(o),
       });
     }
   } catch (err) {

@@ -1331,3 +1331,30 @@ test("an expired record cannot split the served snapshot from the window", async
     g.proc.kill();
   }
 });
+
+test("an unknown field on a signed snapshot is not retained in the window", async () => {
+  // The regression the whole-gateway round found in the previous round's own fix. The padding rides
+  // on a snapshot whose signature is genuinely valid, because the signed message covers named fields
+  // only, so no signature check can reject it. It must be dropped at adoption instead. A modest
+  // payload here proves the property; the reviewer's measured cost was 157 MB across eight records.
+  const kp = generateKeyPairSync("ed25519");
+  const padded = snapshot({ padding: "x".repeat(200_000) });
+  padded.sigs = addSignature(padded, kp.privateKey);
+  const oracle = join(dir, "padded.json");
+  await writeFile(oracle, JSON.stringify(padded));
+  const gw = await startGateway({
+    MNO_ORACLE_SOURCE: oracle,
+    MNO_ORACLE_REFRESH: "3600",
+    MNO_ORACLE_PUBKEYS: rawPublicB64(kp.privateKey),
+  });
+  try {
+    const ch = await post(gw.base, "/v1/challenge", { platform: "p", communityId: "c", roleId: "r", account: "alice" });
+    assert.equal(ch.status, 200, "the snapshot is legitimately signed and must still be adopted");
+    const served = await (await fetch(gw.base + "/v1/dml")).json();
+    assert.equal(served.root, ch.body.root, "and still served consistently");
+    assert.equal(JSON.stringify(served).includes("xxxxx"), false, "but the padding is not retained or served");
+    assert.deepEqual(Object.keys(served).sort(), ["depth", "height", "leaves", "root", "shaRoot"]);
+  } finally {
+    gw.proc.kill();
+  }
+});
