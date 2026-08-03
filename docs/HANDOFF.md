@@ -11,15 +11,32 @@ prioritized punch list.
 
 ### PICK UP EXACTLY HERE
 
-1. **Three packet reviews are OUTSTANDING** and the fold is deliberately waiting on them. The
-   packets are `~/Downloads/{gemini,grok,codexapp}_dash-mno-verify_gateway_round3_2026-08-03.md`,
-   built from `2c73d1f`. Cross-check all four reviews before folding, per the rule for
-   architecture-bearing rounds. Note the code has moved one commit since the packets were built
-   (`ff2b663` folds M2), so check any finding against current code before acting.
-2. **One blocker and five majors are OPEN**, listed below and in
-   `REVIEW_FINDINGS_dash-mno-verify_gateway_full_2026-08-03.md`, which is committed.
-3. **A decision is already taken** on the context-admission major: a CONFIGURED ALLOWLIST. Hilawe
-   chose it on 2026-08-03. Do not re-open it, implement it.
+1. **ALL FOUR REVIEWS ARE IN and cross-checked.** The adjudication is
+   `REVIEW_ADJUDICATION_dash-mno-verify_gateway_round3_2026-08-03.md`, committed, and it carries the
+   fold order. Read it before the individual findings files. Verdicts were three BLOCK and one
+   APPROVE-WITH-FIXES. One reported blocker was REFUTED by direct test, and one finding that no
+   earlier round or repository-access reviewer caught was REPRODUCED here in one command.
+2. **Fold in the adjudication's order.** The first item is the torn-line boot failure, which is the
+   smallest fix on the list and a durable outage of the stated atomic commit point.
+3. **A decision is already taken** on the context-admission finding: a CONFIGURED ALLOWLIST. Hilawe
+   chose it on 2026-08-03. Do not re-open it, implement it, rejecting an unknown context BEFORE the
+   proof verify.
+4. **Two findings are architectural and get their own change with their own review**, not a fold:
+   the members-tree full rebuild (measured at about 20 seconds of blocked event loop for one
+   ordinary first registration) and the retained-leaves bound (up to sixteen full leaf arrays during
+   a changeover, which is legitimate data that normalization does not touch).
+
+### THE ONE THING TO KNOW ABOUT THE ROUND
+
+A torn last line in the registration file permanently refuses boot. Two families found it, neither
+the repository-access reviewer nor any of the twelve previous rounds did, and it reproduces in one
+command: truncate the last line of `registrations.jsonl` and `FileBackend.#load` throws an unhandled
+`SyntaxError`. A crash or power loss during the append window produces exactly that file. Fix it
+first.
+
+Also worth carrying: a reported fresh-boot blocker in the SQLite nullifier store was REFUTED by
+direct test. `DatabaseSync` creates the file before the `chmod` runs, and a fresh path constructs
+cleanly at mode 600. Do not "fix" it.
 
 ### What the whole-gateway round found
 
