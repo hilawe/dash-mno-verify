@@ -74,11 +74,49 @@ if pgrep -f 'node --test' >/dev/null 2>&1; then
   exit 1
 fi
 
+# A FILE LISTING, NOT git status, and this took three tries to get right, which is the point of
+# testing a gate rather than trusting it. `git status --porcelain --ignored` collapses an ignored
+# directory to one `!! data/` entry, and `--ignored=matching` does the same when the ignore pattern
+# IS the directory, which is exactly the shape here. So a probe test that deliberately created
+# data/GATE_PROBE.tmp committed cleanly, twice, while the gate reported no change at all.
+#
+# Listing paths catches the case this exists for, a test creating state through a real deployment
+# path. It does NOT catch a test that modifies an existing file in place, and that limit is stated
+# rather than implied.
+tree_snapshot() {
+  find . -path ./.git -prune -o -path ./node_modules -prune -o -type f -print 2>/dev/null | sort
+}
+tree_before="$(tree_snapshot)"
+
 echo "pre-commit: staged changes touch gated paths, running npm test (about 2.5 minutes)"
 if ! npm test; then
   echo ""
   echo "COMMIT BLOCKED: npm test failed. Fix the suite, or if committing a known-failing state is"
   echo "genuinely intended, commit with --no-verify and say why in the message."
+  exit 1
+fi
+
+# THE SUITE MUST NOT CHANGE THE WORKING TREE. A test writing through a deployment's default path
+# leaves real operational state behind and makes its own later phases depend on what an earlier run
+# left. That happened here: a Platform test wrote data/platform_schedule.json, the production
+# default, and it took a reviewer prompting a look at the tree to notice.
+tree_after="$(tree_snapshot)"
+if [ "$tree_before" != "$tree_after" ]; then
+  echo ""
+  echo "COMMIT BLOCKED: the test suite created or removed files in the working tree."
+  echo "A test is writing through a real path instead of a temporary one, so it leaves state behind"
+  echo "and its later runs depend on what an earlier run left. Point the test at a temp directory."
+  diff <(printf '%s\n' "$tree_before") <(printf '%s\n' "$tree_after") | head -20
+  exit 1
+fi
+
+# AND IT MUST NOT LEAVE PROCESSES RUNNING. Orphaned gateway children hold their loopback ports, and
+# the next suite run then waits on them forever rather than failing, which cost real time twice in
+# one session before this check existed.
+if pgrep -f 'core/gateway.js' >/dev/null 2>&1; then
+  echo ""
+  echo "COMMIT BLOCKED: the test suite left a gateway process running (pgrep -f core/gateway.js)."
+  echo "A test started a child and did not terminate it on every path, including its failure paths."
   exit 1
 fi
 exit 0
