@@ -85,6 +85,31 @@ const challengeLimiter = new RateLimiter({ windowSeconds: config.rateWindowSecon
 const verifyLimiter = new RateLimiter({ windowSeconds: config.rateWindowSeconds, max: config.verifyRateMax });
 const registerLimiter = new RateLimiter({ windowSeconds: config.rateWindowSeconds, max: config.registerRateMax });
 const membersLimiter = new RateLimiter({ windowSeconds: config.rateWindowSeconds, max: config.membersRateMax });
+const dmlLimiter = new RateLimiter({ windowSeconds: config.rateWindowSeconds, max: config.dmlRateMax });
+// PER-ACCOUNT limiters, applied after the body is read (and after adapter authentication, where a
+// secret is configured) because the account is not known before that. The per-source limiters above
+// stay as the aggregate guard.
+//
+// WHAT THIS IS WORTH, AND UNDER WHAT CONDITION. The account is a string the CALLER sends. It
+// subdivides the shared bucket fairly only when a TRUSTED ADAPTER supplies a stable canonical
+// account, which is the deployment MNO_ADAPTER_SECRET exists to create: there the gateway is the one
+// choosing to believe the adapter, and one user genuinely cannot spend another's allowance. On an
+// unauthenticated gateway (MNO_ALLOW_UNAUTH_GATEWAY) the same caller can simply send a different
+// account string, or rotate spellings, so the per-account limit is best-effort subdivision there and
+// the per-source limit remains the real bound. Stated rather than implied, because a limit that only
+// works under a condition is a limit whose condition has to be written down.
+const accountChallengeLimiter = new RateLimiter({
+  windowSeconds: config.rateWindowSeconds,
+  max: config.accountChallengeRateMax,
+});
+const accountVerifyLimiter = new RateLimiter({
+  windowSeconds: config.rateWindowSeconds,
+  max: config.accountVerifyRateMax,
+});
+// A rate-limit key whose parts cannot run together: the length prefix makes ("a", "bc") and
+// ("ab", "c") different keys, which the separator alone would not (a separator can appear inside a
+// part). The separator is kept only for readability.
+const rateKey = (...parts) => parts.map((p) => `${String(p).length}:${p}`).join("\u0000");
 // Global cap on concurrent expensive verifies, so a distributed flood cannot exhaust CPU or memory
 // with unbounded parallel proof checks. The expensive verify is run inside verifyProofGated, which
 // wraps only the cryptographic check (the policy checks run first, outside the gate), and sheds with
@@ -154,6 +179,32 @@ if (config.store === "memory" && !config.allowEphemeralNullifiers) {
 
 let nullifiers;
 if (config.store === "platform") {
+  // THE SCHEDULE CANNOT BE BOUND ON PLATFORM YET, SO PLATFORM MODE REFUSES BY DEFAULT.
+  //
+  // Epoch and season numbers are derived from the configured lengths, so changing either renumbers
+  // every period. Both local durable stores refuse to open under a schedule different from the one
+  // they were written with, because reinterpreting old rows under new numbering silently changes
+  // what a spent tag means. The Platform backend had no such check: its documents carry only
+  // (epoch, contextHash, nf), and the contract has no field that could hold a schedule marker, so
+  // there is nothing to compare and a changed schedule would be reinterpreted in silence. Two
+  // outcomes, both bad: a tag spent under the old numbering can be re-spendable under the new one,
+  // or an immutable Platform record can deny a legitimate claim for a whole epoch.
+  //
+  // Adding the marker means a contract migration, and the Platform path is not live, so refusing is
+  // the honest position rather than shipping a check that cannot check. The override exists for a
+  // deployment that knows its shared state was written under this exact schedule, and it is an
+  // ASSERTION by the operator, in the same style as the registration file's.
+  if (!config.platformAssumeSchedule) {
+    throw new Error(
+      `refusing Platform nullifier mode: the contract's nullifier document cannot carry an ` +
+        `epoch/season schedule marker, so this gateway cannot verify that the shared state was ` +
+        `written under its own schedule (${SCHEDULE}). Changing MNO_EPOCH_SECONDS or ` +
+        `MNO_SEASON_SECONDS renumbers every period, and reinterpreting existing Platform records ` +
+        `under new numbering can either re-open a spent tag or permanently deny a legitimate one. ` +
+        `Set MNO_PLATFORM_ASSUME_SCHEDULE=1 to assert that the shared state was written under this ` +
+        `schedule, or migrate the contract to carry the marker.`,
+    );
+  }
   const { connectPlatform, DocumentNullifierStore } = await import("./platform_store.js");
   const backend = await connectPlatform({
     network: config.platform.network,
@@ -162,7 +213,11 @@ if (config.store === "platform") {
     appName: config.platform.appName,
   });
   nullifiers = new DocumentNullifierStore(backend);
-  console.log(`[gateway] shared nullifier state on Dash Platform (${config.platform.contractId})`);
+  console.warn(
+    `[gateway] shared nullifier state on Dash Platform (${config.platform.contractId}). The schedule ` +
+      `(${SCHEDULE}) is ASSERTED by MNO_PLATFORM_ASSUME_SCHEDULE, not verified: nothing on chain ` +
+      `records which schedule these documents were written under.`,
+  );
 } else if (config.store === "sqlite") {
   // ":memory:" is a SQLite database that dies with the process, so it is the ephemeral store wearing
   // the durable store's name. Without this it slipped past the opt-in above and even logged itself as
@@ -744,6 +799,12 @@ const server = createServer(async (req, res) => {
       // challenge that the string-typed verify (verifyMembership) could never satisfy.
       const account = String(rawAccount);
       const ctx = contextHash({ platform, communityId, roleId }).toString();
+      // The per-account limit, applied now that the account is actually known. With an authenticated
+      // adapter this stops one user behind that adapter from spending the whole community's window;
+      // without one it is best-effort, since the caller chooses the string (see the note above).
+      if (!accountChallengeLimiter.allow(rateKey(clientKey(req), account, ctx))) {
+        return send(res, 429, { error: "rate limited" });
+      }
       // Two-tier challenges run against this context's own members tree (review finding B2), so a
       // member registered for another community cannot prove here.
       let cur;
@@ -788,6 +849,11 @@ const server = createServer(async (req, res) => {
       if (!verifyLimiter.allow(clientKey(req))) return send(res, 429, { error: "rate limited" });
       const { nonce, proof, publicSignals, account } = await readBody(req);
       if (!nonce || !proof || !publicSignals || !account) return send(res, 400, { error: "missing fields" });
+      // Per-account, for the same reason as the challenge path. Checked before the challenge is
+      // TAKEN, so a rate-limited caller does not consume the one-time nonce it was holding.
+      if (!accountVerifyLimiter.allow(rateKey(clientKey(req), String(account)))) {
+        return send(res, 429, { error: "rate limited" });
+      }
       const pending = challenges.take(nonce);
       if (!pending) return send(res, 410, { ok: false, reason: "unknown-or-expired-challenge" });
 
@@ -958,6 +1024,9 @@ const server = createServer(async (req, res) => {
     }
 
     if (req.method === "GET" && path === "/v1/dml") {
+      // The largest response this gateway serves, public and unauthenticated. It was the only read
+      // endpoint with no limit while its sibling /v1/members had one.
+      if (!dmlLimiter.allow(clientKey(req))) return send(res, 429, { error: "rate limited" });
       // public DML snapshot so a prover can find its leaf and build a Merkle path. shaRoot is the
       // SHA-256 tree root for the zkVM registration statement, null on a v1 snapshot, so a zkVM
       // prover can build its SHA-256 path from the same leaves.
@@ -986,8 +1055,20 @@ const server = createServer(async (req, res) => {
       // healthy until some state-bearing request happened to notice it.
       timeGuard.epoch();
       const season = timeGuard.season();
+      // READINESS IS CAPABILITY-SPECIFIC, not merely "the clock is sane". `ok` reported true in
+      // single-tier mode with no DML root at all, while every challenge returned 503, so a readiness
+      // probe kept routing users to an instance that could not serve them and an oracle outage read
+      // as healthy. The booleans are separate because the modes genuinely differ: a two-tier gateway
+      // can still verify existing members while registration is unavailable.
+      const clockOk = !timeGuard.regressed;
+      const canChallenge = clockOk && (twoTier ? true : dmlRoot != null);
+      const canVerify = canChallenge;
+      const canRegister = clockOk && twoTier && dmlRoot != null;
       return send(res, 200, {
-        ok: !timeGuard.regressed,
+        ok: clockOk && canChallenge,
+        canChallenge,
+        canVerify,
+        canRegister,
         mode: config.mode,
         root: twoTier ? null : dmlRoot,
         dmlRoot,

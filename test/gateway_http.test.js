@@ -1115,7 +1115,14 @@ test("two valid snapshots drive the refresh path end to end and both roots stay 
   const writeSnap = (over) => writeFile(oracle, JSON.stringify(snapshot({ height: H, blockHash: BH, ...over })));
   await writeSnap({ version: 2, leaves: v2Leaves, shaRoot: shaRootHasher(v2Leaves) });
 
-  const g = await startGateway({ MNO_ORACLE_SOURCE: oracle, MNO_ORACLE_REFRESH: "1" });
+  const g = await startGateway({
+    MNO_ORACLE_SOURCE: oracle,
+    MNO_ORACLE_REFRESH: "1",
+    // This test POLLS for a refresh to land, which is not a user pattern. The per-account challenge
+    // limit is deliberately small (a human needs a handful of attempts, not dozens), so the polling
+    // would trip it. Raised here rather than lowering the production default for a test's benefit.
+    MNO_RATE_CHALLENGE_ACCOUNT: "1000",
+  });
   // The refresh path reports its rejections on stderr, and the negative phase below synchronizes on
   // that report rather than on a fixed delay, so a tick that never ran cannot read as a rejection.
   let gwLogs = "";
@@ -1281,6 +1288,7 @@ test("an expired record cannot split the served snapshot from the window", async
     MNO_ORACLE_SOURCE: oracle,
     MNO_ORACLE_REFRESH: "1",
     MNO_ORACLE_MAX_AGE: "20",
+    MNO_RATE_CHALLENGE_ACCOUNT: "1000", // polls for an aging boundary, see the note above
   });
   const mint = async () => post(g.base, "/v1/challenge", { platform: "p", communityId: "c", roleId: "r", account: "split" });
   const dml = async () => (await fetch(g.base + "/v1/dml")).json();
@@ -1522,6 +1530,175 @@ test("a registration for a served context passes the allowlist and reaches the p
       platform: "p", communityId: "served", roleId: "r", proof: {}, publicSignals: ["1"],
     });
     assert.notEqual(res.body.reason, "context-not-served", "the served context is past the allowlist");
+  } finally {
+    gw.proc.kill();
+  }
+});
+
+// THE SHARED-BUCKET PROBLEM. A reviewer's reading of the four adapters (not exercised by this test)
+// is that each makes the gateway request itself and forwards no originating client address, so the
+// gateway sees ONE client for every user behind that adapter and a source-keyed limit is a bucket
+// the whole community shares. What this test actually drives is the gateway half: two accounts
+// arriving from ONE source address, which is that situation as the gateway experiences it. The
+// per-account limit subdivides fairly when a trusted adapter supplies the account; on an
+// unauthenticated gateway the caller picks the string, so it is best-effort there.
+test("one account exhausting its own limit does not deny challenges to another account", async () => {
+  const oracle = join(dir, "rate-fair.json");
+  await writeFile(oracle, JSON.stringify(snapshot()));
+  const gw = await startGateway({
+    MNO_ORACLE_SOURCE: oracle,
+    MNO_ORACLE_REFRESH: "3600",
+    MNO_RATE_CHALLENGE_ACCOUNT: "3",
+    MNO_RATE_CHALLENGE: "1000", // the aggregate guard is not what this test is about
+  });
+  const mint = (account) => post(gw.base, "/v1/challenge", { platform: "p", communityId: "c", roleId: "r", account });
+  try {
+    // One account burns its own allowance, from what the gateway sees as a single client.
+    assert.equal((await mint("noisy")).status, 200);
+    assert.equal((await mint("noisy")).status, 200);
+    assert.equal((await mint("noisy")).status, 200);
+    assert.equal((await mint("noisy")).status, 429, "its own bucket is spent");
+
+    // The other user, behind the very same adapter and therefore the same source address, is
+    // unaffected. Before the per-account limit this returned 429 too.
+    assert.equal((await mint("quiet")).status, 200, "a different account keeps its own allowance");
+    assert.equal((await mint("quiet")).status, 200);
+  } finally {
+    gw.proc.kill();
+  }
+});
+
+test("a rate-limited verify does not consume the one-time nonce it was holding", async () => {
+  // Order matters: the limit is checked before the challenge is TAKEN, or a limited caller would
+  // lose its nonce and have to mint another, which is the opposite of what a limit should cost.
+  const oracle = join(dir, "rate-nonce.json");
+  await writeFile(oracle, JSON.stringify(snapshot()));
+  // A SHORT WINDOW, so the limit can be exhausted and then allowed to lapse inside a test. A first
+  // version asserted only that the limited response's `reason` was not "unknown-or-expired-challenge",
+  // which a 429 satisfies trivially because a 429 body carries no `reason` at all: the test passed
+  // with the check moved AFTER take() and proved nothing. The nonce has to be USED afterwards.
+  const gw = await startGateway({
+    MNO_ORACLE_SOURCE: oracle,
+    MNO_ORACLE_REFRESH: "3600",
+    MNO_RATE_VERIFY_ACCOUNT: "1",
+    MNO_RATE_WINDOW: "1",
+  });
+  try {
+    const ch = await challenge(gw.base);
+    // Spend the one allowed verify on a junk nonce, so the account's allowance is gone.
+    await post(gw.base, "/v1/verify", { nonce: randomUUID(), proof: {}, publicSignals: signalsFor(ch), account: "alice" });
+    const limited = await post(gw.base, "/v1/verify", {
+      nonce: ch.nonce, proof: {}, publicSignals: signalsFor(ch), account: "alice",
+    });
+    assert.equal(limited.status, 429, "the second attempt is refused by the limit");
+
+    // Let the window lapse, then USE the nonce. If the refusal had consumed it, this is 410.
+    await delay(1300);
+    const after = await post(gw.base, "/v1/verify", {
+      nonce: ch.nonce, proof: {}, publicSignals: signalsFor(ch, { root: "999" }), account: "alice",
+    });
+    assert.equal(after.status, 200, "the nonce survived the refusal and reached the policy checks");
+    assert.equal(after.body.reason, "stale-or-unknown-root", "reaching a POLICY refusal proves the nonce was live");
+  } finally {
+    gw.proc.kill();
+  }
+});
+
+test("/v1/dml is rate limited like its sibling read endpoint", async () => {
+  const oracle = join(dir, "rate-dml.json");
+  await writeFile(oracle, JSON.stringify(snapshot()));
+  const gw = await startGateway({ MNO_ORACLE_SOURCE: oracle, MNO_ORACLE_REFRESH: "3600", MNO_RATE_DML: "2" });
+  try {
+    assert.equal((await fetch(gw.base + "/v1/dml")).status, 200);
+    assert.equal((await fetch(gw.base + "/v1/dml")).status, 200);
+    assert.equal((await fetch(gw.base + "/v1/dml")).status, 429, "the largest response this gateway serves is bounded");
+  } finally {
+    gw.proc.kill();
+  }
+});
+
+test("health reports not-ready in single-tier mode when there is no DML root", async () => {
+  // `ok` reported true whenever the clock was sane, so an oracle outage read as healthy while every
+  // challenge returned 503 and a readiness probe kept sending users to an instance that could not
+  // serve them.
+  const oracle = join(dir, "health-none.json");
+  await writeFile(oracle, JSON.stringify({ not: "a snapshot" }));
+  const gw = await startGateway({ MNO_ORACLE_SOURCE: oracle, MNO_ORACLE_REFRESH: "3600" });
+  try {
+    const h = await (await fetch(gw.base + "/v1/health")).json();
+    assert.equal(h.dmlRoot, null, "no root was adopted");
+    assert.equal(h.ok, false, "so the gateway is not ready");
+    assert.equal(h.canChallenge, false);
+    assert.equal(h.canVerify, false);
+    const ch = await post(gw.base, "/v1/challenge", { platform: "p", communityId: "c", roleId: "r", account: "alice" });
+    assert.equal(ch.status, 503, "and health agrees with what the endpoint actually does");
+  } finally {
+    gw.proc.kill();
+  }
+});
+
+test("health reports ready once a root is adopted", async () => {
+  const oracle = join(dir, "health-ok.json");
+  await writeFile(oracle, JSON.stringify(snapshot()));
+  const gw = await startGateway({ MNO_ORACLE_SOURCE: oracle, MNO_ORACLE_REFRESH: "3600" });
+  try {
+    const h = await (await fetch(gw.base + "/v1/health")).json();
+    assert.equal(h.ok, true, "the guard has an exit ordinary operation reaches");
+    assert.equal(h.canChallenge, true);
+  } finally {
+    gw.proc.kill();
+  }
+});
+
+test("Platform nullifier mode refuses without a schedule assertion, and starts with one", async () => {
+  // Both local durable stores refuse to open under a schedule they were not written with. The
+  // Platform backend stores only (epoch, contextHash, nf) and the contract has no field that could
+  // hold a schedule marker, so there is nothing to compare. Refusing beats shipping a check that
+  // cannot check. Both branches are exercised: the refusal, and that the assertion gets PAST it
+  // (this deployment then fails later on the absent Platform credentials, which is a DIFFERENT
+  // error and is what proves the schedule guard is no longer the thing stopping it).
+  const oracle = join(dir, "platform.json");
+  await writeFile(oracle, JSON.stringify(snapshot()));
+  const base = { MNO_ORACLE_SOURCE: oracle, MNO_ORACLE_REFRESH: "3600", MNO_STORE: "platform" };
+
+  let refused = null;
+  try {
+    const g = await startGateway(base);
+    g.proc.kill();
+    assert.fail("Platform mode must not start without the schedule assertion");
+  } catch (err) {
+    refused = String(err.message);
+  }
+  assert.match(refused, /refusing Platform nullifier mode|gateway exited early/);
+  assert.match(refused, /MNO_PLATFORM_ASSUME_SCHEDULE/, "the refusal names the way out");
+
+  let withAssertion = null;
+  try {
+    const g = await startGateway({ ...base, MNO_PLATFORM_ASSUME_SCHEDULE: "1" });
+    g.proc.kill();
+  } catch (err) {
+    withAssertion = String(err.message);
+  }
+  assert.ok(withAssertion, "no Platform credentials here, so it still cannot start");
+  assert.doesNotMatch(
+    withAssertion,
+    /refusing Platform nullifier mode/,
+    "but the schedule guard is no longer what stops it, which is the exit this guard needs",
+  );
+});
+
+test("two-tier health separates registration readiness from verification readiness", async () => {
+  // The modes genuinely differ: a two-tier gateway can verify existing members from its season tree
+  // while registration is unavailable because no DML root is adopted. One boolean cannot say that.
+  const oracle = join(dir, "health-2t.json");
+  await writeFile(oracle, JSON.stringify({ not: "a snapshot" }));
+  const gw = await startGateway({ MNO_ORACLE_SOURCE: oracle, MNO_ORACLE_REFRESH: "3600", MNO_MODE: "two-tier" });
+  try {
+    const h = await (await fetch(gw.base + "/v1/health")).json();
+    assert.equal(h.dmlRoot, null, "no DML root, so nobody can register");
+    assert.equal(h.canRegister, false);
+    assert.equal(h.canChallenge, true, "but existing members still have a members tree to prove against");
+    assert.equal(h.ok, true);
   } finally {
     gw.proc.kill();
   }

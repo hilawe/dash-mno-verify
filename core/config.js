@@ -88,6 +88,9 @@ export const config = {
   oraclePubkeys: oraclePubkeys("MNO_ORACLE_PUBKEYS"),
   oracleQuorum: intEnv("MNO_ORACLE_QUORUM", 1, { min: 1 }),
   allowUnsignedOracle: process.env.MNO_ALLOW_UNSIGNED_ORACLE === "1",
+  // An operator's assertion that the shared Platform nullifier state was written under THIS
+  // epoch/season schedule. See the refusal in gateway.js for why it cannot be checked automatically.
+  platformAssumeSchedule: process.env.MNO_PLATFORM_ASSUME_SCHEDULE === "1",
   // Deployment-scoped requirement for the zkVM dual-root snapshot. When any zkVM registration
   // context is served, the gateway MUST adopt only a v2 snapshot carrying the SHA-256 root under a
   // v2 quorum signature, so a downgraded v1 snapshot (which lacks the root the zkVM statement needs)
@@ -101,12 +104,27 @@ export const config = {
   // unlimited PLONK verifies. Adapter-only authentication (the real fix) is a tracked P1 item.
   rateWindowSeconds: intEnv("MNO_RATE_WINDOW", 60),
   challengeRateMax: intEnv("MNO_RATE_CHALLENGE", 60),
+  // PER-ACCOUNT limits for the account-bearing endpoints, applied in addition to the per-source
+  // ones above. Every shipped adapter makes the gateway request itself and forwards no originating
+  // client address, so the gateway sees ONE client for every user behind that adapter, and a
+  // source-keyed limit is therefore a shared bucket: one noisy user could spend the whole window
+  // and deny challenges to everyone else in that community. Keying by account restores fairness
+  // between users, and the source-keyed limit stays as the aggregate guard.
+  //
+  // These are per account per window, so they are deliberately small: a human verifying membership
+  // needs a handful of attempts, not dozens.
+  accountChallengeRateMax: intEnv("MNO_RATE_CHALLENGE_ACCOUNT", 10),
+  accountVerifyRateMax: intEnv("MNO_RATE_VERIFY_ACCOUNT", 20),
   verifyRateMax: intEnv("MNO_RATE_VERIFY", 120),
   // Registration (two-tier) runs the heaviest proof verify and is a once-per-season action, so it
   // gets the tightest limit.
   registerRateMax: intEnv("MNO_RATE_REGISTER", 30),
   // /v1/members is an unauthenticated read whose context comes from the client, so it is limited too.
   membersRateMax: intEnv("MNO_RATE_MEMBERS", 120),
+  // /v1/dml is public, unauthenticated, and returns the whole leaf set, which is the largest
+  // response this gateway serves. It was the one read endpoint with no limit at all while its
+  // sibling /v1/members had one, so a flood forced repeated serialization of a multi-megabyte array.
+  dmlRateMax: intEnv("MNO_RATE_DML", 60),
   maxPendingChallenges: intEnv("MNO_MAX_PENDING_CHALLENGES", 100_000),
   // Request-body size caps. The general cap stays small, since challenge and verify bodies are tiny.
   // The registration cap is separate and larger, because a zkVM registration carries the STARK
