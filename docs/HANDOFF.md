@@ -184,6 +184,18 @@ datadir's condition and not the copy's. Two gotchas already paid for:
   dashmate group after the reindex passes height 1,047,206 or finishes. If it dies at the same
   height again with the whole 12 GB, take the different route to a synced node.
 
+  **EXECUTED 2026-08-02, about 21:08 local, on Hilawe's go-ahead.** The dashmate group stopped
+  cleanly, the VM came back at 11.65 GiB and 4 CPUs, and the reindex relaunched with the recipe
+  below. One minute in it was running at height 16,593 holding 1.36 GiB. Two consequences the next
+  session must know:
+
+  - NOTHING auto-restarted after the VM bounce. `tegara-fork-live`, `shoal-l1`, and
+    `inspiring_lewin` are STOPPED until someone starts them, and the dashmate group stays stopped
+    (`dashmate group start`) until the reindex clears the death height.
+  - The outcome at height 1,047,206 was not yet known when this was written. Check with
+    `docker inspect -f '{{.State.Status}} {{.State.OOMKilled}}' dash-mno-node` and
+    `docker logs --tail 3 dash-mno-node` before believing anything about the node.
+
 ```
 docker run -d --name dash-mno-node \
   -v "$HOME/dashcore-node-datadir":/home/dash/.dashcore -p 127.0.0.1:9998:9998 \
@@ -214,8 +226,9 @@ the shape question.
 4. The record-format design covering NF2, NF3, and the exclusion gap. All three share one root cause:
    a grant record holds ONE deadline and ONE target set and these need per-target state. Each has
    already had one patch fail in a new place. Change the format once.
-5. The node restart, parked on the cross-project VM decision above. Hilawe decides the window, then
-   the recommended sequence in "The node, and how to restart it".
+5. The node reindex, RUNNING since 2026-08-02 about 21:08 on the 12 GB VM. Check whether it
+   cleared height 1,047,206 (see "The node, and how to restart it" for the check commands), then
+   restart the dashmate group and the three stopped containers from other projects.
 6. Wire direct node mode, once the node can confirm the response shape.
 7. The `merkleRootMNList` check, an increment from there.
 8. The parser decision, whether to add a dependency so the permission module boundary is enforced
