@@ -21,8 +21,8 @@ installed. Everything below is superseded.
    test I had just written. The rules, and what each caught here, are in "The playbook, and what it
    is worth" below. In a fresh checkout, run `git config core.hooksPath tools/hooks` once, or the
    test gate does not run at all.
-2. **Two blockers remain open from the chain-anchor review**, listed under "Open findings". Fold those
-   before starting anything new.
+2. **The two chain-anchor blockers are closed** (`4b45a2c`, see "Open findings"). The remaining
+   majors from that round are the next fold.
 3. **The end-to-end refresh-path test does not exist** and three commits say so. See "Claims that are
    deliberately narrower than they look".
 
@@ -82,17 +82,20 @@ work.
 
 ### Open findings, chain-anchor review
 
-Two blockers:
+**Both blockers are CLOSED in `4b45a2c` (2026-08-02, late).** `chainlocked` is now required, not
+just signed: `snapshotMessage` refuses to form without it (so an unlocked v3 can be neither signed
+nor verified, with signed bytes unchanged for valid snapshots) and `validateSnapshot` demands the
+claim plus a 64-lowercase-hex `blockHash` in signed and unsigned mode alike. The RPC boundary in
+`oracle/diff_snapshot.js` refuses missing and mistyped security fields (`known_block` must be
+boolean true, `diff.blockHash` must be a string before comparison, entry fields typed over the
+whole list before the validity filter, duplicates refused). Thirteen new tests, each watched
+failing against the prior code, including a signed unlocked v3 whose old-encoding signature the
+prior code verified and adopted. The comparator-totality major closed with the same change.
 
-- **`chainlocked` is signed but never required.** A v3 snapshot with it false, missing, or non-boolean
-  forms a valid signed message and `validateSnapshot` accepts it, so a snapshot can be adopted without
-  making the claim v3 exists to carry. Fix: require `o.chainlocked === true` in both `snapshotMessage`
-  and `validateSnapshot`, and validate a 64-character block hash for v3 regardless of unsigned mode.
-- **The RPC boundary accepts missing and mistyped security fields.** In `oracle/diff_snapshot.js`.
-
-Plus most of twelve majors, including a comparator that is not total for malformed `proRegTxHash`
-input, `current()` not actually being the last adopted snapshot, and tests that prove isolated
-mechanics while naming end-to-end guarantees.
+Still open from that round: most of the remaining majors, including `current()` not actually being
+the last adopted snapshot, and tests that prove isolated mechanics while naming end-to-end
+guarantees. A new known minor from the fold's own review: a primitive non-object `mnList` entry
+fails closed on the presence check but with a raw TypeError rather than a named refusal.
 
 ### Claims that are deliberately narrower than they look
 
@@ -220,8 +223,9 @@ the shape question.
 
 ### Punch list
 
-1. Push `main` (two unpushed commits, the adoption and this handoff update), after Hilawe's nod.
-2. The two open chain-anchor blockers, then the majors.
+1. Push `main` after Hilawe's nod (the chain-anchor blocker fix and this handoff update).
+2. The remaining chain-anchor majors (`current()` semantics, the end-to-end-claiming tests, the
+   primitive-entry diagnostic). The blockers themselves are closed in `4b45a2c`.
 3. The end-to-end refresh-path test.
 4. The record-format design covering NF2, NF3, and the exclusion gap. All three share one root cause:
    a grant record holds ONE deadline and ONE target set and these need per-target state. Each has
