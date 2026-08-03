@@ -101,9 +101,15 @@ fails closed on the presence check but with a raw TypeError rather than a named 
 
 Three commits say what they do NOT prove, and a future session should not read past that.
 
-- The coexistence tests drive `RootWindows`, not the gateway refresh path. The rule is proved correct;
-  that the refresh path reaches it is NOT proved. The reviewer asked for two valid snapshots driven end
-  to end and that test does not exist.
+- RESOLVED in `7b3ac96`: the end-to-end refresh-path test now exists. Two valid snapshots (a v2 and
+  a v3 over the same height, block, and leaf multiset) drive the real gateway's refresh path, and
+  window membership is observed through the verify endpoint without a proof (a canonical-signal
+  probe with a wrong epoch distinguishes the root check's outcome). The negative twin, a
+  different-set v3, synchronizes on the gateway reporting its rejection. The original narrow claim
+  is kept below as the record of what was missing.
+  - Superseded: the coexistence tests drive `RootWindows`, not the gateway refresh path. The rule is
+    proved correct; that the refresh path reaches it is NOT proved. The reviewer asked for two valid
+    snapshots driven end to end and that test does not exist.
 - `oracle/diff_snapshot.js`'s block-bound check closes the A to B to A residual **against an honest
   node only**. One server answers the ChainLock query, `known_block`, `diff.blockHash`, and `mnList`,
   so a dishonest one can return matching hashes with an arbitrary list. It is a trusted-node read, not
@@ -223,16 +229,20 @@ the shape question.
 
 ### Punch list
 
-1. Push `main` after Hilawe's nod (the chain-anchor blocker fix and this handoff update).
-2. The remaining chain-anchor majors (`current()` semantics, the end-to-end-claiming tests, the
-   primitive-entry diagnostic). The blockers themselves are closed in `4b45a2c`.
-3. The end-to-end refresh-path test.
+1. The named chain-anchor majors are closed: comparator totality (`4b45a2c`), `current()` adoption
+   order, the end-to-end refresh-path test, and the primitive-entry diagnostic (all `7b3ac96`).
+   The round's full twelve-major list was never committed and lives only in the prior session, so
+   any un-itemized remainder needs that session's record or a fresh review round to recover.
 4. The record-format design covering NF2, NF3, and the exclusion gap. All three share one root cause:
    a grant record holds ONE deadline and ONE target set and these need per-target state. Each has
    already had one patch fail in a new place. Change the format once.
-5. The node reindex, RUNNING since 2026-08-02 about 21:08 on the 12 GB VM. Check whether it
-   cleared height 1,047,206 (see "The node, and how to restart it" for the check commands), then
-   restart the dashmate group and the three stopped containers from other projects.
+5. The node reindex CLEARED THE DEATH HEIGHT. It passed 1,047,206 holding 2.8 GiB and was
+   confirmed 100,000 blocks past it at 3.5 GiB, so the VM was the variable, as diagnosed. The
+   dashmate group, `tegara-fork-live`, and `shoal-l1` are restarted and running beside it.
+   `inspiring_lewin` NO LONGER EXISTS: it was evidently created with --rm, so the VM stop removed
+   it (its image survives). Flag that to whichever project owned it. The reindex continues, then
+   about 121,000 blocks of catch-up, after which direct node mode can confirm the protx diff
+   response shape.
 6. Wire direct node mode, once the node can confirm the response shape.
 7. The `merkleRootMNList` check, an increment from there.
 8. The parser decision, whether to add a dependency so the permission module boundary is enforced
