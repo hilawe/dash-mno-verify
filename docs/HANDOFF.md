@@ -16,8 +16,15 @@ prioritized punch list.
    fold order. Read it before the individual findings files. Verdicts were three BLOCK and one
    APPROVE-WITH-FIXES. One reported blocker was REFUTED by direct test, and one finding that no
    earlier round or repository-access reviewer caught was REPRODUCED here in one command.
-2. **Fold in the adjudication's order.** The first item is the torn-line boot failure, which is the
-   smallest fix on the list and a durable outage of the stated atomic commit point.
+2. **Fold items 1 to 3 are DONE** (`da56e1d`): the torn-tail boot failure, the season commit into a
+   dead season, and verification crossing the period it was checked in. Suite 435. Continue at item
+   3 of the adjudication's fold order, which is the signature-entry bound and `MNO_MODE` validation,
+   then the context allowlist.
+3. **The fold itself has had no independent round.** Two focused artifact checks screened it, which
+   is not a round. Build fresh packets from the current commit once the contained items are folded,
+   and remember this project's own record: five consecutive rounds found the newest fixes to be the
+   highest-risk surface, and this fold was no exception (three of its seven external findings were
+   defects in the fix rather than in the original code).
 3. **A decision is already taken** on the context-admission finding: a CONFIGURED ALLOWLIST. Hilawe
    chose it on 2026-08-03. Do not re-open it, implement it, rejecting an unknown context BEFORE the
    proof verify.
