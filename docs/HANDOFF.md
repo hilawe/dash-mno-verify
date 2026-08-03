@@ -16,10 +16,18 @@ prioritized punch list.
    fold order. Read it before the individual findings files. Verdicts were three BLOCK and one
    APPROVE-WITH-FIXES. One reported blocker was REFUTED by direct test, and one finding that no
    earlier round or repository-access reviewer caught was REPRODUCED here in one command.
-2. **Fold items 1 to 3 are DONE** (`da56e1d`): the torn-tail boot failure, the season commit into a
-   dead season, and verification crossing the period it was checked in. Suite 435. Continue at item
-   3 of the adjudication's fold order, which is the signature-entry bound and `MNO_MODE` validation,
-   then the context allowlist.
+2. **Fold items 1 through 4 are DONE.** `da56e1d`: the torn-tail boot failure, the season commit
+   into a dead season, and verification crossing the period it was checked in. `e313aa2`: the
+   signature work bound, `MNO_MODE` validation, and the context allowlist. Suite 441.
+
+   **NEW OPERATOR SETTING, and a deployment must set it.** `MNO_REGISTER_CONTEXTS` is the
+   comma-separated list of context hashes this gateway accepts registrations for. Unset means open,
+   which warns loudly at boot in two-tier mode. It is the bound on how many context trees one valid
+   masternode holder can allocate.
+
+   Continue at item 5: the registration anchor policy (a registration currently accepts any
+   windowed root, so a masternode that just left the list can hold a season-long membership), the
+   rate-limit keying, the Platform schedule binding, the `/v1/dml` limiter, and health readiness.
 3. **The fold itself has had no independent round.** Two focused artifact checks screened it, which
    is not a round. Build fresh packets from the current commit once the contained items are folded,
    and remember this project's own record: five consecutive rounds found the newest fixes to be the
