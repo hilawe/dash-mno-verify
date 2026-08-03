@@ -199,3 +199,10 @@ test("the snapshot is version 3, because the leaf ORDER changed and roots are no
   assert.ok(typeof snap.root === "string" && snap.root.length > 0);
   assert.ok(typeof snap.shaRoot === "string" && snap.shaRoot.length === 64);
 });
+
+test("a primitive list entry is refused by name, not by a raw TypeError from the field probe", async () => {
+  const broken = goodDiff();
+  broken.mnList.push(42);
+  const { call } = callerFor({ diff: broken });
+  await assert.rejects(() => buildDiffSnapshot({ call }), /is 42, not an object/);
+});

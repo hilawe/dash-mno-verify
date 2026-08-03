@@ -133,6 +133,12 @@ export async function buildDiffSnapshot({
   // node's response shape was the problem.
   const seenHashes = new Set();
   for (const m of mnList) {
+    // A primitive entry used to reach the `in` operator below and fail with a raw TypeError, which
+    // fails closed but does not say the node's response shape was the problem. A null entry falls
+    // through to the missing-field refusal, which already names what is absent.
+    if (m != null && typeof m !== "object") {
+      throw new Error(`oracle: a protx diff entry is ${JSON.stringify(m)}, not an object`);
+    }
     for (const f of REQUIRED_ENTRY_FIELDS) {
       if (!(f in (m ?? {}))) {
         throw new Error(

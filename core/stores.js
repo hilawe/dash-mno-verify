@@ -107,6 +107,11 @@ export class RootWindows {
     }
     const key = `${height}|${order ?? "legacy"}`;
     const byKey = new Map(this.snaps.map((s) => [`${s.height}|${s.order ?? "legacy"}`, s]));
+    // Re-adoption must move the record to the end, not update it in place. Map.set on an existing
+    // key keeps its old position, and the height sort below is stable, so an in-place update left
+    // current() returning whichever record at the top height happened to be adopted first, not
+    // last. The delete makes insertion order equal adoption order, which is what current() reads.
+    byKey.delete(key);
     byKey.set(key, {
       height,
       root,
@@ -123,7 +128,10 @@ export class RootWindows {
     this.snaps = all.filter((s) => keptHeights.has(s.height));
   }
   // The newest snapshot. With two orders at one height during a changeover, the LAST adopted wins,
-  // which is the one the oracle is publishing now.
+  // which is the one the oracle is publishing now. That tie-break holds because adopt() re-inserts
+  // on re-adoption (insertion order is adoption order) and the height sort is stable. It is pinned
+  // by a test rather than a runtime assertion, because the store would have to carry a sequence
+  // number purely to assert what the insertion order already encodes.
   current() {
     return this.snaps.at(-1) ?? null;
   }

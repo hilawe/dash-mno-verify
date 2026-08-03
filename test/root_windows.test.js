@@ -208,3 +208,23 @@ test("an unknown ordering is refused by the store itself, not just by its caller
   assert.throws(() => w.adopt({ height: 1, root: "r", ts: 1, order: "attacker-chosen" }), /unknown leaf ordering/);
   assert.equal(w.snaps.length, 0, "and nothing was stored on the way to refusing");
 });
+
+test("current() is the last ADOPTED record at the top height, including on re-adoption", () => {
+  // The changeover flap, at the STORE contract level. Map.set on an existing key updates in place,
+  // keeping its old position, and the height sort is stable, so before the fix a legacy record
+  // re-adopted AFTER the v3 one stayed first in the array and current() reported v3, violating its
+  // own docstring ("the LAST adopted wins"). No live gateway path is known to reach this today,
+  // because the refresh path's mayCoexist refuses a same-order re-adoption at a held height, so
+  // the divergence was latent. The store enforces its documented contract itself rather than
+  // relying on that property of one caller, the same defence-in-depth stance as the unknown-order
+  // throw below.
+  const w = new RootWindows(8);
+  const BLOCK = "aa".repeat(32);
+  const SET = leafSetCommitment(["111"]);
+  w.adopt({ height: 100, root: "legacy-root", ts: 1, order: null, blockHash: BLOCK, setCommitment: SET });
+  w.adopt({ height: 100, root: "v3-root", ts: 2, order: "proRegTxHash", blockHash: BLOCK, setCommitment: SET });
+  assert.equal(w.current().root, "v3-root", "last adopted wins after the switch");
+  w.adopt({ height: 100, root: "legacy-root", ts: 3, order: null, blockHash: BLOCK, setCommitment: SET });
+  assert.equal(w.current().root, "legacy-root", "and wins again when the legacy order is re-adopted");
+  assert.equal(w.snaps.filter((s) => s.height === 100).length, 2, "still one record per ordering");
+});

@@ -1091,3 +1091,85 @@ test("a v3 snapshot with a malformed block hash is rejected even with no oracle 
     gw.proc.kill();
   }
 });
+
+// THE END-TO-END REFRESH-PATH TEST. The coexistence unit tests drive RootWindows directly, which
+// proves the rule and not that the refresh path reaches it. This drives two valid snapshots through
+// the real path (file source, refresh tick, validateSnapshot, recompute, mayCoexist, adopt) and
+// observes the WINDOW through the verify endpoint: a probe with canonical signals, a deliberately
+// wrong epoch, and a chosen root fails with "wrong-epoch" only if the root check (which runs first)
+// passed, so the failure reason is a window-membership oracle that needs no real proof.
+test("two valid snapshots drive the refresh path end to end and both roots stay accepted by the window", async () => {
+  const H = 7;
+  const BH = "cd".repeat(32);
+  const v2Leaves = REAL_LEAVES;
+  const v3Leaves = [...REAL_LEAVES].reverse(); // same multiset, different build order
+  const V3_ROOT = rootHasher(v3Leaves);
+  const badLeaves = ["111", "222", "999"]; // a DIFFERENT multiset, self-consistent on its own
+  const BAD_ROOT = rootHasher(badLeaves);
+
+  const oracle = join(dir, "refresh-path.json");
+  const writeSnap = (over) => writeFile(oracle, JSON.stringify(snapshot({ height: H, blockHash: BH, ...over })));
+  await writeSnap({ version: 2, leaves: v2Leaves, shaRoot: shaRootHasher(v2Leaves) });
+
+  const g = await startGateway({ MNO_ORACLE_SOURCE: oracle, MNO_ORACLE_REFRESH: "1" });
+  // The refresh path reports its rejections on stderr, and the negative phase below synchronizes on
+  // that report rather than on a fixed delay, so a tick that never ran cannot read as a rejection.
+  let gwLogs = "";
+  g.proc.stderr.on("data", (d) => (gwLogs += d));
+  const mint = async () => {
+    const res = await post(g.base, "/v1/challenge", { platform: "p", communityId: "c", roleId: "r", account: "e2e" });
+    assert.equal(res.status, 200);
+    return res.body;
+  };
+  // "wrong-epoch" means the root check passed (the window holds the probed root); the root check
+  // runs before the epoch check, so "stale-or-unknown-root" means it does not.
+  const windowHolds = async (root) => {
+    const ch = await mint();
+    const res = await post(g.base, "/v1/verify", {
+      nonce: ch.nonce,
+      proof: { probe: true },
+      publicSignals: signalsFor(ch, { root, epoch: String(Number(ch.epoch) + 1) }),
+      account: "e2e",
+    });
+    assert.equal(res.status, 200);
+    if (res.body.reason === "wrong-epoch") return true;
+    if (res.body.reason === "stale-or-unknown-root") return false;
+    throw new Error(`probe got unexpected reason ${res.body.reason}`);
+  };
+  const currentRoot = async () => (await mint()).root;
+
+  try {
+    assert.equal(await currentRoot(), REAL_ROOT, "the v2 snapshot is adopted at boot");
+    assert.equal(await windowHolds(REAL_ROOT), true, "and its root is in the window");
+
+    // The changeover: same height, same block, same leaf multiset, different order. The refresh
+    // path must adopt it beside the v2 root, not replace or refuse it.
+    await writeSnap({ version: 3, leaves: v3Leaves, shaRoot: shaRootHasher(v3Leaves), root: V3_ROOT, order: "proRegTxHash", chainlocked: true });
+    let flipped = false;
+    for (let i = 0; i < 40 && !flipped; i += 1) {
+      await delay(250);
+      flipped = (await currentRoot()) === V3_ROOT;
+    }
+    assert.ok(flipped, "the refresh path adopted the v3 snapshot");
+    assert.equal(await windowHolds(V3_ROOT), true, "the v3 root is accepted by the window");
+    assert.equal(await windowHolds(REAL_ROOT), true, "and the v2 root stays accepted beside it during the changeover");
+
+    // The negative twin: a valid-in-isolation v3 at the same height whose leaf SET differs. The
+    // refresh path must refuse it, or the coexistence window would be the hole rather than the
+    // feature. Synchronize on the gateway REPORTING the rejection, not on a delay: BAD_ROOT is
+    // absent from the window either way, so asserting after a fixed wait could pass against
+    // unchanged state where no refresh tick ever examined the snapshot.
+    await writeSnap({ version: 3, leaves: badLeaves, shaRoot: shaRootHasher(badLeaves), root: BAD_ROOT, order: "proRegTxHash", chainlocked: true });
+    let rejected = false;
+    for (let i = 0; i < 40 && !rejected; i += 1) {
+      await delay(250);
+      rejected = gwLogs.includes(`oracle root changed at height ${H}, snapshot rejected`);
+    }
+    assert.ok(rejected, "the refresh path examined the different-set snapshot and reported rejecting it");
+    assert.equal(await windowHolds(BAD_ROOT), false, "and its root is not accepted");
+    assert.equal(await currentRoot(), V3_ROOT, "the served root did not flap");
+    assert.equal(await windowHolds(REAL_ROOT), true, "and the coexisting v2 root survived the attempt");
+  } finally {
+    g.proc.kill();
+  }
+});
