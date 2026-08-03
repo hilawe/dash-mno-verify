@@ -289,12 +289,33 @@ export class FileBackend {
       }
       this.#remember(rec);
     }
-    // Apply the repair before anything can append. ready() is awaited by every writer, so a torn
-    // tail cannot survive into the next write.
+    // REPAIR THE FILE SO IT ENDS ON A RECORD BOUNDARY, whatever shape the interruption left. There
+    // are two, and the first version of this only handled one.
+    //
+    //   (a) The last line does not parse. The append died mid-record. Truncate it away; that
+    //       registration was never reported committed, because success is returned only after fsync.
+    //   (b) The last line PARSES but has no trailing newline. The append wrote every byte of the
+    //       record and died before the newline. This one is not an error at all on read, so the
+    //       first version scheduled no repair, and the next append then wrote its record straight
+    //       onto the end of that line, producing `}{` in the middle of a line and a file that
+    //       refuses every boot from then on. A reviewer reproduced exactly that.
+    //
+    // Case (b) keeps the record rather than discarding it: it is complete and self-consistent, and
+    // the only thing missing is a delimiter this process can supply. Terminating it is the repair.
+    // ready() is awaited by every writer, so neither shape survives into the next write.
+    const { truncate, appendFile } = await import("node:fs/promises");
     if (this._truncateTo != null) {
-      const { truncate } = await import("node:fs/promises");
       await truncate(this.path, this._truncateTo);
       this._truncateTo = null;
+    } else if (raw.length > 0 && !raw.endsWith("\n")) {
+      console.error(
+        `[registration-store] ${this.path} ended mid-line with a COMPLETE record. An append wrote the ` +
+          `whole record and stopped before its newline, so the record is kept and the line is ` +
+          `terminated. Without this the next append would concatenate onto it and the boot after ` +
+          `that would refuse.`,
+      );
+      await appendFile(this.path, "\n");
+      this.tornTailTerminated = true;
     }
     // A store that predates the header cannot be checked retroactively: stamping it ASSERTS that its
     // existing records were written under the current schedule, which nobody verified. An empty store

@@ -308,3 +308,46 @@ test("a file ending in a newline has no torn tail, so its last line must parse",
   await assert.rejects(() => b.ready(), /not valid JSON/);
   await rm(dir, { recursive: true, force: true });
 });
+
+test("a COMPLETE record with no trailing newline is terminated, not left to poison the next append", async () => {
+  // The half the first repair missed, reproduced by a reviewer. An append can write every byte of a
+  // record and stop before its newline. That line PARSES, so it is not an error on read and no
+  // truncation was scheduled, and the next append then wrote straight onto the end of it, putting
+  // `}{` in the middle of a line and refusing every boot from then on. The record is complete and
+  // self-consistent, so it is kept and the line is terminated rather than discarded.
+  const dir = await mkdtemp(join(tmpdir(), "mno-nonl-"));
+  const path = join(dir, "regs.jsonl");
+  const header = JSON.stringify({ type: "schedule", schedule: "sch1" });
+  const rec = (nf, index) => JSON.stringify({
+    season: 0, contextHash: "ctx", regNullifier: nf, commitment: "11", engine: "groth16", statement: "st", index,
+  });
+  await writeFile(path, `${header}\n${rec("nf1", 0)}`); // no trailing newline
+
+  const b = new FileBackend(path, "sch1");
+  await b.ready();
+  assert.equal(b.tornTailTerminated, true, "the repair happened and is recorded, not silent");
+  await b.append({ season: 0, contextHash: "ctx", regNullifier: "nf2", commitment: "22", engine: "groth16", statement: "st" });
+
+  // The reopen is the assertion that matters: the first repair passed a test that only read once.
+  const b2 = new FileBackend(path, "sch1");
+  await b2.ready();
+  const recs = await b2.forSeasonContext(0, "ctx");
+  assert.deepEqual(recs.map((r) => r.regNullifier), ["nf1", "nf2"], "both records survive a reopen");
+  const bytes = await readFile(path, "utf8");
+  assert.equal(bytes.includes("}{"), false, "and no two records ever share a line");
+});
+
+test("a normal file ending in a newline is not touched by the repair", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "mno-norm-"));
+  const path = join(dir, "regs.jsonl");
+  const header = JSON.stringify({ type: "schedule", schedule: "sch1" });
+  const rec = JSON.stringify({
+    season: 0, contextHash: "ctx", regNullifier: "nf1", commitment: "11", engine: "groth16", statement: "st", index: 0,
+  });
+  await writeFile(path, `${header}\n${rec}\n`);
+  const before = await readFile(path, "utf8");
+  const b = new FileBackend(path, "sch1");
+  await b.ready();
+  assert.notEqual(b.tornTailTerminated, true, "nothing to repair");
+  assert.equal(await readFile(path, "utf8"), before, "the file is byte-identical");
+});

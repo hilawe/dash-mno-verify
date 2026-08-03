@@ -290,11 +290,15 @@ if (!MODES.has(config.mode)) {
 // The signature cap must not make a configured quorum unreachable. The cap exists to bound work on a
 // hostile array, so a deployment pinning more signers than the cap would refuse every snapshot,
 // which is a guard with no exit that ordinary correct operation reaches.
-if (config.oraclePubkeys.length > MAX_SNAPSHOT_SIGS) {
+// The reachable question is the QUORUM, not the roster. A deployment may pin many keys and require
+// only a few signatures, and such a snapshot fits under the cap comfortably. A first version of this
+// check compared the roster size and refused a 65-key roster with a quorum of one, which is a guard
+// with no exit for a configuration that works, and a reviewer reproduced it.
+if (config.oracleQuorum > MAX_SNAPSHOT_SIGS) {
   throw new Error(
-    `MNO_ORACLE_PUBKEYS names ${config.oraclePubkeys.length} keys, above the ${MAX_SNAPSHOT_SIGS} ` +
-      `signature cap, so no snapshot carrying one signature per key could ever be accepted. Raise the ` +
-      `cap deliberately or pin fewer keys.`,
+    `MNO_ORACLE_QUORUM is ${config.oracleQuorum}, above the ${MAX_SNAPSHOT_SIGS} signature cap, so no ` +
+      `snapshot could ever carry enough signatures to meet it. Raise the cap deliberately or lower ` +
+      `the quorum.`,
   );
 }
 
