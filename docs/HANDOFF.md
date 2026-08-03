@@ -119,8 +119,21 @@ The copy needs `-reindex-chainstate` because its evolution database is inconsist
 datadir's condition and not the copy's. Two gotchas already paid for:
 
 - `-reindex-chainstate` is incompatible with the datadir's transaction index. Pass `-txindex=0`.
-- The colima VM has 5.77 GB. `-dbcache=4096` was killed by the OOM reaper at 19%. `-dbcache=1024
-  -par=2` sits at about 1.35 GB and survives.
+- **The colima VM is too small for this reindex as configured, and lowering the cache did not fix
+  it.** The VM has 5.77 GB. `-dbcache=4096` was OOM-killed at 19%. `-dbcache=1024 -par=2` sat at
+  1.35 GB early and was ALSO OOM-killed, again at 19.5%, height 1,047,206, after about 75 minutes
+  (`OOMKilled: true`, exit 137). Both deaths land at the same place, which is where the evolution
+  database rebuild becomes memory-hungry rather than anything about the cache setting.
+
+  An earlier version of this file said `-dbcache=1024` "survives", written from a reading taken two
+  minutes after start and before the expensive phase. It does not. That is rule 3 of the pre-commit
+  playbook failing inside the handoff that introduced the playbook, which is worth leaving on the
+  record rather than quietly editing away.
+
+  The fix to try first is a bigger VM, not a smaller cache: `colima stop && colima start --memory 12
+  --cpu 4`. Confirm the host has the headroom before doing it. If that still dies at the same height,
+  the evodb rebuild needs more than this machine will give a VM and the answer is a different route to
+  a synced node entirely.
 
 ```
 docker run -d --name dash-mno-node \
