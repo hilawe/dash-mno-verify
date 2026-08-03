@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# Blocks a commit touching gated paths unless the test suite passes.
+#
+# WHY A HOOK AND NOT A HABIT. This repository's write-time discipline (docs/PRECOMMIT_ADOPTION.md)
+# requires that a mandatory gate blocks, with its exit code as the decision. A check someone runs by
+# hand can fail, print its failure, and still be followed by a commit. The sibling project that
+# supplied this pattern watched exactly that happen, so the gate lives here, inside git.
+#
+# WHAT IS GATED. The suite runs when the staged set touches code the tests cover or the tooling the
+# tests depend on. Documentation-only commits (docs/, README, review findings) skip the suite, since
+# rule 3 of the discipline covers prose claims and a 2.5 minute suite adds nothing to them.
+#
+# KNOWN LIMIT, DELIBERATE. The suite runs against the working tree, not the staged index. A
+# partially staged tree can pass while the commit content would fail. Closing that needs a stash
+# dance that has its own failure modes, so the simple form is kept and the limit is stated.
+#
+# Override with `git commit --no-verify` when a failing suite is genuinely intended (committing a
+# reproduction of an open defect is the obvious case), and say why in the commit message.
+set -u
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT" || exit 1
+
+# Added, Copied, Modified, Renamed. Deletions of gated files still gate, via --diff-filter=D below,
+# because deleting a module or a test changes what the suite proves. A failed read is a refusal,
+# never a skip, because an empty answer and no answer must not look alike (fail closed).
+if ! staged="$(git diff --cached --name-only --diff-filter=ACMRD)"; then
+  echo "COMMIT BLOCKED: could not read the staged file list (git diff --cached failed)."
+  exit 1
+fi
+[ -z "$staged" ] && exit 0
+
+# EVERY GATED PATH IS A DELIBERATE ONE. core, circuits, contract, prover are the note's minimum.
+# adapters and oracle are added because that is where this repository's defect history actually
+# clusters (review rounds 9 through 12 were all the Discord adapter, both open blockers are in the
+# oracle). common feeds the context hash and epoch math everything depends on. test, scripts, tools,
+# and the package files are the harness itself, and a harness change must prove the suite still runs.
+needs_suite=0
+while IFS= read -r f; do
+  [ -z "$f" ] && continue
+  case "$f" in
+    core/*|circuits/*|contract/*|prover/*|adapters/*|common/*|oracle/*|test/*|scripts/*|tools/*|package.json|package-lock.json)
+      needs_suite=1
+      ;;
+  esac
+done <<EOF
+$staged
+EOF
+
+[ "$needs_suite" -eq 0 ] && exit 0
+
+# Two suites at once contend for the same loopback port, and gateway_http then waits forever rather
+# than failing (a documented gotcha that cost real time twice). Two layers, each stated at its real
+# strength. The mkdir lock is atomic and excludes two of THESE hooks racing. The pgrep probe is
+# BEST EFFORT against a manually started suite: it can miss one started between probe and launch,
+# and it matches any 'node --test' on the host, which errs toward refusing (a suite from another
+# repository is not proven to share the port, it is just not proven safe).
+# The trap removes only a lock this process owns (pid recorded inside), so an operator clearing a
+# lock they judged stale cannot have it yanked back out from under a new holder by the old hook's
+# cleanup. A termination the trap cannot see (signal 9) leaves the lock behind, which errs toward
+# refusing and is what the removal message below is for.
+LOCK="$ROOT/.git/precommit-suite.lock"
+if ! mkdir "$LOCK" 2>/dev/null; then
+  holder="$(cat "$LOCK/pid" 2>/dev/null || echo unknown)"
+  echo "COMMIT BLOCKED: another pre-commit suite run holds $LOCK (pid $holder)."
+  echo "If that process is gone, a terminated hook left the lock behind. Remove it with:"
+  echo "  rm -rf '$LOCK'"
+  exit 1
+fi
+echo "$$" > "$LOCK/pid"
+trap '[ "$(cat "$LOCK/pid" 2>/dev/null)" = "$$" ] && rm -rf "$LOCK"' EXIT
+if pgrep -f 'node --test' >/dev/null 2>&1; then
+  echo "COMMIT BLOCKED: a 'node --test' run is already active on this host. Two suites contend"
+  echo "for the same loopback port and hang rather than fail. Let it finish, then commit."
+  exit 1
+fi
+
+echo "pre-commit: staged changes touch gated paths, running npm test (about 2.5 minutes)"
+if ! npm test; then
+  echo ""
+  echo "COMMIT BLOCKED: npm test failed. Fix the suite, or if committing a known-failing state is"
+  echo "genuinely intended, commit with --no-verify and say why in the message."
+  exit 1
+fi
+exit 0

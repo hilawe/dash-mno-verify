@@ -134,3 +134,9 @@ A non-trivial change gets an independent review from a different model than the 
 If Claude Code wrote the change, run `git review` (uncommitted) or `git review-branch main` (branch
 vs main), which call `codex review`. Fix every blocker and major, or push back with a specific reason.
 The reviewer is read-only and advisory. It never edits the working tree.
+
+Upstream of that review, every behaviour-changing commit runs the write-time self-verification pass
+instantiated for this repository in `docs/PRECOMMIT_ADOPTION.md` (scope, domain oracles, invariant
+classes, test procedure, evidence map, gates, checker, trial log). The mandatory test gate is
+`tools/hooks/pre-commit`. It is not adopted automatically on clone, so run
+`git config core.hooksPath tools/hooks` once per checkout.
