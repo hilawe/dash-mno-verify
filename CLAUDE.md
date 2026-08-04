@@ -57,10 +57,33 @@ Settings a deployment MUST attend to, because two of them refuse to boot:
 - `MNO_REGISTER_CONTEXTS`, the context hashes this gateway accepts registrations for. Two-tier mode
   REFUSES to start without it, or without `MNO_ALLOW_ANY_REGISTER_CONTEXTS=1` for local dev.
 - `MNO_PLATFORM_ASSUME_SCHEDULE`, which must equal the computed schedule id rather than being a bare
-  flag. Platform mode refuses otherwise.
+  flag. Platform mode refuses otherwise. THE SCHEDULE ACROSS GATEWAYS IS THE OPERATOR'S JOB: see the
+  constraint below.
 - `MNO_REGISTER_ROOT_MAX_AGE` (900s), how stale a DML root a registration may anchor to.
 - `MNO_RATE_CHALLENGE_ACCOUNT`, `MNO_RATE_VERIFY_ACCOUNT`, `MNO_RATE_DML`, `MNO_RATE_INGRESS`,
   `MNO_RATE_KEYS`.
+
+## Deployment constraint, Platform nullifier mode is coordinated by hand
+
+Platform mode exists so several gateways enforce ONE spent set, and the contract's unique index on
+(epoch, contextHash, nf) is what makes that safe. But epoch and season NUMBERS are derived from the
+configured lengths, and nothing in the contract records which lengths produced a given document. So
+two gateways sharing one contract under different schedules would write documents whose keys mean
+different things, which either reopens a spent tag or permanently denies a legitimate one.
+
+The gateway does what it can locally: it refuses to start unless `MNO_PLATFORM_ASSUME_SCHEDULE`
+names its exact schedule, it records that assertion in a marker file bound to both the schedule and
+the contract id, and it refuses if a later boot disagrees with what it recorded. All of that is
+LOCAL. The marker is a file on one machine and the state it protects is shared, so a second gateway
+with its own marker can assert an incompatible schedule and neither will notice.
+
+UNTIL THE CONTRACT CARRIES A SCHEDULE DECLARATION, the constraint is this: every gateway sharing a
+contract must be configured with the same `MNO_EPOCH_SECONDS` and `MNO_SEASON_SECONDS`, and that is
+enforced by the operator rather than by the software. A single-gateway Platform deployment has no
+exposure, since the only marker and the only state agree by construction. A multi-gateway one is
+running on an operational promise, and setting `MNO_PLATFORM_ASSUME_SCHEDULE` is where that promise
+is made. This is a deliberate deferral, not an oversight: adding the declaration is a contract
+migration, and the Platform path is not live yet.
 
 ## Security invariants (do not weaken without a clear reason)
 

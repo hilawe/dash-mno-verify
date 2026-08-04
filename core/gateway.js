@@ -232,10 +232,15 @@ if (config.store === "platform") {
         `written under its own schedule (${SCHEDULE}). Changing MNO_EPOCH_SECONDS or ` +
         `MNO_SEASON_SECONDS renumbers every period, and reinterpreting existing Platform records ` +
         `under new numbering can either re-open a spent tag or permanently deny a legitimate one. ` +
-        `Set MNO_PLATFORM_ASSUME_SCHEDULE=${SCHEDULE} to assert that the shared state was written ` +
-        `under THIS schedule, or migrate the contract to carry the marker. The value names the ` +
-        `schedule rather than being a bare flag, so an assertion made for one schedule cannot wave ` +
-        `a later one through` + (config.platformAssumeSchedule ? `, and this one names ${config.platformAssumeSchedule}.` : `.`),
+        `Set MNO_PLATFORM_ASSUME_SCHEDULE=${SCHEDULE} to assert BOTH that the existing shared state ` +
+        `was written under this schedule AND that every other gateway sharing this contract runs it ` +
+        `too. Nothing verifies the second half: the marker is a LOCAL file and the state it protects ` +
+        `is SHARED, so two gateways with different local markers can assert incompatible schedules ` +
+        `against one contract and neither will notice. Until the contract can carry the declaration, ` +
+        `coordinating the schedule across gateways is the operator's job and this setting is where ` +
+        `you take that on. The value names the schedule rather than being a bare flag, so an ` +
+        `assertion made for one schedule cannot wave a later one through` +
+        (config.platformAssumeSchedule ? `, and this one names ${config.platformAssumeSchedule}.` : `.`),
     );
   }
   // THE ASSERTION IS PINNED TO THE SCHEDULE IT WAS MADE FOR. An operator sets the flag once, in an
@@ -253,10 +258,24 @@ if (config.store === "platform") {
     const { readFile, mkdir, open, rename } = await import("node:fs/promises");
     const { dirname } = await import("node:path");
     let recorded = null;
+    let recordedContract = null;
     try {
-      recorded = JSON.parse(await readFile(config.platformSchedulePath, "utf8"))?.schedule ?? null;
+      const parsed = JSON.parse(await readFile(config.platformSchedulePath, "utf8"));
+      recorded = parsed?.schedule ?? null;
+      recordedContract = parsed?.contractId ?? null;
     } catch (err) {
       if (err.code !== "ENOENT") throw err;
+    }
+    // THE MARKER IS BOUND TO THE CONTRACT, not just to the schedule. Without this, pointing the same
+    // gateway at a DIFFERENT contract reuses a marker that describes other shared state entirely,
+    // and the check passes while comparing against the wrong thing.
+    if (recordedContract != null && String(recordedContract) !== String(config.platform.contractId)) {
+      throw new Error(
+        `refusing Platform nullifier mode: ${config.platformSchedulePath} was written for contract ` +
+          `${recordedContract}, but this gateway is configured for ${config.platform.contractId}. ` +
+          `That marker describes different shared state, so it cannot vouch for this one. Point ` +
+          `MNO_PLATFORM_SCHEDULE_PATH at a per-contract file.`,
+      );
     }
     if (recorded != null && String(recorded) !== String(SCHEDULE)) {
       throw new Error(
@@ -283,7 +302,7 @@ if (config.store === "platform") {
       const tmpPath = `${config.platformSchedulePath}.${process.pid}.${randomUUID()}.tmp`;
       const fh = await open(tmpPath, "w");
       try {
-        await fh.writeFile(JSON.stringify({ schedule: SCHEDULE }) + "\n");
+        await fh.writeFile(JSON.stringify({ schedule: SCHEDULE, contractId: config.platform.contractId ?? null }) + "\n");
         await fh.sync();
       } finally {
         await fh.close();
@@ -326,7 +345,11 @@ if (config.store === "platform") {
   console.warn(
     `[gateway] shared nullifier state on Dash Platform (${config.platform.contractId}). The schedule ` +
       `(${SCHEDULE}) is ASSERTED by MNO_PLATFORM_ASSUME_SCHEDULE, not verified: nothing on chain ` +
-      `records which schedule these documents were written under.`,
+      `records which schedule these documents were written under, and the local marker at ` +
+      `${config.platformSchedulePath} can only speak for THIS gateway. If any other gateway shares ` +
+      `contract ${config.platform.contractId}, you are responsible for it running schedule ` +
+      `${SCHEDULE} as well, because a mismatch renumbers every epoch and season and nothing here ` +
+      `can detect it.`,
   );
 } else if (config.store === "sqlite") {
   // ":memory:" is a SQLite database that dies with the process, so it is the ephemeral store wearing

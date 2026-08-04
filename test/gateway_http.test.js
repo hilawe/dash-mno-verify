@@ -1690,6 +1690,11 @@ test("Platform nullifier mode refuses without a schedule assertion, and starts w
   }
   assert.match(refused, /refusing Platform nullifier mode|gateway exited early/);
   assert.match(refused, /MNO_PLATFORM_ASSUME_SCHEDULE/, "the refusal names the way out");
+  // The refusal states the SCOPE of what the operator is asserting, not just how to silence it. The
+  // marker is local and the state is shared, so the second half of the assertion (that every other
+  // gateway on this contract runs the same schedule) is unverifiable and the message says so.
+  assert.match(refused, /every other gateway sharing this contract/, "the constraint is stated where it is taken on");
+  assert.match(refused, /Nothing verifies the second half/, "and is honest about what is not checked");
   assert.match(refused, /e604800s7776000/, "and names the exact schedule to assert, not a bare flag");
 
   // A bare "1", which used to be the whole assertion, must no longer be accepted: an assertion made
@@ -1862,4 +1867,32 @@ test("an oversized account is refused on both account-bearing endpoints", async 
   } finally {
     gw.proc.kill();
   }
+});
+
+test("a Platform marker written for another contract is refused, not reused", async () => {
+  // The marker is bound to the contract as well as the schedule. Without that, pointing the same
+  // gateway at a DIFFERENT contract reuses a marker describing other shared state entirely, and the
+  // schedule check passes while comparing against the wrong thing. This is the local half of the
+  // constraint: it cannot see other gateways, but it can refuse to vouch for state it never saw.
+  const oracle = join(dir, "platform-contract.json");
+  await writeFile(oracle, JSON.stringify(snapshot()));
+  const marker = join(dir, "platform-marker.json");
+  await writeFile(marker, JSON.stringify({ schedule: scheduleId(7 * 24 * 3600, 90 * 24 * 3600), contractId: "CONTRACT-A" }));
+
+  let err = null;
+  try {
+    const g = await startGateway({
+      MNO_ORACLE_SOURCE: oracle,
+      MNO_ORACLE_REFRESH: "3600",
+      MNO_STORE: "platform",
+      MNO_PLATFORM_ASSUME_SCHEDULE: scheduleId(7 * 24 * 3600, 90 * 24 * 3600),
+      MNO_PLATFORM_SCHEDULE_PATH: marker,
+      MNO_PLATFORM_CONTRACT_ID: "CONTRACT-B",
+    });
+    g.proc.kill();
+  } catch (e) {
+    err = String(e.message);
+  }
+  assert.ok(err, "it must not start");
+  assert.match(err, /written for contract CONTRACT-A/, "and says which state the marker actually describes");
 });
