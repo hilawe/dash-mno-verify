@@ -39,6 +39,139 @@ it urgently, but the upgrade path for a dashmate deployment is the documented
 container to pick it up: that datadir took two failed attempts and about a day to get synced, and
 the value here is the synced state, not the patch version.
 
+## CURRENT STATE, 2026-08-04. COMPLETE SESSION HANDOFF
+
+`main` at `c909cb3`, pushed, clean tree. Suite 493 with the full install, 414 passing and 79 skipped
+without the optional packages. All three CI jobs green (`checks`, `full`, `circuits`). 24 commits
+this session. Everything below this section is superseded; the older CURRENT STATE blocks are kept
+as history.
+
+### 1. WHERE TO START
+
+Nothing is half-done and nothing waits on a reviewer. Read section 6 (punch list) and take item 1.
+Read section 4 (the lessons) before writing code, because they are about how this session kept
+producing defects rather than about any one defect.
+
+### 2. THE ENVIRONMENT, which changed materially
+
+- **A mainnet Dash Core node is now SYNCED and running**, container `dash-mno-node`, height
+  2,516,184, progress 1.000000. That took two failed attempts on a 5.7 GiB colima VM before the
+  diagnosis landed (the VM, not the dbcache) and a rebuild at 12 GiB succeeded. It is the reason two
+  long-standing "unobserved" caveats could be closed.
+- The colima VM is SHARED. About 25 containers run in it, including the dashmate local network and
+  two other projects' long-lived containers. Stopping the VM stops all of them, so a restart is a
+  cross-project decision, not a local one. One container (`inspiring_lewin`) was lost to the last
+  VM bounce because it had been created with `--rm`.
+- Dash Core v23.1.8 was released 2026-08-04 (patch, bugfixes, recommended). The running container is
+  `dashpay/dashd:latest` pulled before that. Not urgent, but worth knowing.
+
+### 3. WHAT LANDED, grouped by what it means
+
+**Direct node mode (`6184bcb`), the headline.** `MNO_DML_SOURCE=node` makes the gateway read the
+masternode list from its own node, gated on ChainLock, instead of fetching a signed snapshot. For a
+self-hosting operator that removes the publisher, the signing keys, the quorum, and the transport.
+Downstream is deliberately identical; only the origin differs. STILL A TRUSTED-NODE READ: one server
+answers the ChainLock query, the block hash, AND the list, so it can return matching hashes over an
+arbitrary set. Chain authentication needs the `merkleRootMNList` check, and `protx diff` already
+carries the material.
+
+**Both of its blockers closed first, by measurement not argument.** The `protx diff` response shape
+is now OBSERVED against live mainnet (2,972 entries at height 2,515,929; every field this build
+reads checked for type and form), and `MNO_CLI_MAX_BUFFER` is settled (1.74 MiB actual against a
+64 MiB default, about 37x headroom). The strict boundary checks added over the review rounds
+therefore accept real mainnet data, which was not a given.
+
+**The members tree stopped stalling the gateway (`49332c5`, `b94b92d`).** It rebuilt all 65,536
+leaves on every append, about 9 seconds per root and 20 for a first-context commit, all blocking the
+event loop, so one ordinary registration made the gateway unresponsive. It now keeps its root with a
+frontier, and a rebuild is one carry-stack pass costing N minus popcount(N) plus depth. Measured:
+4,096 members went from 9.1s to 0.61s, and recovery is never worse than before at any size.
+
+**CI had been red since 2026-07-30 and nobody looked (`f8e6989`).** `discord.js` is optional, CI
+installs without it, and four test files imported it at the top level so they failed to LOAD rather
+than skip. Invisible locally by construction. A new `full` job now installs everything, so the
+Discord adapter has CI coverage for the first time. `CLAUDE.md` names the one command to run after a
+push.
+
+**The documentation had started contradicting the code (`7641af3`).** `CLAUDE.md` called account
+binding and context-scoped roots the headline OPEN blockers long after both landed, named the wrong
+default nullifier store, and described the members tree as not yet incremental one commit after it
+became incremental. Worse than silence, because it would have caused an agent to undo correct work.
+
+**Five review rounds and a paired experiment, all folded.** Rate limits are charged atomically; the
+registration commit observes both clock periods and refuses a regressed clock; the account
+identifier is bounded in bytes; the Platform marker is race-safe and bound to its contract id; the
+torn-tail recovery handles both interruption shapes; signature work is bounded by configured keys.
+
+**The Platform single-gateway constraint is explicit (`99445e7`).** Taken deliberately instead of
+building a contract migration for a path that is not live. Its own section in `CLAUDE.md`.
+
+### 4. THE FOUR LESSONS, which matter more than any single fix
+
+1. **Most of what each review round found was in the PREVIOUS round's fixes.** Six consecutive
+   rounds. The newest code is the riskiest surface, and this is now the most reliable fact about
+   this repository.
+2. **After fixing a defect, search for its SHAPE.** One clock-reading defect appeared in FOUR places,
+   each time after being fixed elsewhere, twice in one session, once with a comment already in the
+   file explaining the trap. Every instance cost an external round. This is now global playbook
+   rule 6, and on its first real use it found `/v1/health` not reporting the DML source.
+3. **The mutations an author picks prove the least.** Four tests were caught vacuous. Every author
+   mutation had the same shape, revert the fix and confirm the test notices, which is guaranteed to
+   pass because the test was written while looking at that fix. The useful mutations attack the
+   OBSERVATION: delete a branch whose value is performance, satisfy the assertion by another route,
+   rename what the assertion reaches into. Global playbook, rule 2.
+4. **A gate that observes the system can match itself, and a gate that fires falsely is worse than
+   none.** The stray-process check used `pgrep -f core/gateway.js`, which matches any process whose
+   arguments contain that string, so it blocked a commit because of the text of its own commit
+   message. Global playbook, rule 5a. Crono had already solved this shape for its vocabulary gate,
+   and the playbook now cites crono's exclusion-list form as the general one.
+
+### 5. A CORRECTION TO A PUBLISHED CLAIM, do not carry it forward
+
+Commit `6184bcb`'s message explains the gate's invisible false positive by saying `ps` truncates long
+argument lists. THAT IS WRONG, and it was only caught because someone asked whether verifying before
+writing it up was prudent. `ps` displayed 4,052 characters without trouble. The real cause was the
+diagnostic itself: its debug line ended `| grep -v grep`, and the matching process had "grep" in its
+own command, so the filter deleted the evidence. Six matching lines became one. The fix is right; the
+published reason for one of its symptoms is not. History was not rewritten for it.
+
+### 6. PUNCH LIST, in the order recommended
+
+1. **Make `core/gateway.js` importable.** It starts an HTTP server on import, so nothing in it can be
+   unit-tested. ROOT CAUSE behind this session's weak tests: it forced a source-text grep as a
+   tripwire (since replaced by a store-level invariant), and it is why rate-limit atomicity had to be
+   proven at the unit level rather than through the path that uses it. Higher value than another
+   review round.
+2. **The retained-leaves bound.** The root window can hold up to sixteen full leaf arrays during a
+   changeover. Legitimate data, so normalization does not touch it.
+3. **A review round**, covering direct node mode and item 1 together. Not before, since rounds are
+   worth most when significant new code exists.
+4. **The `merkleRootMNList` commitment check**, which is what turns the node read from trusted-node
+   into chain-authenticated. `protx diff` already returns `cbTx` and `cbTxMerkleTree`.
+5. **The audit.** Still none. Separately, `circom-ecdsa` is unaudited demonstration code by its own
+   README, a deployment blocker for any mode shipping a key-bearing Circom proof.
+
+### 7. KNOWN OPEN, recorded rather than fixed
+
+- A close error after a successful durable write can duplicate a registration.
+- A challenge can be minted for a season that ended during materialization.
+- Registration readiness ignores the anchor age.
+- The Platform marker is local while the state it protects is shared. Constrained and documented.
+- The oracle CLI can publish v3 (`--read block`) but the transition for existing v2 consumers has not
+  been exercised end to end outside tests.
+
+### 8. PROCESS STATE
+
+- **The three-agent fix review is ON TRIAL**, dash-mno-verify only, 1 of 10 qualifying commits used.
+  Its first pass caught a regression no external round had (recovery cost growing with member count),
+  and the finding came from the one charter that forced MEASUREMENT rather than reading. Details and
+  the endpoint are in `docs/PRECOMMIT_ADOPTION.md` section 6b.
+- **The trial log has 10 rows.** Read it before assuming the author-side rules work: for most of
+  their history they caught nothing before the external checker did.
+- **A transfer packet for crono** is at
+  `~/Downloads/multi-agent-and-playbook-setup_packet_2026-08-03.md`, updated 2026-08-04. Crono needs
+  no installation; the global playbook already applies. Its own hook deliberately was NOT changed.
+
 ## CURRENT STATE, 2026-08-04 (late). Direct node mode is in, CI green, nothing pending
 
 `main` at `6184bcb`, pushed. Suite 493 with the full install, 414 passing and 79 skipped without the
