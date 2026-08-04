@@ -47,6 +47,17 @@ was covered and a short-circuiting sequential charge passed it.
 
 ### 3. WHAT THIS SESSION CONFIRMS ABOUT THE PROCESS
 
+- **THE THREE-AGENT STAGE CAUGHT FIRST, in two charters independently**, on the window bound (trial
+  pass 2 of 10, recorded in `docs/PRECOMMIT_ADOPTION.md`). Ordering found a real defect in the code:
+  the bound evicted single RECORDS while the trim above it evicts whole HEIGHTS, so a changeover pair
+  was split and a prover holding the older leaf ordering was locked out at a height whose newer root
+  was still accepted. Tests found two mutations the author had not tried. Durability correctly
+  returned "no durable write is reachable from an evicted record", having traced it rather than
+  assumed it. Both prior sessions said the author-side pass never catches first, and it now has, twice.
+- **A mutant must PARSE before its result means anything.** One reported catch this session was a
+  syntax error: changing a `while` to an `if` orphaned the `break` inside it, so the module failed to
+  load and every test failed for an unrelated reason. `node --check` the mutated file first.
+
 - **Every finding across six external passes was in the NEW code, none in the wrapped body.** The
   first pass confirmed mechanically that the re-indentation moved, dropped, and reordered nothing,
   and that `buildConfig(process.env)` deep-equalled the old exported object. All sixteen findings
@@ -121,16 +132,27 @@ denominator.
   whole symptom is a socket that outlives the teardown. Two of them later blocked the pre-commit gate,
   which is the repository's existing loopback-contention gotcha arriving by a new route. Stop stray
   runs before committing after socket mutations.
+- A MUTATION THAT DOES NOT PARSE IS NOT A MUTATION, and one was reported here as a catch before that
+  was noticed. Changing a `while` to an `if` orphaned the `break` inside it, so the file failed to
+  load and every test "failed" for a reason having nothing to do with the guard. Run `node --check`
+  on the mutated file and only believe the result if it parses. Now written into section 3.
 
 ### 6. PUNCH LIST, in the order recommended
 
-1. **The retained-leaves bound.** The root window can hold up to sixteen full leaf arrays during a
-   changeover. Legitimate data, so normalization does not touch it.
-2. **A review round** covering direct node mode and the module refactor together.
-3. **The `merkleRootMNList` commitment check**, which is what turns the node read from trusted-node
+1. **The `merkleRootMNList` commitment check**, which is what turns the node read from trusted-node
    into chain-authenticated. `protx diff` already returns `cbTx` and `cbTxMerkleTree`.
+2. **A review round** covering direct node mode, the module refactor, and the window bound together.
+3. **The packet reviews by the other model families**, for the accumulated work. Not run this
+   session, and worth doing once there is a body of change to put in front of them rather than
+   per-commit. The packet recipients are named in the private tooling notes, not here.
 4. **The audit.** Still none. Separately, `circom-ecdsa` is unaudited demonstration code by its own
    README, a deployment blocker for any mode shipping a key-bearing Circom proof.
+
+DONE THIS SESSION, was item 1: **the retained-leaves bound.** `MNO_ROOT_WINDOW_MAX_LEAVES` (default
+4 x 65,536, 0 disables) bounds the leaves the root window retains, evicting the oldest HEIGHTS whole
+after the height trim. The window's memory had been finite only as the product of three limits that
+know nothing about each other, measured at 3.1 MiB for 16 records at the live mainnet size and
+64.7 MiB at full tree capacity. It never fires under the default height window at today's list size.
 
 ### 7. KNOWN OPEN, unchanged from the section below except where noted
 

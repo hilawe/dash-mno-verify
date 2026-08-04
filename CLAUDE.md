@@ -67,6 +67,9 @@ Settings a deployment MUST attend to, because two of them refuse to boot:
   flag. Platform mode refuses otherwise. THE SCHEDULE ACROSS GATEWAYS IS THE OPERATOR'S JOB: see the
   constraint below.
 - `MNO_REGISTER_ROOT_MAX_AGE` (900s), how stale a DML root a registration may anchor to.
+- `MNO_ROOT_WINDOW_MAX_LEAVES` (4 x 65,536, 0 disables), the total leaves the root window retains
+  across its records. Never fires at today's list size, where the height window binds first. It
+  evicts oldest-first and whole records, and never the newest.
 - `MNO_RATE_CHALLENGE_ACCOUNT`, `MNO_RATE_VERIFY_ACCOUNT`, `MNO_RATE_DML`, `MNO_RATE_INGRESS`,
   `MNO_RATE_KEYS`.
 

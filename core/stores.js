@@ -108,8 +108,19 @@ export function normalizeSnapshot(o, defaultDepth) {
 const KNOWN_ORDERS = new Set([null, "proRegTxHash"]);
 
 export class RootWindows {
-  constructor(window = 8) {
+  // `maxLeaves` bounds the TOTAL leaf elements retained across every record, 0 meaning no bound.
+  //
+  // WHY A SECOND BOUND EXISTS AT ALL. The window's memory was already finite, but only as the product
+  // of two limits that know nothing about each other: the height window (8) times the orderings that
+  // may coexist (2) times whatever validateSnapshot lets a snapshot carry (2**treeDepth, 65,536).
+  // Measured, with a fresh parse per record as the gateway does: 3.1 MiB for 16 records at the live
+  // mainnet size of 2,972 leaves, and 64.7 MiB for 16 records at full tree capacity. Nothing is
+  // leaking and no attacker chooses those numbers, which is exactly why it went unbounded in the
+  // stated sense for so long. This turns the worst case into ONE number an operator sets rather than
+  // a figure that has to be recomputed from three unrelated places whenever one of them changes.
+  constructor(window = 8, { maxLeaves = 0 } = {}) {
     this.window = window;
+    this.maxLeaves = maxLeaves;
     this.snaps = []; // sorted by height ascending, newest last; each { height, root, shaRoot, ts }
   }
   // Adopt one snapshot, keyed by height AND leaf order.
@@ -183,6 +194,49 @@ export class RootWindows {
     const all = [...byKey.values()].sort((a, b) => a.height - b.height);
     const keptHeights = new Set([...new Set(all.map((s) => s.height))].slice(-this.window));
     this.snaps = all.filter((s) => keptHeights.has(s.height));
+    this.#enforceLeafBound();
+  }
+
+  // Total leaf elements the window is holding, the quantity the bound is on.
+  retainedLeaves() {
+    let total = 0;
+    for (const s of this.snaps) total += s.snapshot?.leaves?.length ?? 0;
+    return total;
+  }
+
+  // Drop the OLDEST HEIGHTS, whole, until the retained leaves fit the bound.
+  //
+  // BY HEIGHT, NOT BY RECORD, which is the same granularity the window trim above uses and for the
+  // same reason. A first version of this shifted single records off the front, and during a
+  // changeover the front record at the oldest height is the ordering adopted FIRST, so the bound
+  // retained the v3 record at that height and evicted its v2 sibling. Reproduced: a prover holding
+  // the v2 tree was locked out at a height whose v3 root was still accepted, which is exactly the
+  // outcome the coexistence design exists to prevent, and worse, a republished pair made the two
+  // roots alternate in and out of acceptance on every refresh tick. The two records describe one
+  // block and one leaf multiset, so they leave together or not at all.
+  //
+  // WHOLE RECORDS rather than just their leaves, because a record's root and its leaves are one
+  // thing. Discarding only the leaves of older records is the tempting version, since just
+  // current().snapshot is ever served, but current() is the last element and dropOlderThan can
+  // remove the newest record (timestamp order is not height order), which makes an older record
+  // current. One that became current with its leaves already discarded would advertise a root whose
+  // leaves /v1/dml cannot serve, precisely the same-instant split this record design prevents.
+  //
+  // THE LAST HEIGHT IS NEVER DROPPED, even when its records alone exceed the bound. A window that
+  // refused to retain the snapshot it is currently serving would be a guard with no exit reached by
+  // ordinary operation: the root would be current with no leaves behind it. The bound governs how
+  // much HISTORY is kept, not whether the present is kept.
+  #enforceLeafBound() {
+    if (!(this.maxLeaves > 0)) return;
+    // A loop rather than one pass: a snapshot larger than the ones already held (the list grows, or
+    // a re-adoption replaces a small snapshot with a large one at the same key) can put the window
+    // several heights over at once.
+    while (this.retainedLeaves() > this.maxLeaves) {
+      const heights = [...new Set(this.snaps.map((s) => s.height))];
+      if (heights.length <= 1) break;
+      const oldest = heights[0]; // the array is height-ascending, so this is the oldest height
+      this.snaps = this.snaps.filter((s) => s.height !== oldest);
+    }
   }
   // The newest snapshot. With two orders at one height during a changeover, the LAST adopted wins,
   // which is the one the oracle is publishing now. That tie-break holds because adopt() re-inserts

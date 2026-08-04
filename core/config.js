@@ -67,6 +67,32 @@ export function buildConfig(env = process.env) {
     // DML churn between blocks while keeping the eviction lag for removed nodes short.
     rootWindow: intEnv(env, "MNO_ROOT_WINDOW", 8),
 
+    // The total leaf elements the root window may retain across every record it holds, 0 to disable
+    // the bound. The window keeps one record per (height, leaf ordering), each carrying the snapshot
+    // whose leaves /v1/dml serves, so its memory was the product of three unrelated limits: the
+    // window size, the two orderings that coexist during a changeover, and the per-snapshot leaf cap
+    // of 2**treeDepth. Measured on this build: 16 records hold 3.1 MiB at the live mainnet size of
+    // 2,972 leaves and 64.7 MiB at full tree capacity.
+    //
+    // The default admits four full-capacity snapshots (about 16 MiB), which at the live mainnet size
+    // is 88 records. UNDER THE DEFAULT MNO_ROOT_WINDOW OF 8 that is well clear of the at most 16
+    // records a changeover can produce, so the height window binds first and this never fires.
+    //
+    // THAT CLAIM IS ABOUT THE DEFAULT WINDOW, NOT ABOUT EVERY WINDOW, and MNO_ROOT_WINDOW has no
+    // upper bound. A deployment running a window of 100 heights at mainnet size holds up to 200
+    // records, and this bound would keep 88 of them, so the accepted history would be shorter than
+    // the one configured, quietly, after an upgrade. A deployment that raises MNO_ROOT_WINDOW must
+    // raise this with it. The interaction is pinned by a test rather than left to this comment.
+    //
+    // Where it does bind it shortens the accepted-root history, and a proof anchored to a height it
+    // evicted IS refused (stale-or-unknown-root), exactly as one aged out by MNO_ORACLE_MAX_AGE is.
+    // An earlier version of this comment said the bound shortens history "rather than refusing
+    // anything", which is not true of the member holding that proof: the prover re-reads /v1/dml and
+    // re-proves, which is the same recovery every other eviction rule already asks for. What the
+    // bound never does is refuse the NEWEST height, because a root current with no leaves behind it
+    // would leave /v1/dml unable to serve what /v1/challenge advertised.
+    rootWindowMaxLeaves: intEnv(env, "MNO_ROOT_WINDOW_MAX_LEAVES", 4 * 65536, { min: 0 }),
+
     // Where to read freshly published roots from. Either a URL serving the oracle JSON
     // or a local file path.
     oracleSource: env.MNO_ORACLE_SOURCE ?? "oracle/root.json",

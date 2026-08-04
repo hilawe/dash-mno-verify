@@ -512,7 +512,7 @@ async function bootGateway({ config = buildConfig(process.env) } = {}, release) 
     );
   }
 
-  const dmlRoots = new RootWindows(config.rootWindow);
+  const dmlRoots = new RootWindows(config.rootWindow, { maxLeaves: config.rootWindowMaxLeaves });
   // The last verified oracle snapshot, so provers can fetch leaves and build paths. DERIVED from the
   // window rather than tracked beside it: the snapshot rides in the same record as its roots, so
   // aging, eviction, and adoption move all of them together.

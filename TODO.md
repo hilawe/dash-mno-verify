@@ -208,6 +208,28 @@ again.
 
 ## Testability, the gateway is a module rather than a script (2026-08-04)
 
+- [x] Bound the leaves the root window retains. The window keeps one record per (height, leaf
+  ordering), each carrying the snapshot whose leaves `/v1/dml` serves, so its memory was the product
+  of three limits that know nothing about each other: the window size, the two orderings that coexist
+  during a changeover, and the per-snapshot leaf cap of 2**treeDepth. Measured on this build with a
+  fresh parse per record, as the gateway does: 16 records hold 3.1 MiB at the live mainnet size of
+  2,972 leaves and 64.7 MiB at full tree capacity. Finite, then, but nobody could say so without
+  recomputing it from three places.
+
+  `MNO_ROOT_WINDOW_MAX_LEAVES` (default 4 x 65,536, 0 disables) now bounds the total, enforced by
+  evicting the oldest records WHOLE after the height trim. Whole records, because a record's root and
+  its leaves are one thing: only `current().snapshot` is ever served, which makes the older records'
+  leaves look like dead weight, but `dropOlderThan` can remove the newest record and make an older
+  one current, and one that became current with its leaves discarded would advertise a root whose
+  leaves cannot be served. The newest record is never evicted even when it alone exceeds the bound,
+  since a bound that refuses the snapshot it is serving is a guard with no exit. At mainnet size the
+  default admits 88 records against a window of at most 16, so it never fires in ordinary operation.
+  It bites only on a far larger masternode list, or on a window configured much wider than the
+  default, and there it shortens accepted-root history: a proof anchored to an evicted height is
+  refused as stale-or-unknown-root, and the prover re-reads `/v1/dml` and re-proves, which is the
+  recovery every other eviction rule already asks for. (`RootWindows` in `core/stores.js`, `core/config.js`, `core/gateway.js`,
+  `test/root_windows.test.js`)
+
 - [x] Make `core/gateway.js` importable. It used to open the durable stores, load the verification
   keys, fetch a root, start its intervals, and bind a listening socket as a side effect of being
   imported, so nothing in it could be unit-tested. Every property of a handler had to be proven
@@ -229,6 +251,17 @@ again.
   (`MNO_ORACLE_ALLOW_HTTP`, read inside `loadOracle`) is now passed in, since a security-bearing
   exception the supplied config could not control was this change failing quietly. (`core/gateway.js`, `core/config.js`, `core/stores.js`, `core/nullifier_sqlite.js`,
   `core/platform_store.js`, `test/gateway_module.test.js`)
+
+- [ ] The in-memory nullifier store grows across epochs on a long-lived gateway, found by the rule 6
+  shape search behind the retained-leaves bound (2026-08-04). The gateway prunes spent tags only when
+  the store implements `prune`, and `NullifierStore` (the `MNO_STORE=memory` backend) does not, so a
+  gateway left running in memory mode keeps every tag it has ever seen rather than the retained-epoch
+  window the SQLite store honours. The exposure is small and bounded by real proof work, since each
+  entry costs a valid membership proof, and memory mode is already an explicit opt-in documented as
+  ephemeral. That is why this is recorded rather than folded into the window bound: it is a different
+  quantity, bounded by a different thing, and the fix (a `prune` on the in-memory store, or making
+  the gateway sweep any store it can) is a decision about what "ephemeral" is meant to promise.
+  (`NullifierStore` in `core/stores.js`, the prune wiring in `core/gateway.js`)
 
 ## P0, the two-tier state model (one redesign, three symptoms)
 
