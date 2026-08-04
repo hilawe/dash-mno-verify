@@ -3,10 +3,28 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { OverwriteType, PermissionsBitField } from "discord.js";
+// discord.js is an OPTIONAL dependency. CI installs with `npm ci --omit=optional` to prove the
+// oracle and gateway run without the adapter toolchain, and these files imported it at the top
+// level, so they did not skip there, they FAILED to load. That is why CI was red for four days
+// while every local run was green: the local checkout has the optional packages installed.
+// Imported dynamically so the absence is a skip with a stated reason. The full-install CI job
+// is what actually exercises these tests.
+let discord;
+let makeAccess;
+let GrantLedger;
+try {
+  discord = await import("discord.js");
+  // The adapter modules import discord.js themselves, so they have to load inside the same guard.
+  // Guarding only the test's own import left these three files still failing to LOAD, which is a
+  // reminder that a dependency is absent for everything downstream of it, not just where it is named.
+  ({ makeAccess } = await import("../adapters/discord/access.js"));
+  ({ GrantLedger } = await import("../adapters/discord/grant_ledger.js"));
+} catch {
+  discord = null;
+}
+const OPT = discord ? {} : { skip: "discord.js is an optional dependency and is not installed" };
+const { OverwriteType, PermissionsBitField } = discord ?? {};
 
-import { makeAccess } from "../adapters/discord/access.js";
-import { GrantLedger } from "../adapters/discord/grant_ledger.js";
 
 // THE COMPOSITION, which is where the defect was and which nothing could reach before.
 //
@@ -83,7 +101,7 @@ function withLedger(guild, fn) {
 
 const rec = (channels) => ({ expiresAt: 9999, mode: "channel", guildId: "g1", channels });
 
-test("a grant refused on one channel leaves the sibling channel granted, and keeps the record", async () => {
+test("a grant refused on one channel leaves the sibling channel granted, and keeps the record", OPT, async () => {
   // The reproduction. c1 is clean and c2 carries an administrator's exclusion. The clean channel is
   // granted and must STAY granted: it used to be cleared again immediately by the ledger compensating
   // the whole record, so a member finished verification with no access on a healthy channel.
@@ -100,7 +118,7 @@ test("a grant refused on one channel leaves the sibling channel granted, and kee
   });
 });
 
-test("a grant refused on EVERY channel sends nothing and is not compensated", async () => {
+test("a grant refused on EVERY channel sends nothing and is not compensated", OPT, async () => {
   // The case that made an earlier refusal worse than the bug it fixed. Nothing reached Discord, so
   // there is nothing to take back, and compensating anyway cleared access the member already held.
   const { guild, edits } = fakeGuild({ c1: [overwrite("u1", ["ViewChannel"])] });
@@ -111,7 +129,7 @@ test("a grant refused on EVERY channel sends nothing and is not compensated", as
   });
 });
 
-test("a clean grant applies every channel and keeps its record", async () => {
+test("a clean grant applies every channel and keeps its record", OPT, async () => {
   const { guild, edits } = fakeGuild({ c1: [], c2: [] });
   await withLedger(guild, async (ledger) => {
     await ledger.grant("u1", rec(["c1", "c2"]));
@@ -121,7 +139,7 @@ test("a clean grant applies every channel and keeps its record", async () => {
   });
 });
 
-test("revoking past a member's denial clears the clean channel and leaves the denied one alone", async () => {
+test("revoking past a member's denial clears the clean channel and leaves the denied one alone", OPT, async () => {
   // The twin of reconcileGuild's clear helper, which skipped a refusal while this path counted it as a
   // failure. A member carrying a denial holds no access to take back, so treating the refusal as a
   // failure made revokeAccess throw, which kept the record and made the sweep retry it every interval
@@ -142,7 +160,7 @@ test("revoking past a member's denial clears the clean channel and leaves the de
   assert.equal("ViewChannel" in (edits[0].patch ?? {}), true);
 });
 
-test("a revoke that genuinely fails throws, rather than being swallowed as a refusal", async () => {
+test("a revoke that genuinely fails throws, rather than being swallowed as a refusal", OPT, async () => {
   // The other side of the same decision. Skipping a refusal must not turn into swallowing a real
   // failure, which would drop the record while the access was still live.
   //
@@ -163,7 +181,7 @@ test("a revoke that genuinely fails throws, rather than being swallowed as a ref
 // apply failed after a successful verification cannot prove again in that epoch. Nothing created a
 // missing overwrite from a live record, so they stayed verified, recorded, and locked out until
 // expiry, while being told to run /verify again, which cannot work.
-test("a member left with a live record and no access is repaired from the record", async () => {
+test("a member left with a live record and no access is repaired from the record", OPT, async () => {
   const { guild, edits } = fakeGuild({ c1: [] });
   // The apply fails the way a transient Discord problem does.
   let broken = true;
@@ -193,7 +211,7 @@ test("a member left with a live record and no access is repaired from the record
   });
 });
 
-test("the repair is idempotent, so a healthy member costs no Discord write", async () => {
+test("the repair is idempotent, so a healthy member costs no Discord write", OPT, async () => {
   const { guild, edits } = fakeGuild({
     c1: [
       {
@@ -209,7 +227,7 @@ test("the repair is idempotent, so a healthy member costs no Discord write", asy
   assert.deepEqual(edits, [], "and no request sent");
 });
 
-test("the repair refuses to reapply over an administrator's exclusion", async () => {
+test("the repair refuses to reapply over an administrator's exclusion", OPT, async () => {
   // A repair must not become a way to override an exclusion. It goes through the same guarded grant.
   const { guild, edits } = fakeGuild({ c1: [overwrite("u1", ["ViewChannel"])] });
   const { repairAccess } = makeAccess({ getGuild: async () => guild, guildId: "g1", managedChannels: ["c1"], log: () => {}, now: () => 1000 });
@@ -217,7 +235,7 @@ test("the repair refuses to reapply over an administrator's exclusion", async ()
   assert.deepEqual(edits, [], "and nothing written");
 });
 
-test("the repair reapplies a PARTIAL overwrite, not just a missing one", async () => {
+test("the repair reapplies a PARTIAL overwrite, not just a missing one", OPT, async () => {
   // A half-applied overwrite is the shape a crash mid-edit leaves. Present but incomplete must count
   // as needing repair, or the member keeps a fraction of what they proved.
   const { guild, edits } = fakeGuild({
@@ -228,7 +246,7 @@ test("the repair reapplies a PARTIAL overwrite, not just a missing one", async (
   assert.equal(edits.length, 1);
 });
 
-test("repair is confined to the channels the bot grants through now", async () => {
+test("repair is confined to the channels the bot grants through now", OPT, async () => {
   // A record can name a channel the configuration has since dropped. The startup pass reports that as
   // a stale target and refuses to act on it, and repair must not be the one path that quietly does,
   // restoring access an operator removed by hand on a channel the bot has finished with.
@@ -244,7 +262,7 @@ test("repair is confined to the channels the bot grants through now", async () =
   assert.deepEqual(edits.map((e) => e.channel), ["current"], "the dropped channel is never written to");
 });
 
-test("repair refuses a record belonging to another guild", async () => {
+test("repair refuses a record belonging to another guild", OPT, async () => {
   const { guild, edits } = fakeGuild({ c1: [] });
   const { repairAccess } = makeAccess({
     getGuild: async () => guild,
@@ -257,7 +275,7 @@ test("repair refuses a record belonging to another guild", async () => {
   assert.deepEqual(edits, [], "repair grants from a stored record, so it checks the guild itself too");
 });
 
-test("a MIXED denial has its ALLOWS taken back, and its deny left exactly alone", async () => {
+test("a MIXED denial has its ALLOWS taken back, and its deny left exactly alone", OPT, async () => {
   // Three designs converge here. Refusing to touch this overwrite left the member able to read a
   // private channel forever and jammed the row every sweep. Nulling all three would have cleared the
   // administrator's deny and let a role-level allow through. Clearing only what is allowed does
@@ -278,7 +296,7 @@ test("a MIXED denial has its ALLOWS taken back, and its deny left exactly alone"
   assert.equal("SendMessages" in edits[0].patch, false, "the deny is never written and never cleared");
 });
 
-test("a TOTAL denial sends nothing, so an excluded member cannot jam the sweep", async () => {
+test("a TOTAL denial sends nothing, so an excluded member cannot jam the sweep", OPT, async () => {
   const total = {
     id: "u1",
     type: OverwriteType.Member,
@@ -291,7 +309,7 @@ test("a TOTAL denial sends nothing, so an excluded member cannot jam the sweep",
   assert.deepEqual(edits, [], "nothing allowed, so nothing to take back");
 });
 
-test("repair refuses an expired record on its own, not only via its caller", async () => {
+test("repair refuses an expired record on its own, not only via its caller", OPT, async () => {
   // The comment claimed repair could never grant longer than the member proved, while the expiry
   // check lived only in the caller. The one operation that grants from a stored record instead of a
   // fresh proof checks its own authority now, in time as well as in guild.
@@ -303,7 +321,7 @@ test("repair refuses an expired record on its own, not only via its caller", asy
   assert.deepEqual(edits, [], "nothing written for an expired record");
 });
 
-test("a grant reports what DEFINITELY applied, separately from what may have been written", async () => {
+test("a grant reports what DEFINITELY applied, separately from what may have been written", OPT, async () => {
   // `mutated` is deliberately conservative: "a write may have gone out", so the ledger compensates
   // when unsure. It is the wrong question for a member-facing message. A transient failure on one
   // channel alongside a denial on another gives mutated true with zero successful writes, and the
@@ -332,7 +350,7 @@ test("a grant reports what DEFINITELY applied, separately from what may have bee
   assert.deepEqual(err.refusedChannels, ["c1"]);
 });
 
-test("repair refuses a record proved in a different context", async () => {
+test("repair refuses a record proved in a different context", OPT, async () => {
   // Repair grants from a stored record rather than a fresh proof, so it checks every dimension of that
   // record's authority itself: guild, expiry, configured channels, and context.
   const { guild, edits } = fakeGuild({ c1: [] });

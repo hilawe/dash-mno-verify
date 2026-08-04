@@ -3,17 +3,24 @@ import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { OverwriteType, PermissionsBitField } from "discord.js";
+// discord.js is an OPTIONAL dependency. CI installs with `npm ci --omit=optional` to prove the
+// oracle and gateway run without the adapter toolchain, and these files imported it at the top
+// level, so they did not skip there, they FAILED to load. That is why CI was red for four days
+// while every local run was green: the local checkout has the optional packages installed.
+// Imported dynamically so the absence is a skip with a stated reason. The full-install CI job
+// is what actually exercises these tests.
+let discord;
+let ACCESS, ACCESS_CLEARED, grantMemberOverwrite, clearManagedAllows, removeRole, DenialConflict, isDenialConflict;
+try {
+  discord = await import("discord.js");
+  // The adapter module imports discord.js itself, so it loads inside the same guard.
+  ({ ACCESS, ACCESS_CLEARED, grantMemberOverwrite, clearManagedAllows, removeRole, DenialConflict, isDenialConflict } = await import("../adapters/discord/permissions.js"));
+} catch {
+  discord = null;
+}
+const OPT = discord ? {} : { skip: "discord.js is an optional dependency and is not installed" };
+const { OverwriteType, PermissionsBitField } = discord ?? {};
 
-import {
-  ACCESS,
-  ACCESS_CLEARED,
-  grantMemberOverwrite,
-  clearManagedAllows,
-  removeRole,
-  DenialConflict,
-  isDenialConflict,
-} from "../adapters/discord/permissions.js";
 
 // Nine review rounds found the same defect, and every one of them found it because a denial check was
 // added at the site the previous reviewer named while the identical mutation survived unguarded
@@ -91,13 +98,13 @@ const guildClean = () => ({ channels: { cache: new Map() } });
 
 // ---- the guards refuse, and refuse without touching Discord ----------------------------------------
 
-test("granting over a member denial refuses and sends nothing", async () => {
+test("granting over a member denial refuses and sends nothing", OPT, async () => {
   const { ch, edits } = channelWith([memberOverwrite("u1", ["ViewChannel"])]);
   await assert.rejects(() => grantMemberOverwrite(ch, "u1"), isDenialConflict);
   assert.deepEqual(edits, [], "an excluded member must not be granted access by re-verifying");
 });
 
-test("clearing takes back only what is ALLOWED, and never touches a deny", async () => {
+test("clearing takes back only what is ALLOWED, and never touches a deny", OPT, async () => {
   // The third design for taking access back. Attempt 1 nulled all three bits, which cleared an
   // administrator's deny as well and let a role-level allow through, so removal granted. Attempt 2
   // merged the whole overwrite, which is read-modify-write against a cache. Attempt 3 refused to touch
@@ -123,7 +130,7 @@ test("clearing takes back only what is ALLOWED, and never touches a deny", async
   assert.equal("SendMessages" in edits[0][1], false, "a deny bit is never written and never cleared");
 });
 
-test("clearing a fully denied member sends nothing, because there is nothing to take back", async () => {
+test("clearing a fully denied member sends nothing, because there is nothing to take back", OPT, async () => {
   const total = {
     id: "u1",
     type: OverwriteType.Member,
@@ -135,13 +142,13 @@ test("clearing a fully denied member sends nothing, because there is nothing to 
   assert.deepEqual(edits, [], "no request, so an excluded member cannot jam the caller either");
 });
 
-test("clearing a clean member takes back all three managed bits", async () => {
+test("clearing a clean member takes back all three managed bits", OPT, async () => {
   const { ch, edits } = channelWith([memberOverwrite("u1", [], ["ViewChannel", "SendMessages", "ReadMessageHistory"])]);
   assert.deepEqual((await clearManagedAllows(ch, "u1")).sort(), ["ReadMessageHistory", "SendMessages", "ViewChannel"]);
   assert.deepEqual(edits[0][1], { ViewChannel: null, SendMessages: null, ReadMessageHistory: null });
 });
 
-test("a denial on a DIFFERENT member does not block this member", async () => {
+test("a denial on a DIFFERENT member does not block this member", OPT, async () => {
   // The obvious over-correction. A channel-wide refusal would make one excluded member stop everyone
   // else being served, which is the same "guard causes a larger failure" shape as the role exit.
   const { ch, edits } = channelWith([memberOverwrite("someone-else", ["ViewChannel"])]);
@@ -151,7 +158,7 @@ test("a denial on a DIFFERENT member does not block this member", async () => {
   assert.deepEqual(edits[0][2], { type: OverwriteType.Member }, "explicit type, so a raw id resolves after a restart");
 });
 
-test("removing a role that denies ANY bit refuses, not only the three managed ones", async () => {
+test("removing a role that denies ANY bit refuses, not only the three managed ones", OPT, async () => {
   // This bot never grants a role, so only removal remains, and only from the decommission command.
   // Removing a role that denies something hands that permission back, so the command whose purpose is
   // taking access away would grant it. A role denying Connect inverts voice access exactly as one
@@ -163,19 +170,19 @@ test("removing a role that denies ANY bit refuses, not only the three managed on
   }
 });
 
-test("a denial on some OTHER role does not block removing this one", async () => {
+test("a denial on some OTHER role does not block removing this one", OPT, async () => {
   const { m, calls } = memberWith();
   await removeRole(guildDenying("other-role", ["ViewChannel"]), m, "r1");
   assert.deepEqual(calls, [["remove", "r1"]]);
 });
 
-test("a clean role is removed normally", async () => {
+test("a clean role is removed normally", OPT, async () => {
   const { m, calls } = memberWith();
   await removeRole(guildClean(), m, "r1");
   assert.deepEqual(calls, [["remove", "r1"]]);
 });
 
-test("a refusal is distinguishable from a failure, and says nothing was sent", async () => {
+test("a refusal is distinguishable from a failure, and says nothing was sent", OPT, async () => {
   // This distinction is why the earlier refusal was deleted rather than repaired. The ledger
   // compensates a failed first grant by revoking the whole record, which is right for a network
   // failure that may have applied some targets and wrong for a precondition that changed nothing. The
@@ -206,7 +213,7 @@ function discordSources(dir, out = []) {
   return out;
 }
 
-test("the module boundary catches the common ways a permission mutation escapes it", () => {
+test("the module boundary catches the common ways a permission mutation escapes it", OPT, () => {
   // A TRIPWIRE, and the name says so now. The previous name claimed that outside permissions.js the
   // mutating APIs are only ever read, and that claim is false, which was itself a finding.
   //
@@ -265,7 +272,7 @@ test("the module boundary catches the common ways a permission mutation escapes 
   );
 });
 
-test("the boundary rule actually rejects the evasions reviewers listed", () => {
+test("the boundary rule actually rejects the evasions reviewers listed", OPT, () => {
   // A checker nobody has tried to break is a checker nobody knows the strength of. Each fixture below
   // is a spelling that passed the previous version.
   const READ_ONLY = String.raw`\s*\??\.\s*(cache\b|fetch\s*\()`;
@@ -295,7 +302,7 @@ test("the boundary rule actually rejects the evasions reviewers listed", () => {
   }
 });
 
-test("both mutations refresh the channel before deciding, and use the refreshed view", async () => {
+test("both mutations refresh the channel before deciding, and use the refreshed view", OPT, async () => {
   // Every check in this file reads a cache, and a check against a cache of unknown age is mostly
   // imaginary. The stale view here says the member is clean; the refreshed one says they are denied.
   // If the operation decides on the stale view it grants over an exclusion.
@@ -325,7 +332,7 @@ test("both mutations refresh the channel before deciding, and use the refreshed 
   assert.deepEqual(freshEdits, [], "and refused before writing to either");
 });
 
-test("a channel that cannot be refreshed is still operated on, not abandoned", async () => {
+test("a channel that cannot be refreshed is still operated on, not abandoned", OPT, async () => {
   // Refusing to act when Discord is briefly unreachable would turn a blip into an outage. The
   // operation proceeds on what it has, which is the behaviour before the refresh existed.
   const { ch, edits } = channelWith([memberOverwrite("u1", [], ["ViewChannel"])]);
@@ -336,7 +343,7 @@ test("a channel that cannot be refreshed is still operated on, not abandoned", a
   assert.equal(edits.length, 1, "it fell back to the cached view and still took the access back");
 });
 
-test("a channel with no fetch method still works, so the operations do not require one", async () => {
+test("a channel with no fetch method still works, so the operations do not require one", OPT, async () => {
   const { ch, edits } = channelWith([memberOverwrite("u1", [], ["ViewChannel"])]);
   assert.deepEqual(await clearManagedAllows(ch, "u1"), ["ViewChannel"]);
   assert.equal(edits.length, 1);

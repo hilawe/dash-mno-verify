@@ -3,10 +3,28 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { OverwriteType, PermissionsBitField } from "discord.js";
+// discord.js is an OPTIONAL dependency. CI installs with `npm ci --omit=optional` to prove the
+// oracle and gateway run without the adapter toolchain, and these files imported it at the top
+// level, so they did not skip there, they FAILED to load. That is why CI was red for four days
+// while every local run was green: the local checkout has the optional packages installed.
+// Imported dynamically so the absence is a skip with a stated reason. The full-install CI job
+// is what actually exercises these tests.
+let discord;
+let runDecommission;
+let GrantLedger;
+try {
+  discord = await import("discord.js");
+  // The adapter modules import discord.js themselves, so they have to load inside the same guard.
+  // Guarding only the test's own import left these three files still failing to LOAD, which is a
+  // reminder that a dependency is absent for everything downstream of it, not just where it is named.
+  ({ runDecommission } = await import("../adapters/discord/decommission.js"));
+  ({ GrantLedger } = await import("../adapters/discord/grant_ledger.js"));
+} catch {
+  discord = null;
+}
+const OPT = discord ? {} : { skip: "discord.js is an optional dependency and is not installed" };
+const { OverwriteType, PermissionsBitField } = discord ?? {};
 
-import { runDecommission } from "../adapters/discord/decommission.js";
-import { GrantLedger } from "../adapters/discord/grant_ledger.js";
 
 // The decommission pass used to live inside a script that logs in to Discord at import, so no test
 // could reach it, and four separate defects survived two review rounds there. Each test below pins one
@@ -84,7 +102,7 @@ function withLedger(records, fn) {
 const chanRec = (channels) => ({ expiresAt: 9999, mode: "channel", guildId: "g1", channels });
 const roleRec = (roleId) => ({ expiresAt: 9999, mode: "role", guildId: "g1", roleId });
 
-test("a role with zero holders still retires its ledger rows", async () => {
+test("a role with zero holders still retires its ledger rows", OPT, async () => {
   // THE BLOCKER. Retirement was gated on `removed.length`, so a run that removed nobody skipped the
   // ledger entirely and exited zero. A role removed by hand, or a second run after a successful first
   // one, both land here. The rows survived, the bot refused to start on them forever, and the command
@@ -103,7 +121,7 @@ test("a role with zero holders still retires its ledger rows", async () => {
   });
 });
 
-test("a deleted channel can be retired with an explicit assertion, and not without one", async () => {
+test("a deleted channel can be retired with an explicit assertion, and not without one", OPT, async () => {
   const target = { mode: "channel", ids: ["dead"] };
   // Default: refuses, because a typo looks identical to a deleted channel from here.
   await withLedger({ u1: chanRec(["dead"]) }, async (ledger) => {
@@ -125,7 +143,7 @@ test("a deleted channel can be retired with an explicit assertion, and not witho
   });
 });
 
-test("one denied member does not stop every clean member on the channel being cleared", async () => {
+test("one denied member does not stop every clean member on the channel being cleared", OPT, async () => {
   // The twin of the case test/discord_permissions.test.js asserts for the mutation helper: a denial on
   // one member must not block another. That reasoning reached the helper and not this preflight, which
   // skipped the whole channel and stranded every unrelated holder's stale access.
@@ -148,7 +166,7 @@ test("one denied member does not stop every clean member on the channel being cl
   });
 });
 
-test("a preview changes nothing on Discord and nothing in the ledger", async () => {
+test("a preview changes nothing on Discord and nothing in the ledger", OPT, async () => {
   const { guild, edits } = fakeGuild({ channels: { c1: [ow("u1")] } });
   await withLedger({ u1: chanRec(["c1"]) }, async (ledger) => {
     const { removed } = await runDecommission({
@@ -161,7 +179,7 @@ test("a preview changes nothing on Discord and nothing in the ledger", async () 
   });
 });
 
-test("a transient role lookup failure retires nothing, even with the gone assertion", async () => {
+test("a transient role lookup failure retires nothing, even with the gone assertion", OPT, async () => {
   // The exit added for a deleted role became a way to forget a live one. Catching every error to null
   // meant one Discord 500 plus --confirm-target-gone deleted the rows for a role that was still live
   // and still disclosing. A failure to look is not evidence of absence.
@@ -189,7 +207,7 @@ test("a transient role lookup failure retires nothing, even with the gone assert
   });
 });
 
-test("a genuinely absent role is still retired with the assertion", async () => {
+test("a genuinely absent role is still retired with the assertion", OPT, async () => {
   // The exit must still work, or the fix reintroduces the guard with no exit.
   const { guild } = fakeGuild({ roles: {}, members: [] });
   await withLedger({ u1: roleRec("r1") }, async (ledger) => {
@@ -202,7 +220,7 @@ test("a genuinely absent role is still retired with the assertion", async () => 
   });
 });
 
-test("preview predicts exactly the set apply takes back", async () => {
+test("preview predicts exactly the set apply takes back", OPT, async () => {
   // A destructive command's preview is the only thing an operator checks before running it for real,
   // so it has to predict apply, not approximate it. Both now use the same question: does this member
   // have anything ALLOWED to take back.
@@ -225,7 +243,7 @@ test("preview predicts exactly the set apply takes back", async () => {
   });
 });
 
-test("confirm-target-gone is refused for a target no ledger record names", async () => {
+test("confirm-target-gone is refused for a target no ledger record names", OPT, async () => {
   // The flag retires rows for a target that no longer exists on Discord. A typo'd id also does not
   // exist on Discord, and the flag used to accept it and report success having retired nothing. If no
   // row names the target, the assertion has nothing to retire and is almost certainly a mistake.
@@ -242,7 +260,7 @@ test("confirm-target-gone is refused for a target no ledger record names", async
   });
 });
 
-test("a foreign-guild row is never retired, even in cleanup mode with the gone assertion", async () => {
+test("a foreign-guild row is never retired, even in cleanup mode with the gone assertion", OPT, async () => {
   // The cleanup command can open a ledger bound to another guild, because it is the documented exit
   // from that refusal. That bypass came with no check on the ROWS, so it retired a record made in one
   // guild while operating in another, which forgets access that is live and unreachable from here. A
@@ -275,7 +293,7 @@ test("a foreign-guild row is never retired, even in cleanup mode with the gone a
   }
 });
 
-test("an unlabelled legacy row is judged by the ledger's bound scope, not the current guild", async () => {
+test("an unlabelled legacy row is judged by the ledger's bound scope, not the current guild", OPT, async () => {
   // The cleanup escape lets this command open a ledger bound to guild A while configured for guild B.
   // A migrated legacy row carries no guildId, which is expected and is exactly why the binding exists.
   // Resolving it against B made it look local, so --confirm-target-gone accepted B's not-found as
@@ -310,7 +328,7 @@ test("an unlabelled legacy row is judged by the ledger's bound scope, not the cu
   }
 });
 
-test("a fully denied member is reported by neither preview nor apply, and is still retired", async () => {
+test("a fully denied member is reported by neither preview nor apply, and is still retired", OPT, async () => {
   // Nothing of the bot's remains on that channel for them, so clearManagedAllows makes no request. The
   // preview filter used to apply only to the dry run, so apply counted them as taken back while having
   // done nothing. They are retired either way: there is nothing left to track.
@@ -342,7 +360,7 @@ test("a fully denied member is reported by neither preview nor apply, and is sti
 // scope in one place and the CURRENT guild in the other. The broken rule only decides the
 // confirm-gone precondition, so this isolates that: the ONLY row is one explicitly naming the guild we
 // are connected to, and it is the row the command exists to retire.
-test("a row explicitly naming the connected guild is evidence for the gone assertion", async () => {
+test("a row explicitly naming the connected guild is evidence for the gone assertion", OPT, async () => {
   const dir = mkdtempSync(join(tmpdir(), "mno-dc-"));
   const file = join(dir, "grants.db");
   const opts = { exclusive: false, apply: async () => {}, revoke: async () => {}, now: () => 1000, log: () => {} };
@@ -367,7 +385,7 @@ test("a row explicitly naming the connected guild is evidence for the gone asser
   }
 });
 
-test("a row explicitly naming ANOTHER guild is neither evidence nor retired", async () => {
+test("a row explicitly naming ANOTHER guild is neither evidence nor retired", OPT, async () => {
   const dir = mkdtempSync(join(tmpdir(), "mno-dc-"));
   const file = join(dir, "grants.db");
   const opts = { exclusive: false, apply: async () => {}, revoke: async () => {}, now: () => 1000, log: () => {} };

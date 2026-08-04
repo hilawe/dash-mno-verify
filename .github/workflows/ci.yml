@@ -27,6 +27,29 @@ jobs:
       - name: Unit tests
         run: npm test
 
+  # THE FULL INSTALL, which is what actually exercises the adapters. The job above deliberately
+  # installs without optional dependencies to prove the oracle and gateway stand alone, and the
+  # adapter tests SKIP there. Without this job they would skip everywhere and the Discord adapter,
+  # which twelve review rounds were spent on, would have no CI coverage at all. It had none until
+  # 2026-08-04.
+  full:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.13"
+          cache: npm
+      - run: npm ci
+      - name: Unit tests, adapters included
+        run: npm test
+      - name: Fail if the adapter tests skipped, which would mean this job proves nothing
+        run: |
+          # The point of this job is that the optional packages ARE present. If discord.js is
+          # missing the suite still passes, by skipping, so assert the coverage exists rather than
+          # trusting a green tick that means the opposite.
+          node -e "import('discord.js').then(() => console.log('discord.js present, adapter tests ran')).catch(() => { console.error('discord.js MISSING: the adapter tests skipped and this job proved nothing'); process.exit(1); })"
+
   circuits:
     runs-on: ubuntu-latest
     steps:

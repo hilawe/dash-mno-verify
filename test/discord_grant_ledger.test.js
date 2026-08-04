@@ -2,23 +2,25 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, existsSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import { PermissionFlagsBits } from "discord.js";
+// discord.js is an OPTIONAL dependency. CI installs with `npm ci --omit=optional` to prove the
+// oracle and gateway run without the adapter toolchain, and these files imported it at the top
+// level, so they did not skip there, they FAILED to load. That is why CI was red for four days
+// while every local run was green: the local checkout has the optional packages installed.
+// Imported dynamically so the absence is a skip with a stated reason. The full-install CI job
+// is what actually exercises these tests.
+let discord;
+let GrantLedger, extraTargets, authorizesTarget, targetKey, parseTargetKey, staleTargets, memberDenialsOnGatedChannel, roleDenialsAcrossChannels, foreignGuildRecords, isGone, isNotOurs, retireTargetTransform;
+try {
+  discord = await import("discord.js");
+  // The adapter module imports discord.js itself, so it loads inside the same guard.
+  ({ GrantLedger, extraTargets, authorizesTarget, targetKey, parseTargetKey, staleTargets, memberDenialsOnGatedChannel, roleDenialsAcrossChannels, foreignGuildRecords, isGone, isNotOurs, retireTargetTransform } = await import("../adapters/discord/grant_ledger.js"));
+} catch {
+  discord = null;
+}
+const OPT = discord ? {} : { skip: "discord.js is an optional dependency and is not installed" };
+const { PermissionFlagsBits } = discord ?? {};
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  GrantLedger,
-  extraTargets,
-  authorizesTarget,
-  targetKey,
-  parseTargetKey,
-  staleTargets,
-  memberDenialsOnGatedChannel,
-  roleDenialsAcrossChannels,
-  foreignGuildRecords,
-  isGone,
-  isNotOurs,
-  retireTargetTransform,
-} from "../adapters/discord/grant_ledger.js";
 
 // The grant ledger is what makes Discord-side access durable and correctly revoked. These pin the
 // behaviors the review flagged: survive a restart, revoke on expiry, leave a fresh re-verification
@@ -43,7 +45,7 @@ function onDisk(file) {
 const rec = (expiresAt) => ({ expiresAt, mode: "channel", channels: ["c1"] });
 const noop = () => Promise.resolve();
 
-test("a grant persists and applies, and a fresh ledger on the same file sees it (restart)", async () => {
+test("a grant persists and applies, and a fresh ledger on the same file sees it (restart)", OPT, async () => {
   const file = tmpFile();
   const applied = [];
   const l1 = new GrantLedger({ exclusive: false, file, apply: (u, r) => (applied.push([u, r.expiresAt]), noop()), revoke: noop, now: () => 100 });
@@ -55,7 +57,7 @@ test("a grant persists and applies, and a fresh ledger on the same file sees it 
   assert.equal(l2.has("u1"), true);
 });
 
-test("the sweep revokes an expired grant, removes it, reports it, and leaves a valid one", async () => {
+test("the sweep revokes an expired grant, removes it, reports it, and leaves a valid one", OPT, async () => {
   const file = tmpFile();
   const revoked = [];
   const clock = { t: 100 };
@@ -69,7 +71,7 @@ test("the sweep revokes an expired grant, removes it, reports it, and leaves a v
   assert.equal(l.has("valid"), true);
 });
 
-test("a not-yet-expired grant is left alone by the sweep", async () => {
+test("a not-yet-expired grant is left alone by the sweep", OPT, async () => {
   const file = tmpFile();
   const revoked = [];
   const l = new GrantLedger({ exclusive: false, file, apply: noop, revoke: (u) => (revoked.push(u), noop()), now: () => 100 });
@@ -84,7 +86,7 @@ test("a not-yet-expired grant is left alone by the sweep", async () => {
 // The race the review found: the sweep deletes an expired record then awaits the revoke, and a fresh
 // re-verification can land in that window. The per-user lock must serialize the two, so the revoke
 // fully completes before the new grant applies, and the fresh grant wins.
-test("a grant and a revoke for the same user do not interleave", async () => {
+test("a grant and a revoke for the same user do not interleave", OPT, async () => {
   const file = tmpFile();
   // The grant is made while it is still valid and the clock then moves past it, which is how a grant
   // actually expires. Granting an already-expired record is refused now, since that would apply
@@ -121,7 +123,7 @@ test("a grant and a revoke for the same user do not interleave", async () => {
 // it, and nothing else creates a missing overwrite.
 const refusal = (msg) => Object.assign(new Error(msg), { mutated: false });
 
-test("a first grant that sent nothing is not compensated, and leaves no record behind", async () => {
+test("a first grant that sent nothing is not compensated, and leaves no record behind", OPT, async () => {
   const file = tmpFile();
   const revoked = [];
   const l = new GrantLedger({ exclusive: false, file, apply: () => Promise.reject(refusal("denied")), revoke: (u) => (revoked.push(u), noop()), now: () => 100 });
@@ -131,7 +133,7 @@ test("a first grant that sent nothing is not compensated, and leaves no record b
   assert.equal("u1" in onDisk(file), false);
 });
 
-test("a REPAIRING adapter keeps a transient first grant's record and does not compensate", async () => {
+test("a REPAIRING adapter keeps a transient first grant's record and does not compensate", OPT, async () => {
   // This asserted the opposite a few commits ago, and the reason it changed is that a repair path now
   // exists. Without one, a kept record was a live grant with no access behind it and nothing that
   // would ever fix it, so revoking and dropping the row was the least-wrong option. With
@@ -155,7 +157,7 @@ test("a REPAIRING adapter keeps a transient first grant's record and does not co
 // keeping it is what guarantees the sweep can find and clear it. Reverting to the prior expiry would
 // leave any newly applied part of the grant untracked past that earlier deadline. So the assertion
 // below expects the new expiry, and nothing is revoked, because the prior access is still live.
-test("a failed same-target renewal keeps the new grant and strands nothing", async () => {
+test("a failed same-target renewal keeps the new grant and strands nothing", OPT, async () => {
   const file = tmpFile();
   let fail = false;
   const revoked = [];
@@ -174,7 +176,7 @@ test("a failed same-target renewal keeps the new grant and strands nothing", asy
 
 // A ledger that cannot be read is an error, never "nothing to revoke". Reading it as empty would
 // silently strand every live grant, because the sweep only ever looks at what it loaded.
-test("a missing ledger loads as empty (first run), an unreadable one fails startup", () => {
+test("a missing ledger loads as empty (first run), an unreadable one fails startup", OPT, () => {
   const empty = tmpFile(); // the dir exists, the file does not
   assert.equal(new GrantLedger({ exclusive: false, file: empty, apply: noop, revoke: noop }).size(), 0);
 
@@ -186,7 +188,7 @@ test("a missing ledger loads as empty (first run), an unreadable one fails start
 // A row that does not satisfy the adapter's own validator fails the load rather than being skipped.
 // The mode-specific target has to be there, or a sweep would delete the record without being able to
 // revoke the real access behind it.
-test("a malformed row already in the database fails startup", () => {
+test("a malformed row already in the database fails startup", OPT, () => {
   for (const bad of [
     { mode: "channel" }, // no expiresAt
     { expiresAt: 100, mode: "channel" }, // a mode with no target
@@ -209,7 +211,7 @@ test("a malformed row already in the database fails startup", () => {
 // The migration off the JSON file this store replaces. It has to move the grants and the clock state
 // across, refuse a file it cannot vouch for rather than adopt it partially, and leave the old file
 // behind under a new name so the operator keeps their only copy of the previous state.
-test("a legacy JSON ledger is adopted once, with its clock state, and moved aside", () => {
+test("a legacy JSON ledger is adopted once, with its clock state, and moved aside", OPT, () => {
   const dir = tmpDir();
   const legacy = join(dir, "grants.json");
   const file = join(dir, "grants.db");
@@ -236,7 +238,7 @@ test("a legacy JSON ledger is adopted once, with its clock state, and moved asid
   assert.equal(existsSync(legacy), true, "and the restored file is not consumed");
 });
 
-test("a legacy ledger with a malformed record fails the migration rather than adopting part of it", () => {
+test("a legacy ledger with a malformed record fails the migration rather than adopting part of it", OPT, () => {
   const dir = tmpDir();
   const legacy = join(dir, "grants.json");
   const file = join(dir, "grants.db");
@@ -259,7 +261,7 @@ test("a legacy ledger with a malformed record fails the migration rather than ad
 
 // A real revoke failure (a Discord outage or lost permission, not a 404) must not drop the record, or
 // the access goes untracked and permanent. The sweep keeps it and a later sweep retries.
-test("a revoke failure during the sweep keeps the grant for a later retry", async () => {
+test("a revoke failure during the sweep keeps the grant for a later retry", OPT, async () => {
   const file = tmpFile();
   const clock = { t: 100 };
   let failRevoke = true;
@@ -280,7 +282,7 @@ test("a revoke failure during the sweep keeps the grant for a later retry", asyn
 
 // A renewal that drops a target (here c2, or a mode or role-id change) must revoke the orphaned old
 // target before applying the new grant, so the old access does not stay live and untracked.
-test("a renewal that drops a target revokes the orphaned one before applying", async () => {
+test("a renewal that drops a target revokes the orphaned one before applying", OPT, async () => {
   const file = tmpFile();
   const revokedRecords = [];
   // ORDER is the claim in the name, and the previous version never checked it: apply was a noop, so a
@@ -306,7 +308,7 @@ test("a renewal that drops a target revokes the orphaned one before applying", a
 
 // If revoking the orphaned target fails, the renewal must abort with the prior grant intact, so the
 // old access stays both live and tracked rather than half-migrated and stranded.
-test("if migrating the prior grant fails, the renewal aborts and the row still covers the old target", async () => {
+test("if migrating the prior grant fails, the renewal aborts and the row still covers the old target", OPT, async () => {
   const file = tmpFile();
   let migrateFail = false;
   // apply was a noop here too, so a mutant that applied the replacement inside the failure path still
@@ -339,7 +341,7 @@ test("if migrating the prior grant fails, the renewal aborts and the row still c
 
 // The write path must reject a malformed record (here a non-finite expiry), or it would persist and
 // apply access that never expires and then breaks the next startup load.
-test("grant refuses a malformed record before writing or applying", async () => {
+test("grant refuses a malformed record before writing or applying", OPT, async () => {
   const file = tmpFile();
   const applied = [];
   const l = new GrantLedger({ exclusive: false, file, apply: (u) => (applied.push(u), noop()), revoke: noop, now: () => 100 });
@@ -352,7 +354,7 @@ test("grant refuses a malformed record before writing or applying", async () => 
 // Grants for different members now run in parallel rather than behind one global queue, so this is
 // the check that parallelism does not lose an update. Under the old whole-map rewrite two saves could
 // interleave and one would win; a per-row write cannot.
-test("concurrent grants for different users all persist", async () => {
+test("concurrent grants for different users all persist", OPT, async () => {
   const file = tmpFile();
   const l = new GrantLedger({ exclusive: false, file, apply: noop, revoke: noop, now: () => 100 });
   await Promise.all([l.grant("u1", rec(200)), l.grant("u2", rec(200)), l.grant("u3", rec(200))]);
@@ -362,7 +364,7 @@ test("concurrent grants for different users all persist", async () => {
 // The commit boundary: when a grant's own write fails, nothing is granted and the ledger does not
 // contain it either, while a prior committed grant is left intact. There is no in-memory rollback to
 // get wrong any more, because a single row write either committed or it did not.
-test("a persist failure grants nothing and writes nothing", async () => {
+test("a persist failure grants nothing and writes nothing", OPT, async () => {
   const file = tmpFile();
   let failNextWrite = false;
   // "grants nothing" is half the name and was asserted only by implication, with apply as a noop that
@@ -388,7 +390,7 @@ test("a persist failure grants nothing and writes nothing", async () => {
   assert.deepEqual(Object.keys(onDisk(file)), ["a"]); // and never written
 });
 
-test("extraTargets returns only targets the prior grant did not cover", () => {
+test("extraTargets returns only targets the prior grant did not cover", OPT, () => {
   assert.equal(extraTargets({ mode: "channel", channels: ["c1"] }, { mode: "channel", channels: ["c1"] }), null);
   assert.deepEqual(extraTargets({ mode: "channel", channels: ["c1", "c2"] }, { mode: "channel", channels: ["c1"] }), { mode: "channel", channels: ["c2"] });
   assert.deepEqual(extraTargets({ mode: "role", roleId: "r2" }, { mode: "role", roleId: "r1" }), { mode: "role", roleId: "r2" });
@@ -401,7 +403,7 @@ test("extraTargets returns only targets the prior grant did not cover", () => {
 // alone. Getting this wrong in one direction strips a member who just re-verified; in the other it
 // leaves access from a previous target in place, which is the whole thing reconciliation exists to
 // find. Liveness alone is not the answer, because a record for an old target can still be live.
-test("authorizesTarget accepts only a live record for the configured target", () => {
+test("authorizesTarget accepts only a live record for the configured target", OPT, () => {
   const role = { mode: "role", channel: null, roleId: "r1" };
   assert.equal(authorizesTarget({ mode: "role", roleId: "r1" }, true, role), true);
   assert.equal(authorizesTarget({ mode: "role", roleId: "r1" }, false, role), false, "expired");
@@ -431,7 +433,7 @@ test("authorizesTarget accepts only a live record for the configured target", ()
   assert.equal(authorizesTarget({ mode: "channel", channels: ["c1"] }, false, onC1), false, "expired");
 });
 
-test("targetKey treats channel ids as a set, so reordering is not a new target", () => {
+test("targetKey treats channel ids as a set, so reordering is not a new target", OPT, () => {
   assert.equal(targetKey("channel", ["c2", "c1"]), targetKey("channel", ["c1", "c2"]));
   assert.equal(targetKey("channel", ["c1", "c1", "c2"]), targetKey("channel", ["c1", "c2"]));
   assert.notEqual(targetKey("channel", ["c1"]), targetKey("channel", ["c1", "c2"]));
@@ -443,7 +445,7 @@ test("targetKey treats channel ids as a set, so reordering is not a new target",
 // only the first two colon-separated parts, so `role:a:role:b` quietly became `role:a` and the rest was
 // forgotten. Either way a target could go unswept while the operation reported success, so the whole
 // string is validated now.
-test("parseTargetKey validates the whole string, not just the front of it", () => {
+test("parseTargetKey validates the whole string, not just the front of it", OPT, () => {
   assert.deepEqual(parseTargetKey("role:r1"), { mode: "role", ids: ["r1"] });
   assert.deepEqual(parseTargetKey("channel:c1,c2"), { mode: "channel", ids: ["c1", "c2"] });
 
@@ -473,7 +475,7 @@ test("parseTargetKey validates the whole string, not just the front of it", () =
 // ledger rows still name, so an old channel whose rows have expired and been swept, or that held
 // access predating the ledger entirely, is invisible to it. That is why the README tells operators to
 // decommission on every repoint rather than to wait for a warning.
-test("staleTargets names the stale targets DISCOVERABLE from surviving records, and nothing current", () => {
+test("staleTargets names the stale targets DISCOVERABLE from surviving records, and nothing current", OPT, () => {
   const chanNow = { mode: "channel", channels: ["c1"], roleId: null };
 
   assert.deepEqual(staleTargets([{ mode: "channel", channels: ["c1"] }], chanNow), [], "the current target is not stale");
@@ -521,7 +523,7 @@ const fakeOverwrite = (id, allow = [], deny = []) => ({
   deny: { has: (b) => deny.includes(b) },
 });
 
-test("a per-member denial on a gated channel is detected, so the bot can refuse rather than fight it", () => {
+test("a per-member denial on a gated channel is detected, so the bot can refuse rather than fight it", OPT, () => {
   assert.deepEqual(
     memberDenialsOnGatedChannel([fakeOverwrite("u1", ["ViewChannel", "SendMessages"])]),
     [],
@@ -563,7 +565,7 @@ const denyBits = (names) => ({
 });
 const roleOverwrite = (id, denied = []) => ({ id, deny: denyBits(denied) });
 
-test("a role carrying ANY denial is detected, because adding it would remove access", () => {
+test("a role carrying ANY denial is detected, because adding it would remove access", OPT, () => {
   const ch = (id, overwrites) => ({ id, overwrites });
 
   assert.deepEqual(
@@ -601,7 +603,7 @@ test("a role carrying ANY denial is detected, because adding it would remove acc
 // gone" let a sweep resolve and DELETE the row, so repointing the bot at a different server silently
 // discarded the records of access still live in the old one. "Cannot act here" and "nothing to act on"
 // are different, which is why isNotOurs is separate from isGone.
-test("a record from another guild is detected, so a repoint cannot delete what it cannot reach", () => {
+test("a record from another guild is detected, so a repoint cannot delete what it cannot reach", OPT, () => {
   assert.deepEqual(foreignGuildRecords([{ guildId: "g1" }], "g1"), [], "our own guild is not foreign");
   assert.deepEqual(foreignGuildRecords([{ guildId: "OLD" }], "g1"), [{ guildId: "OLD" }]);
   assert.deepEqual(
@@ -617,7 +619,7 @@ test("a record from another guild is detected, so a repoint cannot delete what i
   assert.deepEqual(foreignGuildRecords([], "g1"), []);
 });
 
-test("isNotOurs and isGone say different things, because conflating them deleted live records", () => {
+test("isNotOurs and isGone say different things, because conflating them deleted live records", OPT, () => {
   assert.equal(isGone({ code: 10003 }), true, "Unknown Channel in this guild: nothing to take back");
   assert.equal(isGone({ status: 404 }), true);
   assert.equal(isNotOurs({ code: "GuildChannelUnowned" }), true, "another guild's channel: alive, unreachable");
@@ -636,7 +638,7 @@ test("isNotOurs and isGone say different things, because conflating them deleted
 // What must not be retired matters as much as what must: whatever did not actually come back stays
 // tracked.
 
-test("retiring a channel narrows the records that name it and drops the ones left with nothing", () => {
+test("retiring a channel narrows the records that name it and drops the ones left with nothing", OPT, () => {
   const t = retireTargetTransform({ mode: "channel", ids: ["c1"] });
   assert.deepEqual(
     t({ expiresAt: 9, mode: "channel", channels: ["c1", "c2"] }, "u1"),
@@ -650,7 +652,7 @@ test("retiring a channel narrows the records that name it and drops the ones lef
   );
 });
 
-test("a member whose removal failed keeps naming the target, so the sweep keeps trying", () => {
+test("a member whose removal failed keeps naming the target, so the sweep keeps trying", OPT, () => {
   const t = retireTargetTransform({
     mode: "channel",
     ids: ["c1"],
@@ -662,7 +664,7 @@ test("a member whose removal failed keeps naming the target, so the sweep keeps 
     "one stuck member does not keep the target tracked for everybody else");
 });
 
-test("a channel skipped whole is retired for nobody, even members with no failure of their own", () => {
+test("a channel skipped whole is retired for nobody, even members with no failure of their own", OPT, () => {
   const t = retireTargetTransform({ mode: "channel", ids: ["c1", "c2"], skippedChannels: new Set(["c1"]) });
   assert.deepEqual(
     t({ expiresAt: 9, mode: "channel", channels: ["c1", "c2"] }, "u1"),
@@ -671,7 +673,7 @@ test("a channel skipped whole is retired for nobody, even members with no failur
   );
 });
 
-test("retiring a role drops the records naming it and leaves every other record alone", () => {
+test("retiring a role drops the records naming it and leaves every other record alone", OPT, () => {
   const t = retireTargetTransform({ mode: "role", ids: ["r1"], failedMembers: new Set(["stuck"]) });
   assert.equal(t({ expiresAt: 9, mode: "role", roleId: "r1" }, "u1"), null);
   const other = { expiresAt: 9, mode: "role", roleId: "r2" };
@@ -687,7 +689,7 @@ test("retiring a role drops the records naming it and leaves every other record 
 // applied, and a row naming only the old target. Repair could not help, because it ignores channels
 // outside the current configuration, so they stayed verified, recorded, and locked out with the
 // epoch's proof already spent. The row must always be a superset of what could be live.
-test("a renewal whose write fails still leaves a row naming the NEW targets", async () => {
+test("a renewal whose write fails still leaves a row naming the NEW targets", OPT, async () => {
   const file = tmpFile();
   const events = [];
   let failWrites = false;
@@ -716,7 +718,7 @@ test("a renewal whose write fails still leaves a row naming the NEW targets", as
   assert.deepEqual(l.get("u1").channels, ["old"], "and the row still names what is actually live");
 });
 
-test("a renewal that changes target covers both while the old one is being revoked", async () => {
+test("a renewal that changes target covers both while the old one is being revoked", OPT, async () => {
   const file = tmpFile();
   const seen = [];
   const l = new GrantLedger({
@@ -740,7 +742,7 @@ test("a renewal that changes target covers both while the old one is being revok
   assert.deepEqual(l.get("u1").channels.sort(), ["b", "c"], "and settles on the new set");
 });
 
-test("a failed orphan revoke restores the prior record, so the old target keeps its own deadline", async () => {
+test("a failed orphan revoke restores the prior record, so the old target keeps its own deadline", OPT, async () => {
   // The covering row carries the NEW deadline. Leaving it after a failed orphan revoke extended the
   // orphaned channel's life to that deadline: the access was still live, the row claimed a later
   // expiry than it was ever granted for, and the sweep never fired at the original time so nothing
@@ -769,7 +771,7 @@ test("a failed orphan revoke restores the prior record, so the old target keeps 
   assert.equal(row.expiresAt, 200, "with its ORIGINAL deadline, not the abandoned renewal's");
 });
 
-test("a successful migrate still settles on the new record and deadline", async () => {
+test("a successful migrate still settles on the new record and deadline", OPT, async () => {
   const file = tmpFile();
   const l = new GrantLedger({
     exclusive: false, repairs: true, file,
@@ -786,7 +788,7 @@ test("a successful migrate still settles on the new record and deadline", async 
 // made it the surviving sibling: a record held the guild, channels, mode, and expiry, but nothing
 // tying it to the context the member proved in. Change DISCORD_CONTEXT_ID while keeping the guild and
 // channels, and an old live record still authorized the new context.
-test("a record proved in another context authorizes nothing here", () => {
+test("a record proved in another context authorizes nothing here", OPT, () => {
   const rec = { expiresAt: 9, mode: "channel", channels: ["c1"], contextHash: "ctx-old" };
   assert.equal(
     authorizesTarget(rec, true, { mode: "channel", channel: "c1", contextHash: "ctx-new" }),
@@ -796,7 +798,7 @@ test("a record proved in another context authorizes nothing here", () => {
   assert.equal(authorizesTarget(rec, true, { mode: "channel", channel: "c1", contextHash: "ctx-old" }), true);
 });
 
-test("a record with no context authorizes nothing, rather than being assumed local", () => {
+test("a record with no context authorizes nothing, rather than being assumed local", OPT, () => {
   // Unknown authority is not local authority. Treating unknown as ours is the same mistake the guild
   // binding already cost a blocker for. Such a record simply expires on its own.
   const legacy = { expiresAt: 9, mode: "channel", channels: ["c1"] };
