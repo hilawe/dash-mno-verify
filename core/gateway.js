@@ -284,6 +284,18 @@ if (config.store === "platform") {
         await fh.close();
       }
       await rename(tmpPath, config.platformSchedulePath);
+      // AND FLUSH THE DIRECTORY. The temp file's CONTENT was flushed before the rename, but the
+      // rename itself is a directory operation, and on a crash before that directory entry is
+      // durable the marker can vanish entirely even though its bytes reached the disk. The whole
+      // point of the marker is that a LATER boot compares against it, so losing it means the next
+      // start silently records a new schedule and the assertion protects nothing. Filesystem
+      // behaviour varies, which is why this is done rather than reasoned about.
+      const dirHandle = await open(dirname(config.platformSchedulePath), "r");
+      try {
+        await dirHandle.sync();
+      } finally {
+        await dirHandle.close();
+      }
     }
   }
   const { connectPlatform, DocumentNullifierStore } = await import("./platform_store.js");

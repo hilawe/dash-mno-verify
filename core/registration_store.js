@@ -329,7 +329,26 @@ export class FileBackend {
       );
     }
     if (!seenHeader && this.schedule != null) {
-      await appendFile(this.path, JSON.stringify({ type: "schedule", schedule: this.schedule }) + "\n");
+      // THROUGH A HANDLE, FLUSHED, AND THE DIRECTORY FLUSHED TOO. appendFile() creates the file and
+      // returns without either. This line CREATES the registration log on a fresh deployment, so a
+      // crash here could leave a file whose directory entry never became durable, and the next boot
+      // would find no file at all and stamp a fresh header. Any record acknowledged in between would
+      // be gone with it, which breaks the stated guarantee that a reported registration survives a
+      // crash. Records appended later already flush themselves; it was only the creation that did
+      // not.
+      const fh = await open(this.path, "a");
+      try {
+        await fh.writeFile(JSON.stringify({ type: "schedule", schedule: this.schedule }) + "\n");
+        await fh.sync();
+      } finally {
+        await fh.close();
+      }
+      const dirHandle = await open(dirname(this.path), "r");
+      try {
+        await dirHandle.sync();
+      } finally {
+        await dirHandle.close();
+      }
     }
   }
 

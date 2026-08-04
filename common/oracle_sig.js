@@ -162,7 +162,21 @@ export function signSnapshot(message, privateKey) {
 export function addSignature(snapshot, privateKey) {
   const key = rawPublicB64(privateKey);
   const sig = signSnapshot(snapshotMessage(snapshot), privateKey);
-  const others = (snapshot.sigs ?? []).filter((s) => s && s.key !== key);
+  // DEDUPLICATE ON THE DECODED KEY, not on the label as written. The same 32 bytes have several
+  // base64 spellings (padding, base64url), so a string comparison left an entry for the SAME signer
+  // in place under a different spelling, and the promise of one entry per key quietly failed. The
+  // gateway now refuses a snapshot carrying two signatures for one key, so this had turned into a
+  // way for an ordinary re-sign to produce a snapshot nothing would accept. Anything that does not
+  // decode is kept untouched: it cannot be this signer, and silently dropping a foreign entry is not
+  // this function's business.
+  const others = (snapshot.sigs ?? []).filter((s) => {
+    if (!s || typeof s.key !== "string") return true;
+    try {
+      return rawPublicB64(publicKeyFromRaw(s.key)) !== key;
+    } catch {
+      return true;
+    }
+  });
   return [...others, { key, sig }];
 }
 

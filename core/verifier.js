@@ -152,15 +152,32 @@ export async function verifyMembership({
   // The spend stays recorded either way: for this account it is the same tag it would spend next
   // time, and un-spending on a boundary would need a compensating delete that could itself be
   // interrupted, which is a worse failure than a refused grant.
+  // AFTER THE SPEND, ONLY REFUSE FOR REASONS THAT MAKE THE SPENT TAG IRRELEVANT ANYWAY.
+  //
+  // The tag is keyed by (epoch, contextHash, nullifier). If the EPOCH or SEASON moved, the member's
+  // next attempt uses a different key, so refusing costs them nothing they can still use. If the
+  // ROOT aged out, the epoch is unchanged, the tag is spent, and no grant was returned. On a store
+  // that records the granting account that is recoverable, because the same account can re-verify
+  // and be re-granted. On the Platform store it is NOT: the account is deliberately not persisted
+  // for privacy, so get() returns null, so no re-grant is possible, and the member is denied for the
+  // rest of the epoch by a timing condition they cannot control or observe. A reviewer found that
+  // the comment promising "the same tag it would spend next time" was true locally and false there.
+  //
+  // The root was already checked twice before this point, before the proof and before the spend, so
+  // a root that aged out during the store round trip means the member proved against a root the
+  // gateway accepted moments earlier. Burning them for that is disproportionate to what it prevents,
+  // which is a grant against a root that just left a window bounded by an age rule anyway.
   const after = await periodStillCurrent();
-  if (after !== null) return { ok: false, reason: after };
+  if (after !== null && after !== "stale-or-unknown-root") return { ok: false, reason: after };
   if (dup && dup.duplicate) {
     if (await claimedBySameAccount()) {
       // The ownership lookup is itself an await, so the period can move inside it too. Every await
       // between the last check and a returned grant needs its own, which is why this sits here
       // rather than being folded into the one above.
       const afterLookup = await periodStillCurrent();
-      if (afterLookup !== null) return { ok: false, reason: afterLookup };
+      if (afterLookup !== null && afterLookup !== "stale-or-unknown-root") {
+        return { ok: false, reason: afterLookup };
+      }
       return { ok: true, nullifier: s.nullifier, epoch: s.epoch, regranted: true };
     }
     return { ok: false, reason: "already-used" };

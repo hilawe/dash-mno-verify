@@ -212,47 +212,7 @@ test("a rejected append leaves no trace, so root() and the full build can never 
   assert.equal(t.root(), t.rootFromFullBuild(), "the two views agree, which is the real property");
 });
 
-test("a SMALL rebuild replays appends, which is the branch every real deployment takes", async () => {
-  // THE BRANCH THE OTHER TESTS MISS, and the miss inverted coverage against production. At depth 6
-  // the replay branch needs N <= 10, and every other fromCommitments call in this file uses 20 at
-  // depth 6 or 4 at depth 2, all of which exceed the threshold and take the full build. A reviewer
-  // deleted the replay branch entirely and every test here still passed. At the production depth of
-  // 16 that branch covers up to 4096 members, which is to say every community this will ever serve,
-  // so the file was testing only the branch that starts past 4097.
-  const DEPTH = 6;
-  const cs = Array.from({ length: 8 }, (_, i) => String(4_000_000 + i)); // 8*6 = 48 <= 64, replays
-  const rebuilt = await MembersTree.fromCommitments(cs, DEPTH);
-  const appended = await MembersTree.create(DEPTH);
-  for (const c of cs) appended.append(c);
-  assert.equal(rebuilt.root(), appended.root());
 
-  assert.equal(rebuilt.root(), rebuilt.rootFromFullBuild(), "and it agrees with the reference build");
-  rebuilt.append("555");
-  appended.append("555");
-  assert.equal(rebuilt.root(), appended.root(), "the replayed frontier serves later appends");
-});
-
-test("a large rebuild seeds the frontier from a full build and still matches an appended tree", async () => {
-  // The OTHER branch. Replaying appends costs depth hashes per member and the padded full
-  // build costs capacity-1 whatever the count, so they cross at capacity/depth. Below it the replay
-  // wins, above it the full build does and the frontier is derived from it. A reviewer measured the
-  // crossover on the real depth: making appends cheap while making the RECOVERY path unboundedly
-  // worse would have moved the stall rather than removed it.
-  const DEPTH = 6; // capacity 64, so replay needs N*6 <= 64, i.e. N <= 10; 20 takes the full build
-  const cs = Array.from({ length: 20 }, (_, i) => String(3_000_000 + i));
-  const rebuilt = await MembersTree.fromCommitments(cs, DEPTH);
-  const appended = await MembersTree.create(DEPTH);
-  for (const c of cs) appended.append(c);
-  assert.equal(rebuilt.root(), appended.root(), "the two rebuild strategies agree");
-  assert.equal(rebuilt.root(), rebuilt.rootFromFullBuild());
-
-  // And the DERIVED frontier must serve future appends exactly as a replayed one would, which is the
-  // part a root comparison alone would not catch.
-  rebuilt.append("999");
-  appended.append("999");
-  assert.equal(rebuilt.root(), appended.root(), "the derived frontier is usable, not just decorative");
-  assert.equal(rebuilt.root(), rebuilt.rootFromFullBuild());
-});
 
 test("SeasonMembers.commitments hands out a copy, so a caller cannot desync the cached root", async () => {
   // Handing out the live array was harmless while the root was recomputed from it on every read.
@@ -268,35 +228,6 @@ test("SeasonMembers.commitments hands out a copy, so a caller cannot desync the 
   handed.sort();
   assert.deepEqual(sm.commitments(CTX), ["111"], "the caller mutated its own copy");
   assert.equal(sm.root(CTX), rootBefore, "and the served root still describes the real member set");
-});
-
-// THE WORK IS COUNTED, because the roots cannot tell the branches apart. Both rebuild strategies are
-// correct and produce identical roots, so deleting the cheap one is a PERFORMANCE regression that no
-// assertion about a root can catch. A first attempt asserted on the level cache instead, and two
-// reviewers independently pointed out that this is a proxy: a mutation can do the expensive work and
-// then clear the cache. Counting Poseidon calls measures the claim itself.
-test("each rebuild branch does the hashing its size warrants, counted rather than inferred", async () => {
-  const DEPTH = 6;
-  const CAP = 2 ** DEPTH;
-  const base = await MembersTree.create(DEPTH);
-
-  // The constructor precomputes `depth` zero-subtree roots, so that is the floor for any new tree.
-  const countFor = async (n) => {
-    let hashes = 0;
-    const counting = (...a) => { hashes += 1; return base.poseidon(...a); };
-    counting.F = base.poseidon.F;
-    const cs = Array.from({ length: n }, (_, i) => String(6_000_000 + i));
-    await MembersTree.fromCommitments(cs, DEPTH, counting);
-    return hashes - DEPTH; // discount the zeros
-  };
-
-  // Small: replay, so depth hashes per member.
-  assert.equal(await countFor(4), 4 * DEPTH, "four members replayed cost four appends' worth");
-
-  // Large: one padded build, capacity-1 hashes, independent of the member count.
-  const big = await countFor(40);
-  assert.equal(big, CAP - 1, "forty members cost one full build, not forty appends");
-  assert.ok(big < 40 * DEPTH, "which is cheaper than replaying them, the entire point of the branch");
 });
 
 test("a frontier seeded from a full build serves later appends at EVERY starting size", async () => {
@@ -324,17 +255,73 @@ test("a frontier seeded from a full build serves later appends at EVERY starting
   }
 });
 
-test("a seeded rebuild does not retain the full padded tree it built", async () => {
-  // The seeded branch calls levels(), which builds and CACHES the whole padded tree. Everything
-  // needed from it (the frontier entries and the root) is copied out immediately, so leaving the
-  // cache populated retained 131,071 nodes at depth 16 for the life of the process, with no
-  // consumer: the gateway never asks for a path. A reviewer found it by reading; measured at 131,071
-  // before the fix. The replay branch never had it, because append() nulls the cache.
+
+// THE REBUILD IS ONE PASS NOW, so there is no branch to witness and no threshold to get wrong. What
+// replaces those tests is a direct measurement of the cost, because the whole point of the carry
+// stack is what it costs: the roots were always correct under every previous strategy too.
+test("a rebuild costs N-1 hashes plus one fold, whatever the member count", async () => {
   const DEPTH = 6;
-  const cs = Array.from({ length: 40 }, (_, i) => String(5_500_000 + i)); // 40*6 > 63, seeded branch
-  const seeded = await MembersTree.fromCommitments(cs, DEPTH);
-  assert.equal(seeded._levels, null, "the tree it built to seed itself is not kept");
-  assert.equal(seeded.root(), seeded.rootFromFullBuild(), "and the root survived the drop");
-  seeded.append("42");
-  assert.equal(seeded.root(), seeded.rootFromFullBuild(), "as does the frontier it extracted");
+  const base = await MembersTree.create(DEPTH);
+
+  const countFor = async (n) => {
+    let hashes = 0;
+    const counting = (...a) => { hashes += 1; return base.poseidon(...a); };
+    counting.F = base.poseidon.F;
+    const cs = Array.from({ length: n }, (_, i) => String(6_000_000 + i));
+    await MembersTree.fromCommitments(cs, DEPTH, counting);
+    return hashes - DEPTH; // discount the zero-subtree roots the constructor precomputes
+  };
+
+  // Each combine removes one node, and the walk starts with N and ends with popcount(N) entries, so
+  // the combines number N - popcount(N). The fold to the root costs `depth` more. This test is why
+  // the code comment says that rather than "N-1": the first version claimed N-1, which holds only
+  // for powers of two, and this caught it at three members.
+  const popcount = (x) => x.toString(2).split("").filter((b) => b === "1").length;
+  for (const n of [1, 2, 3, 5, 8, 13, 40]) {
+    assert.equal(
+      await countFor(n),
+      n - popcount(n) + DEPTH,
+      `wrong hash count rebuilding ${n} members`,
+    );
+  }
+
+  // Cheaper than both strategies it replaced, at a size where they differ: replaying appends costs
+  // N*depth (240 here) and a padded build costs capacity-1 (63), against this one's 44.
+  const cost40 = 40 - popcount(40) + DEPTH;
+  assert.ok(cost40 < 40 * DEPTH, "cheaper than replaying appends");
+  assert.ok(cost40 < 2 ** DEPTH - 1, "and cheaper than a padded full build");
+});
+
+test("an exactly-full tree rebuilds to the right root, which the bit fold alone cannot do", async () => {
+  // The carry stack combines an exactly-full tree all the way to a single node at the root level,
+  // and at that size there is no next insertion position for the bit fold to describe: every bit
+  // below the root is clear, so the fold would return the EMPTY tree's root. Found by walking every
+  // size rather than the interesting-looking ones. It cannot self-correct either, since a full tree
+  // refuses every append.
+  const DEPTH = 4;
+  const CAP = 2 ** DEPTH;
+  const shared = await MembersTree.create(DEPTH);
+  const cs = Array.from({ length: CAP }, (_, i) => String(7_700_000 + i));
+  const rebuilt = await MembersTree.fromCommitments(cs, DEPTH, shared.poseidon);
+  const appended = await MembersTree.create(DEPTH, shared.poseidon);
+  for (const c of cs) appended.append(c);
+
+  assert.equal(rebuilt.size(), CAP);
+  assert.equal(rebuilt.full(), true);
+  assert.equal(rebuilt.root(), appended.root(), "an exactly-full rebuild matches the appended tree");
+  assert.equal(rebuilt.root(), rebuilt.rootFromFullBuild(), "and the reference build");
+  assert.notEqual(rebuilt.root(), (await MembersTree.create(DEPTH, shared.poseidon)).root(),
+    "and is emphatically not the empty tree's root, which is what the fold alone would have given");
+});
+
+test("a rebuild never builds the level array, so it retains nothing to serve paths with", async () => {
+  // The previous strategy called levels() to seed itself and left all 131,071 nodes cached at depth
+  // 16, about 32 MiB retained with no consumer. The carry stack never touches levels() at all.
+  const rebuilt = await MembersTree.fromCommitments(
+    Array.from({ length: 40 }, (_, i) => String(5_500_000 + i)), 6,
+  );
+  assert.equal(rebuilt._levels, null, "nothing cached");
+  assert.equal(rebuilt.root(), rebuilt.rootFromFullBuild());
+  rebuilt.append("42");
+  assert.equal(rebuilt.root(), rebuilt.rootFromFullBuild(), "and the frontier it built still works");
 });

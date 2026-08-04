@@ -349,3 +349,49 @@ test("the anchor rule is ADDITIONAL to the window, never a replacement for it", 
   assert.equal(r.ok, false);
   assert.equal(r.reason, "stale-or-unknown-root", "the window is the floor");
 });
+
+test("a root aging out DURING the spend does not burn the member's epoch", async () => {
+  // The tag is keyed by (epoch, context, nullifier). If the epoch or season moved, the next attempt
+  // uses a different key and refusing costs nothing. If the ROOT aged out, the epoch is unchanged,
+  // the tag is spent, and no grant came back. Locally that is recoverable, because the store records
+  // the granting account and the same account can be re-granted. On the Platform store it is not:
+  // the account is deliberately not persisted for privacy, so no re-grant is possible and the member
+  // is denied for the rest of the epoch by a timing condition they cannot observe. The root was
+  // already checked twice before the spend, so refusing a third time here costs more than it saves.
+  const nullifiers = new NullifierStore();
+  let written = false;
+  const wrapped = {
+    has: (...a) => nullifiers.has(...a),
+    get: (...a) => nullifiers.get(...a),
+    add: async (...a) => { const r = await nullifiers.add(...a); written = true; return r; },
+  };
+  const r = await verifyMembership({
+    ...args("alice", { nullifiers: wrapped }),
+    expected: {
+      ...baseExpected("alice"),
+      stillCurrent: async () => (written ? "stale-or-unknown-root" : null),
+    },
+  });
+  assert.equal(r.ok, true, "the grant stands rather than burning an epoch the member cannot recover");
+  assert.equal(await nullifiers.has("7", "333", "111"), true);
+});
+
+test("a period that ends during the spend is still refused, because the next tag differs", async () => {
+  // The other half, so the narrowing above is not mistaken for dropping the check.
+  const nullifiers = new NullifierStore();
+  let written = false;
+  const wrapped = {
+    has: (...a) => nullifiers.has(...a),
+    get: (...a) => nullifiers.get(...a),
+    add: async (...a) => { const r = await nullifiers.add(...a); written = true; return r; },
+  };
+  const r = await verifyMembership({
+    ...args("alice", { nullifiers: wrapped }),
+    expected: {
+      ...baseExpected("alice"),
+      stillCurrent: async () => (written ? "epoch-rolled-over" : null),
+    },
+  });
+  assert.equal(r.ok, false, "an ended epoch still refuses");
+  assert.equal(r.reason, "epoch-rolled-over");
+});

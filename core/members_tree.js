@@ -85,38 +85,63 @@ export class MembersTree {
         `members tree over capacity: ${commitments.length} commitments for a depth-${depth} tree (max ${t.capacity()})`,
       );
     }
-    // WHICHEVER REBUILD IS CHEAPER, because they cross over and the crossing is inside the range
-    // this tree is built for. Appending one at a time costs depth hashes per member; the padded full
-    // build costs capacity-1 hashes whatever the member count. So they meet at capacity/depth, which
-    // at depth 16 is 4096 members, and MEASURED on this machine: 1000 members take 2.2s
-    // incrementally against 7.7s for a full build, 4096 take 9.1s against that same 7.7s, and 30,000
-    // take 62.3s.
-    //
-    // This matters because fromCommitments is the RECOVERY path, reached lazily on the first touch of
-    // a context after a boot or a rollover (see _materializeFrom in core/season.js, which builds on
-    // demand rather than eagerly at the rollover itself), and it is one synchronous block. Making appends cheap while making recovery
-    // unboundedly worse would have moved the twenty-second stall rather than removed it, which a
-    // reviewer caught by measuring it rather than by reading the code.
-    //
-    // Above the crossover the full build runs once and the frontier is DERIVED from it, so later
-    // appends stay incremental either way.
-    //
-    // THE COMPARISON IS ON HASH COUNTS ONLY, and that is a narrower claim than "whichever is
-    // faster". Replaying costs N*depth hashes, the padded build costs capacity-1, and the branch
-    // picks the smaller. It does NOT model the constant factors, so around the crossing the two are
-    // within noise of each other and the measured wall times do not line up exactly with the hash
-    // counts (at depth 16 and 4096 members the replay measured 9.1s against the full build's 7.7s,
-    // even though the hash counts are near-equal). Being wrong by a few seconds in a narrow band is
-    // acceptable; being wrong by 54 seconds at 30,000 members was not, and that is what this fixes.
-    // The strict `<` keeps the exactly-equal case on the full-build side, where the measurement says
-    // it belongs.
     for (const c of commitments) t.commitments.push(String(c));
-    if (t.commitments.length * depth < t.capacity() - 1) {
-      const replay = t.commitments;
-      t.commitments = [];
-      for (const c of replay) t.append(c);
+    // ONE PASS, a carry stack, replacing the two branches and the threshold that chose between them.
+    //
+    // Walk the leaves left to right holding a stack of completed subtrees. Each new leaf enters at
+    // level 0, and while the stack's top sits at the same level the two combine into one node a
+    // level up. What remains IS the frontier: one completed subtree per set bit of N, which is
+    // precisely the set of levels a future append will read. Folding that against the zero subtrees
+    // costs another `depth`.
+    //
+    // THE COST IS N MINUS THE POPCOUNT OF N, plus depth. Each combine removes one node, and the walk
+    // starts with N nodes and ends with popcount(N), so that is the number of combines. A first
+    // version of this comment said "exactly N-1", which is only true when N is a power of two; the
+    // hash-count test caught it at three members, where the true cost is 1 combine and not 2.
+    //
+    // Against N*depth for replaying appends, or capacity-1 for a padded build: at depth 16 with
+    // 4,096 members that is about 4,100 hashes against 65,536 either way, and measured 0.61s against
+    // 9.1s. It also removes the crossover entirely, so there is no size at which this path is the
+    // wrong one and no threshold to get wrong. The previous version's threshold contradicted its own
+    // measurements at the boundary and needed two rounds of correction; both reviewers of that
+    // version independently proposed this instead.
+    const leaves = t.commitments.map((c) => t.F.e(BigInt(c)));
+    const stack = []; // { level, node }, deepest-left first
+    for (const leaf of leaves) {
+      let level = 0;
+      let node = leaf;
+      while (stack.length > 0 && stack[stack.length - 1].level === level) {
+        node = t.poseidon([stack.pop().node, node]);
+        level += 1;
+      }
+      stack.push({ level, node });
+    }
+    // Only levels BELOW the root can hold a frontier entry. An exactly-full tree combines all the
+    // way up and leaves one entry at level `depth`, which is the root itself and not a waiting left
+    // sibling, so writing it into the frontier array would run past its end.
+    for (const { level, node } of stack) {
+      if (level < depth) t._frontier[level] = node;
+    }
+
+    const n = t.commitments.length;
+    if (n === t.capacity()) {
+      // EXACTLY FULL, so there is no next insertion position and the bit fold below has nothing to
+      // describe: every bit of N is clear at levels 0..depth-1 and the fold would return the EMPTY
+      // tree's root. The carry stack has already produced the answer as its single remaining entry.
+      // Found by testing every size rather than the interesting-looking ones; a spot check at a
+      // power of two either side would have missed it, and full() means no append can ever correct
+      // it afterwards.
+      t._root = stack[0].node;
     } else {
-      t.#seedFromFullBuild();
+      // The root of the padded tree, from the frontier. `cur` is the subtree containing the NEXT
+      // insertion position, so at each level a set bit of N means that position sits in the right
+      // half and the completed left sibling is the frontier entry, while a clear bit means it sits
+      // in the left half and everything to its right is empty.
+      let cur = t._zeros[0];
+      for (let l = 0; l < depth; l += 1) {
+        cur = ((n >> l) & 1) === 1 ? t.poseidon([t._frontier[l], cur]) : t.poseidon([cur, t._zeros[l]]);
+      }
+      t._root = cur;
     }
     return t;
   }
@@ -181,28 +206,6 @@ export class MembersTree {
       idx >>= 1;
     }
     this._root = cur;
-  }
-
-  // Derive the frontier and the root from one full padded build, for the case where that is cheaper
-  // than replaying every append. For a future append at index N, level l reads the frontier only when
-  // (N >> l) is odd, and the value it needs is the completed subtree immediately to its left, which
-  // is exactly levels[l][(N >> l) - 1]. Levels where it is even are written before they are read, so
-  // they need no seed.
-  #seedFromFullBuild() {
-    const levels = this.levels();
-    const n = this.commitments.length;
-    for (let l = 0; l < this.depth; l += 1) {
-      const idx = n >> l;
-      if ((idx & 1) === 1) this._frontier[l] = levels[l][idx - 1];
-    }
-    this._root = levels.at(-1)[0];
-    // AND DROP THE LEVEL ARRAY. levels() built and cached the whole padded tree, 131,071 nodes at
-    // depth 16, and everything needed from it (the frontier entries and the root) has now been
-    // copied out. Leaving it cached meant a recovery rebuild silently retained the entire tree for
-    // the life of the process, or until an append happened to null it, which is a memory cost with
-    // no consumer: the gateway never asks for a path. Measured at 131,071 retained nodes before this
-    // line existed. The replay branch never had the problem, because append() nulls the cache.
-    this._levels = null;
   }
 
   // THE EXPENSIVE PATH, O(capacity), for sibling paths only. The gateway never calls this; a prover

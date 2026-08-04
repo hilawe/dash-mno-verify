@@ -185,3 +185,28 @@ test("addSignature builds a quorum snapshot with one entry per key and dedups a 
     assert.equal(verifySnapshotSig(msg, entry.sig, publicKeyFromRaw(entry.key)), true);
   }
 });
+
+test("re-signing replaces this signer's entry whatever spelling its label used", async () => {
+  // The same 32 bytes have several base64 spellings, and dedup compared the label STRING, so a
+  // re-sign left the old entry in place under a different spelling. The gateway refuses a snapshot
+  // carrying two signatures for one key, so an ordinary re-sign could produce a snapshot nothing
+  // would accept. A reviewer reading the source alone found it.
+  const { privateKey } = generateKeyPairSync("ed25519");
+  const canonical = rawPublicB64(privateKey);
+  const base64url = canonical.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  assert.notEqual(base64url, canonical, "the two spellings really do differ as strings");
+
+  const snap = { ...snapV2, sigs: [{ key: base64url, sig: "an-earlier-signature" }] };
+  const sigs = addSignature(snap, privateKey);
+  assert.equal(sigs.length, 1, "one entry per signer, not one per spelling");
+  assert.equal(sigs[0].key, canonical);
+
+  // A foreign entry is left alone: it is not this signer, and dropping it is not this call's job.
+  const other = generateKeyPairSync("ed25519");
+  const mixed = { ...snapV2, sigs: [{ key: rawPublicB64(other.privateKey), sig: "theirs" }] };
+  assert.equal(addSignature(mixed, privateKey).length, 2, "the other signer's entry survives");
+
+  // An undecodable label is also left alone rather than silently discarded.
+  const junk = { ...snapV2, sigs: [{ key: "!!!not-base64!!!", sig: "x" }] };
+  assert.equal(addSignature(junk, privateKey).length, 2, "an unparseable entry is not this call's to drop");
+});
