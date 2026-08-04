@@ -5,6 +5,66 @@ counts and supersedes everything below it. Historical sections are append-only a
 only marked superseded. Read this first when picking the project back up, then `TODO.md` for the full
 prioritized punch list.
 
+## CURRENT STATE ADDENDUM, 2026-08-04 (orchestrated freeze). AN INDEPENDENT PASS RETURNED REVISE
+
+Run differently from the earlier passes: the candidate was frozen first from a CLEAN CHECKOUT,
+so the reviewer saw exactly 8d71fe0 (which is b57873f plus this playbook becoming tracked).
+Findings are in `REVIEW_FINDINGS_dash-mno-verify_orchestrated-freeze_2026-08-04.md`.
+Nothing is fixed and no code was touched.
+
+Six findings. The first three are the ones that withhold approval:
+
+- F1 Major. DIRECT-NODE MODE VIOLATES THE PLAYBOOK'S OWN CHAIN-AUTHENTICATION CONDITION. The
+  playbook permits the mode only after merkleRootMNList is verified; the gateway starts it
+  while acknowledging the node may return an arbitrary self-consistent list. Reproduced:
+  buildDiffSnapshot() accepted a syntactically valid fake chain lock, an arbitrary mnList,
+  cbTx "not-a-coinbase" and cbTxMerkleTree "not-a-proof", and returned a snapshot. A
+  compromised or badly broken configured node can therefore authorise a non-masternode.
+  Remediation: implement header, coinbase inclusion, merkleRootMNList and simplified-list
+  commitment verification, OR refuse direct-node mode in the reviewed production profile.
+- F2 Major. AN UNCERTAIN PLATFORM BROADCAST PERMANENTLY CONSUMES A CLAIM WITHOUT GRANTING.
+  Consensus can accept the document before the client sees a timeout, so the request fails
+  while the nullifier is spent. Retry cannot recover, because platform_store.js deliberately
+  stores no account binding, so the verifier answers already-used. Reproduced by committing
+  then throwing. Remediation needs an atomically stored privacy-safe account or operation
+  commitment that an uncertain broadcast can query; until the contract supports it, Platform
+  nullifier mode should stay outside the supported profile.
+- F3 Major. A SUCCESSFUL REGISTRATION WRITE FOLLOWED BY A SYNC OR CLOSE ERROR CAN DUPLICATE
+  THE REGISTRATION. registration_store.js writes and syncs before the in-memory unique index
+  learns the record exists, so a retry writes it again, restart loads both, and the rebuilt
+  members tree carries the commitment twice and changes root. Inherited code outside the
+  named delta, and already admitted at HANDOFF line 159. Needs reread-before-retry and a load
+  path that refuses or deterministically collapses duplicate registration keys.
+- F4 Moderate. The new retained-leaves bound evicts by leaf totals alone, with no knowledge of
+  challenges minted against those roots, so a live challenge's root can be evicted and a
+  still-valid proof is refused with stale-or-unknown-root. Reference-count roots pinned by
+  pending challenges, and still cap pinned roots or refuse new challenges at the bound.
+- F5 Minor. Platform close is claimed and tested as repeat-safe but calls disconnect() every
+  time with no closed guard. The test passes only because its fake client tolerates repeated
+  disconnects. Add a store-level closed guard and make the fake refuse a second disconnect.
+- F6 Low. The recorded changed-test count is wrong: 24 module-refactor tests, not 25 (21
+  gateway, 2 SQLite, 1 Platform). With the retained-leaves commit the reviewed delta totals 34.
+
+SOUND IN THE INSPECTED PATHS, per the same pass: account binding, context-scoped members
+roots, expected public-value checks, synchronous challenge consumption, SQLite's atomic unique
+insert, and season commit serialisation.
+
+A CHANGED-TEST OBSERVATION AUDIT is included in the findings file, marking each changed test
+Direct or Proxy. Three to note: the challenge-and-verify-accounts-are-bound test is a proxy for
+proof-to-account binding (it uses a malformed fake proof and would still pass if account were
+removed from signalHash()); the retained-leaves default test hard-codes 2,972 and measures only
+leaf count; and the Platform close test is false evidence for idempotence.
+
+DEPENDENCY POSITION. The production graph reports 34 advisories, 14 low, 4 moderate, 14 high,
+2 critical (arbitrary code execution in protobufjs, a process-stop path in tar). Every high and
+critical needs a reachability note before a release decision, and the suggested automatic fix
+forces an incompatible client version. The same upstream family is open in the sibling project,
+so one reachability analysis of the shared chain serves both while the verdicts stay separate.
+
+Recommended order across both projects: fix the proxy tests first, then turn direct-node mode
+off in the production profile, then mark Platform nullifier mode unsupported, then the deeper
+atomic and uncertain-write work.
+
 ## CURRENT STATE, 2026-08-04 (later). THE GATEWAY IS A MODULE, AND FOUR REVIEW PASSES ARE FOLDED
 
 Everything below this section is superseded. The older CURRENT STATE blocks are kept as history.
