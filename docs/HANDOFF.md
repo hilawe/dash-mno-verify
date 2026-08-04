@@ -11,7 +11,7 @@ Everything below this section is superseded. The older CURRENT STATE blocks are 
 
 ### 1. WHERE TO START
 
-Nothing is half-done and nothing waits on a reviewer. Read section 5 (punch list) and take item 1,
+Nothing is half-done and nothing waits on a reviewer. Read section 6 (punch list) and take item 1,
 which is now the retained-leaves bound. Read section 3 before writing code.
 
 ### 2. WHAT LANDED, and what it is worth
@@ -40,7 +40,7 @@ and every one has a test that fails when it is removed.
 
 **Twenty-five new tests exist because of the change and could not have existed before it**
 (21 in `test/gateway_module.test.js`, 3 in `test/nullifier_sqlite.test.js`, 1 in
-`test/platform_store.test.js`). Suite is 517, all passing, CI to be checked after the push. The one
+`test/platform_store.test.js`). Suite is 517, all passing, and all three CI jobs green on `3a6aadf`. The one
 worth knowing: both orderings of the rate-limit charge are now proven through the real
 `/v1/challenge` path, in both directions, where before only the ordering that reads more naturally
 was covered and a short-circuiting sequential charge passed it.
@@ -106,7 +106,23 @@ so the trial stays at 1 of 10. This session's operating rules excluded spawning 
 asked for them. Recorded rather than quietly skipped, because the trial's whole value is an honest
 denominator.
 
-### 5. PUNCH LIST, in the order recommended
+### 5. WHAT FORCED REWORK THIS SESSION
+
+- Three new tests survived their mutants and had to be rewritten, each because the assertion observed
+  a consequence some other guard also produced. Feeds the existing rule 2 (attack the observation,
+  not the fix).
+- A fourth was caught not by rule 2 but by the second fresh full pass: every cleanup test counted
+  `close()` calls, so a `close()` replaced by a body setting only a flag passed all of them. Feeds
+  rule 2 as well, with a sharper form. Counting a call is not observing a release.
+- One test failed at BASELINE for a reason in the test rather than the code (with a shared rate cap of
+  one, only one probe fits per release, so the second probe measured the wrong limiter). No rule
+  covers this and none is proposed; it is the ordinary cost of writing a real instrument.
+- Mutating a socket-lifecycle defect leaves ORPHANED `node --test` processes, because the mutant's
+  whole symptom is a socket that outlives the teardown. Two of them later blocked the pre-commit gate,
+  which is the repository's existing loopback-contention gotcha arriving by a new route. Stop stray
+  runs before committing after socket mutations.
+
+### 6. PUNCH LIST, in the order recommended
 
 1. **The retained-leaves bound.** The root window can hold up to sixteen full leaf arrays during a
    changeover. Legitimate data, so normalization does not touch it.
@@ -116,7 +132,7 @@ denominator.
 4. **The audit.** Still none. Separately, `circom-ecdsa` is unaudited demonstration code by its own
    README, a deployment blocker for any mode shipping a key-bearing Circom proof.
 
-### 6. KNOWN OPEN, unchanged from the section below except where noted
+### 7. KNOWN OPEN, unchanged from the section below except where noted
 
 - A close error after a successful durable write can duplicate a registration.
 - A challenge can be minted for a season that ended during materialization.
