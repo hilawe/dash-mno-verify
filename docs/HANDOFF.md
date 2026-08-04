@@ -39,6 +39,93 @@ it urgently, but the upgrade path for a dashmate deployment is the documented
 container to pick it up: that datadir took two failed attempts and about a day to get synced, and
 the value here is the synced state, not the patch version.
 
+## CURRENT STATE, 2026-08-04. Everything reviewed to date is folded, CI is green, nothing is pending
+
+`main` at `99445e7`, pushed. Suite 488 with the full install, 409 passing and 79 skipped without the
+optional packages. All three CI jobs green (`checks`, `full`, `circuits`). Clean tree. Everything
+below this section is superseded.
+
+### START HERE
+
+Nothing is half-done and nothing is waiting on a reviewer. Five review rounds, a paired-capability
+experiment, and a follow-up assessment are all folded. Pick up from the punch list below.
+
+### What changed on 2026-08-03 and 04, briefly
+
+- **The members tree stopped stalling the gateway.** It rebuilt all 65,536 leaves on every append,
+  about 9 seconds per root and 20 for a first-context commit, all blocking the event loop. It now
+  keeps its root with a frontier, and a rebuild from durable records is one carry-stack pass costing
+  N minus popcount(N) plus depth. Measured: 4,096 members went from 9.1s to 0.61s, and recovery is
+  never worse than before at any size.
+- **CI HAD BEEN RED SINCE 2026-07-30** and nobody looked, including me, across about fifteen pushes.
+  `discord.js` is an optional dependency, CI installs without it, and four test files imported it at
+  the top level so they failed to LOAD rather than skip. Invisible locally by construction. Fixed,
+  and a new `full` job now installs everything so the Discord adapter has CI coverage for the first
+  time. `CLAUDE.md` now names the one command to run after a push.
+- **The documentation was lying about the code.** `CLAUDE.md` called account binding and
+  context-scoped roots the headline OPEN blockers long after both landed, named the wrong default
+  nullifier store, and described the members tree as not yet incremental one commit after it became
+  incremental. That is worse than silence: it would have caused an agent to undo correct work.
+- **Rate limits are charged atomically**, the registration commit observes both clock periods and
+  refuses a regressed clock, the account identifier is bounded in bytes, and the Platform schedule
+  marker is race-safe and bound to its contract id.
+- **The Platform single-gateway constraint is now explicit** rather than implied. See its own
+  section in `CLAUDE.md`.
+
+### The one pattern worth carrying forward
+
+Across this whole stretch, most of what each review round found was in the PREVIOUS round's fixes,
+not in the code those fixes were about. That held for six consecutive rounds. Two concrete examples
+from these two days: the post-proof clock guard read a flag that only updates when the clock is
+actively sampled, so the check added to catch a regression could not see one; and the torn-tail
+recovery fixed one process lifetime while breaking every later one. The same "read one clock fact
+instead of all of them" defect appeared in FOUR separate places, each time after fixing it
+elsewhere.
+
+The practical instruction: after fixing a defect, grep for its shape before moving on. That single
+habit would have prevented more of this session's rework than any other change.
+
+### The other lesson, about tests
+
+Four tests written during this stretch were caught VACUOUS, three by mutation and one by a reviewer.
+The cause was always the same: the mutations an author picks revert their own fix, which the test is
+guaranteed to catch because it was written while looking at that fix. The mutations that find things
+attack the OBSERVATION: delete a whole branch whose value is performance rather than correctness,
+satisfy the assertion by another route, rename the field the assertion reaches into. This is now in
+the global playbook under rule 2.
+
+### PUNCH LIST, in the order recommended
+
+1. **Wire direct node mode.** BOTH ITS BLOCKERS CLOSED ON 2026-08-03 and it is still unwired:
+   `oracle/oracle.js` imports `buildSnapshot`, the old current-tip read, while
+   `buildDiffSnapshot` (block-bound, ChainLock-gated) sits tested and unused. The response shape is
+   now OBSERVED against live mainnet (2,972 entries at height 2,515,929, every field checked) and
+   `MNO_CLI_MAX_BUFFER` is settled by measurement (1.74 MiB against a 64 MiB default). This removes
+   pinned-oracle-key trust entirely for the common self-hosting deployment, which is a real security
+   gain rather than polish. The v2-to-v3 root change is already handled by the coexistence window.
+2. **Make `core/gateway.js` importable.** It starts an HTTP server on import, so nothing in it can be
+   unit-tested. That is the ROOT CAUSE behind several findings and behind every weak test this
+   session: it forced a source-text grep as a tripwire (since replaced by a store-level invariant)
+   and it is why the rate-limit atomicity had to be tested at the unit level instead of through the
+   path that actually uses it. Splitting boot from handlers would do more for correctness than
+   another review round.
+3. **The retained-leaves bound.** The root window can hold up to sixteen full leaf arrays during a
+   changeover. That is legitimate data, so normalization does not touch it; it needs a real bound.
+4. **Then a review round**, covering items 1 and 2 together. Not before: the last several rounds
+   found their material in the newest fixes, so a round is worth most when significant new code
+   exists, and items 1 and 2 are that code.
+5. **The audit.** Still none. Nothing of value should be gated before it. Note also that
+   `circom-ecdsa` is unaudited demonstration code by its own README, which is a deployment blocker
+   for any mode shipping a key-bearing Circom proof, independent of everything above.
+
+### Known open, recorded rather than fixed
+
+- A close error after a successful durable write can duplicate a registration.
+- A challenge can be minted for a season that ended during materialization.
+- Registration readiness ignores the anchor age.
+- The Platform marker is local while the state it protects is shared. Deliberate, constrained, and
+  documented in `CLAUDE.md`.
+
 ## CURRENT STATE, 2026-08-03, whole-gateway round is IN, folding is PAUSED on purpose
 
 `main` at `ff2b663`, 422 tests green, clean tree. Read this section first.
