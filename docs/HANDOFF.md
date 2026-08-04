@@ -39,6 +39,86 @@ it urgently, but the upgrade path for a dashmate deployment is the documented
 container to pick it up: that datadir took two failed attempts and about a day to get synced, and
 the value here is the synced state, not the patch version.
 
+## CURRENT STATE, 2026-08-04 (late). Direct node mode is in, CI green, nothing pending
+
+`main` at `6184bcb`, pushed. Suite 493 with the full install, 414 passing and 79 skipped without the
+optional packages. All three CI jobs green. Clean tree. Everything below is superseded.
+
+### START HERE
+
+Nothing is half-done. Read the punch list, pick item 1.
+
+### DIRECT NODE MODE IS WIRED, which was the top punch-list item
+
+`MNO_DML_SOURCE=node` makes the gateway read the masternode list from its own Dash Core node, gated
+on ChainLock, instead of fetching a published snapshot and authenticating it against pinned oracle
+keys. For a self-hosting operator that removes the publisher, the signing keys, the quorum, and the
+snapshot transport, every one of which was something to compromise.
+
+Everything downstream is deliberately identical, the same `validateSnapshot`, root recompute, and
+coexistence window. Only the origin differs. The unsigned-oracle boot refusal is now SCOPED to the
+snapshot source, because in node mode there is no publisher and demanding a pinned key would be
+demanding a signature on data nobody published. `/v1/health` reports `dmlSource` so an operator can
+see which trust model is running. The node caller lives in `oracle/node_client.js`, shared with the
+oracle CLI, which also gained `--read block` for publishing v3 snapshots.
+
+STILL A TRUSTED-NODE READ, and every comment says so: one server answers the ChainLock query, the
+block hash, AND the list, so it can return matching hashes over an arbitrary set. It becomes
+chain-authenticated only with the `merkleRootMNList` commitment check, and `protx diff` already
+carries the material for it.
+
+### TWO GLOBAL PLAYBOOK RULES WERE EARNED HERE, both worth knowing before you write code
+
+- **Rule 6, search for a defect's SHAPE after fixing it.** One clock-reading defect appeared in FOUR
+  places, each time after being fixed elsewhere, twice in one session, once with a comment already in
+  the file explaining the trap. Every instance cost an external review round. Grep would have found
+  all four in one pass. On its first real use here it found `/v1/health` not reporting the DML
+  source.
+- **Rule 5a, a gate that observes the system can match itself.** See the next section, it cost about
+  an hour.
+
+### THE PRE-COMMIT GATE BLOCKED A COMMIT THAT WAS FINE, twice, and the second reason is worth reading
+
+The stray-process check used `pgrep -f core/gateway.js`, which matches ANY process whose argument
+list contains that string, including the shell running the commit whenever the commit message
+mentions the path. It was firing on the text of its own commit message.
+
+The first fix was a five second grace period, since `proc.kill()` returns before the child is gone.
+Necessary but insufficient. The real fix filters on the EXECUTABLE being node, which a shell quoting
+a path is not.
+
+A CORRECTION THAT MATTERS MORE THAN THE BUG. Commit `6184bcb`'s message explains the invisibility by
+saying `ps` truncates long argument lists. THAT IS WRONG. Verified afterwards, prompted by being
+asked whether verifying first was prudent: `ps` displayed 4,052 characters without trouble. The real
+cause was the instrumentation itself, whose debug line ended `| grep -v grep`, and the matching
+process had "grep" in its own command, so the filter deleted the evidence. Six matching lines became
+one. The fix is right; the published reason for one of its symptoms is not. Do not carry that
+explanation forward.
+
+### PUNCH LIST, in the order recommended
+
+1. **Make `core/gateway.js` importable.** It starts an HTTP server on import, so nothing in it can be
+   unit-tested. This is the ROOT CAUSE behind the weak tests this session: it forced a source-text
+   grep as a tripwire (since replaced by a store-level invariant), and it is why rate-limit
+   atomicity had to be proven at the unit level rather than through the path that uses it. Splitting
+   boot from handlers would do more for correctness than another review round.
+2. **The retained-leaves bound.** The root window can hold up to sixteen full leaf arrays during a
+   changeover. Legitimate data, so normalization does not touch it; it needs a real bound.
+3. **Then a review round**, covering direct node mode and item 1 together. Not before: the last
+   several rounds found their material in the newest fixes, so a round is worth most when
+   significant new code exists.
+4. **The audit.** Still none. Also note `circom-ecdsa` is unaudited demonstration code by its own
+   README, a deployment blocker for any mode shipping a key-bearing Circom proof.
+
+### Known open, recorded rather than fixed
+
+- A close error after a successful durable write can duplicate a registration.
+- A challenge can be minted for a season that ended during materialization.
+- Registration readiness ignores the anchor age.
+- The Platform marker is local while the state it protects is shared. Deliberate, constrained, and
+  documented in `CLAUDE.md` under its own section.
+- The `merkleRootMNList` commitment check, which is what would make the node read chain-authenticated.
+
 ## CURRENT STATE, 2026-08-04. Everything reviewed to date is folded, CI is green, nothing is pending
 
 `main` at `99445e7`, pushed. Suite 488 with the full install, 409 passing and 79 skipped without the
