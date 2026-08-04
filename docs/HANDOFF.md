@@ -5,6 +5,40 @@ counts and supersedes everything below it. Historical sections are append-only a
 only marked superseded. Read this first when picking the project back up, then `TODO.md` for the full
 prioritized punch list.
 
+## CURRENT STATE, 2026-08-03 (late), THE NODE IS SYNCED AND THE READ IS OBSERVED
+
+### THE CAVEAT THAT HAS BEEN IN EVERY PACKET FOR DAYS IS RETIRED
+
+The mainnet node finished its reindex AND caught up. Height 2,515,929, progress 1.000000,
+ChainLocked, answering RPC. `oracle/diff_snapshot.js` was run against it end to end and built a real
+v3 snapshot in 1.3 seconds: 2,972 masternodes in the list, 2,069 valid, ordered by proRegTxHash,
+`chainlocked: true`, block hash matching the ChainLock.
+
+EVERY FIELD ASSUMPTION IS NOW OBSERVED RATHER THAN INFERRED, against live mainnet:
+
+- `proRegTxHash` is a 64-lowercase-hex string, all 2,972 of them, no duplicates.
+- `votingAddress` is a string on every entry.
+- `isValid` is a real boolean on every entry (2,069 true), not a string.
+- `getbestchainlock` returns `blockhash`, `height`, `known_block: true`, exactly the shape assumed.
+- The response also carries `merkleRootMNList`, `cbTx`, and `cbTxMerkleTree`, which is the material
+  the on-chain commitment check needs, so that work is now unblocked too.
+
+So the strict boundary checks added over the last rounds (typed fields, lowercase hex, boolean
+isValid, duplicate refusal) accept real mainnet data rather than being guesses that might have
+refused everything. Update TODO.md and any future packet: the shape is no longer UNOBSERVED.
+
+WHAT IS STILL TRUE: this remains a TRUSTED-NODE read until the `merkleRootMNList` check exists. One
+server answered every query. Observing the shape does not make it chain-authenticated.
+
+### Dash Core v23.1.8 is out (announced 2026-08-04 in the Dash Discord)
+
+A patch on the 23.1.x series, described as important bugfixes and recommended for all users. The
+running container is `dashpay/dashd:latest` pulled before that, so it is 23.1.7. Nothing here needs
+it urgently, but the upgrade path for a dashmate deployment is the documented
+`dashmate stop --safe`, `update`, `start`, `status`. Do NOT casually restart the reindexed node
+container to pick it up: that datadir took two failed attempts and about a day to get synced, and
+the value here is the synced state, not the patch version.
+
 ## CURRENT STATE, 2026-08-03, whole-gateway round is IN, folding is PAUSED on purpose
 
 `main` at `ff2b663`, 422 tests green, clean tree. Read this section first.

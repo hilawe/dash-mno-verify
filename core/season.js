@@ -193,6 +193,13 @@ export class SeasonMembers {
     return this.ctx.get(contextHash)?.tree.root() ?? this.emptyRoot;
   }
   commitments(contextHash) {
-    return this.ctx.get(contextHash)?.tree.commitments ?? [];
+    // A COPY. This used to hand out the tree's own array, which was harmless while the root was
+    // recomputed from it on every read: an out-of-band mutation was picked up by the next rebuild.
+    // The root is now cached and maintained only by append(), so a caller that sorted or spliced
+    // this array would leave /v1/members returning a commitment list that does not hash to the
+    // membersRoot in the same response, every prover-built path would fail with no error anywhere,
+    // and only a restart would reconcile it. Two reviewers reached this independently. No caller
+    // mutates it today; the copy is what stops the next one from having to know that.
+    return [...(this.ctx.get(contextHash)?.tree.commitments ?? [])];
   }
 }

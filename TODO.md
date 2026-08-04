@@ -46,13 +46,33 @@ TWO THINGS NEEDED BEFORE IT CAN BE WIRED.
    `order: "proRegTxHash"` so nothing can treat a v2 and v3 root as interchangeable. The transition
    needs deciding: whether the gateway accepts both during a window, and what a prover holding a v2
    tree does. Nothing is wired until that is settled.
-2. **A live mainnet node, to confirm the response shape.** The field names used here
-   (`proRegTxHash`, `votingAddress`, `isValid`) come from DIP4 and from this file's own earlier
-   research, and are corroborated by the Core lead's answer, but they have not been observed. The
-   builder fails loudly on a missing field rather than dropping a member, so a mismatch surfaces
-   immediately, but it should be observed before this is trusted. Per the project rules a native
-   `dashd` is a dead end on this Mac, so this needs colima and a container. The same run settles the
-   outstanding `MNO_CLI_MAX_BUFFER` question.
+2. **DONE 2026-08-03. The response shape is OBSERVED against live mainnet.** A container node
+   (colima, per the project rule that a native `dashd` is a dead end on this Mac) finished its
+   reindex and caught up to height 2,515,929, and `oracle/diff_snapshot.js` was run against it end
+   to end. It built a real v3 snapshot in 1.3 seconds: 2,972 entries in `mnList`, 2,069 with
+   `isValid` true, ordered by `proRegTxHash`, `chainlocked: true`, block hash equal to the
+   ChainLock's.
+
+   Every assumption is now measured rather than inferred. `proRegTxHash` is 64 lowercase hex on all
+   2,972 entries with no duplicates. `votingAddress` is a string on every entry. `isValid` is a real
+   boolean, not a string. `getbestchainlock` returns `blockhash`, `height`, and `known_block: true`,
+   the exact shape the builder assumes. The strict boundary checks added over the review rounds
+   (typed fields, lowercase hex, boolean validity, duplicate refusal) therefore accept real mainnet
+   data, which was not a given: they could as easily have been guesses that refused everything.
+
+   The response also carries `merkleRootMNList`, `cbTx`, and `cbTxMerkleTree`, so the on-chain
+   commitment check below has its material in hand.
+
+   STILL TRUE, and not softened by this: one server answered every query, so it remains a
+   TRUSTED-NODE read until that commitment check exists. Observing the shape says nothing about
+   whether the list is the chain's.
+
+   `MNO_CLI_MAX_BUFFER` IS NOW SETTLED, by measurement rather than reasoning. The full `protx diff`
+   response for 2,972 masternodes at height 2,515,929 is 1,828,817 bytes, about 1.74 MiB, against a
+   64 MiB default, so roughly 37x headroom. The default was reasoned up from Node's 1 MB and never
+   observed failing; it is now observed not failing on a real mainnet list, and the number is
+   recorded so a future reader can judge growth rather than re-derive it. Note this is the LARGEST
+   form of the call (baseBlock 1, so the whole list rather than a delta).
 
 Once wired, this delivers the P1 (direct node mode, removing pinned-key trust for the common
 deployment), closes the read residual, and leaves `protx diff`'s `cbTx` and `cbTxMerkleTree` already in
