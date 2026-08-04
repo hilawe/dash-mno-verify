@@ -323,3 +323,18 @@ test("a frontier seeded from a full build serves later appends at EVERY starting
     }
   }
 });
+
+test("a seeded rebuild does not retain the full padded tree it built", async () => {
+  // The seeded branch calls levels(), which builds and CACHES the whole padded tree. Everything
+  // needed from it (the frontier entries and the root) is copied out immediately, so leaving the
+  // cache populated retained 131,071 nodes at depth 16 for the life of the process, with no
+  // consumer: the gateway never asks for a path. A reviewer found it by reading; measured at 131,071
+  // before the fix. The replay branch never had it, because append() nulls the cache.
+  const DEPTH = 6;
+  const cs = Array.from({ length: 40 }, (_, i) => String(5_500_000 + i)); // 40*6 > 63, seeded branch
+  const seeded = await MembersTree.fromCommitments(cs, DEPTH);
+  assert.equal(seeded._levels, null, "the tree it built to seed itself is not kept");
+  assert.equal(seeded.root(), seeded.rootFromFullBuild(), "and the root survived the drop");
+  seeded.append("42");
+  assert.equal(seeded.root(), seeded.rootFromFullBuild(), "as does the frontier it extracted");
+});

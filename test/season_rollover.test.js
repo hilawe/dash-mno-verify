@@ -277,3 +277,28 @@ test("an unrecognised durable result fails closed rather than appending", async 
   assert.equal(res.reason, "durable-write-unrecognised");
   assert.equal(sm.size(CTX), 0, "no member without a durable record behind it");
 });
+
+test("SeasonMembers builds Poseidon once and reuses it for every tree it materializes", async () => {
+  // The injectable parameter existed and production never passed it, so every first materialization
+  // paid buildPoseidon again: twenty trees measured 4.8 seconds with fresh instances against 40
+  // milliseconds with one shared, 120x. A comment claimed the seam let callers stop paying that
+  // cost, which was a benefit nothing collected. Counted rather than timed, because a timing
+  // assertion on a shared runner flakes.
+  const store = newStore();
+  const sm = newSeason(store);
+  await sm.ensure(0);
+
+  const contexts = ["11", "22", "33"];
+  for (const c of contexts) {
+    await sm.commit(0, c, "111", async () => ({ duplicate: false, index: 0 }));
+  }
+  for (const c of contexts) {
+    assert.ok(sm.root(c), `context ${c} materialized`);
+  }
+  // One instance, shared by every context's tree. Identity is the assertion: a per-tree build would
+  // give each its own.
+  const trees = contexts.map((c) => sm.ctx.get(c).tree);
+  assert.equal(trees.length, 3);
+  assert.equal(trees[0].poseidon, trees[1].poseidon, "two contexts share one Poseidon");
+  assert.equal(trees[1].poseidon, trees[2].poseidon, "and so does the third");
+});

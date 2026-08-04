@@ -196,6 +196,13 @@ export class MembersTree {
       if ((idx & 1) === 1) this._frontier[l] = levels[l][idx - 1];
     }
     this._root = levels.at(-1)[0];
+    // AND DROP THE LEVEL ARRAY. levels() built and cached the whole padded tree, 131,071 nodes at
+    // depth 16, and everything needed from it (the frontier entries and the root) has now been
+    // copied out. Leaving it cached meant a recovery rebuild silently retained the entire tree for
+    // the life of the process, or until an append happened to null it, which is a memory cost with
+    // no consumer: the gateway never asks for a path. Measured at 131,071 retained nodes before this
+    // line existed. The replay branch never had the problem, because append() nulls the cache.
+    this._levels = null;
   }
 
   // THE EXPENSIVE PATH, O(capacity), for sibling paths only. The gateway never calls this; a prover

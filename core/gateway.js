@@ -1163,6 +1163,15 @@ const server = createServer(async (req, res) => {
       // members cache, whose monotonic guard throws "refusing to roll the members tree back", which
       // surfaced as a generic 400 about a malformed context. So the endpoint blamed the caller for
       // the host's clock, and the diagnostic path was the one that broke.
+      // SAMPLE, THEN READ THE FLAG. This is the third time this exact shape has appeared: `regressed`
+      // is a getter over a mark that only moves when epoch() or season() is CALLED, so reading it
+      // alone reports whatever the last observation concluded. The version written moments ago in
+      // this same session read the flag first, which caught a regression already known at boot and
+      // missed a LIVE one, where the very next line's season() would be the thing that noticed and
+      // the throw would beat the guard. A reviewer found it. The lesson is the twin-hunt one: fixing
+      // a shape in one place is the moment to grep for it everywhere.
+      timeGuard.epoch();
+      timeGuard.season();
       if (timeGuard.regressed) {
         return send(res, 503, {
           error: "clock regression",
@@ -1170,7 +1179,17 @@ const server = createServer(async (req, res) => {
           regression: timeGuard.regression,
         });
       }
-      await seasonMembers.ensureContext(timeGuard.season(), ctx);
+      // Belt and braces, and testable in a way the ordering above is not. If a rollback is somehow
+      // seen only inside the members cache's own monotonic guard, that is still a clock problem and
+      // not a malformed request, so it must not surface as a 400 blaming the caller.
+      try {
+        await seasonMembers.ensureContext(timeGuard.season(), ctx);
+      } catch (err) {
+        if (/refusing to roll the members tree back/.test(String(err?.message))) {
+          return send(res, 503, { error: "clock regression", reason: "clock-regressed" });
+        }
+        throw err;
+      }
       return send(res, 200, { membersRoot: seasonMembers.root(ctx), size: seasonMembers.size(ctx), commitments: seasonMembers.commitments(ctx) });
     }
 

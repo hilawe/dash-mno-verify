@@ -13,6 +13,7 @@
 // season and the moment it appends the member, so a commit can never append to a stale tree or
 // publish a stale-season root. The expensive proof verify stays outside this queue (the caller runs
 // it first), so a slow verify never stalls challenges and per-epoch verifies.
+import { buildPoseidon } from "circomlibjs";
 import { MembersTree } from "./members_tree.js";
 import { RootStore } from "./stores.js";
 
@@ -43,6 +44,18 @@ export class SeasonMembers {
     this.current = null; // current season number, or null before the first ensure()
     this.ctx = new Map(); // contextHash -> { tree, roots }, only contexts that have durable records
     this._op = Promise.resolve(); // the serialization queue, see ensure()/ensureContext()/commit()
+  }
+
+  // ONE POSEIDON FOR THE WHOLE SEASON MANAGER, built on first use and reused for every tree it
+  // materializes. buildPoseidon() is expensive and was being paid per tree: twenty trees cost 4.8
+  // seconds with fresh instances against 40 milliseconds with one shared, a 120x difference measured
+  // here. The injectable parameter existed and production simply never passed it, so a comment
+  // claiming the seam "lets callers stop paying buildPoseidon per tree" was describing a benefit
+  // nothing collected. A reviewer with execution access found that by timing it; reading the code
+  // shows the parameter exists, not that nobody uses it.
+  async #poseidon() {
+    if (!this._poseidon) this._poseidon = await buildPoseidon();
+    return this._poseidon;
   }
 
   // Run fn serialized after any in-flight rollover or commit. The chain is kept alive past a
@@ -83,8 +96,8 @@ export class SeasonMembers {
   // records or is about to gain one (a commit), never for an arbitrary empty context.
   async _materializeFrom(contextHash, records) {
     const tree = this.treeDepth
-      ? await MembersTree.fromCommitments(records.map((r) => r.commitment), this.treeDepth)
-      : await MembersTree.fromCommitments(records.map((r) => r.commitment));
+      ? await MembersTree.fromCommitments(records.map((r) => r.commitment), this.treeDepth, await this.#poseidon())
+      : await MembersTree.fromCommitments(records.map((r) => r.commitment), undefined, await this.#poseidon());
     const roots = new RootStore(this.rootWindow);
     roots.update([{ height: tree.size(), root: tree.root(), ts: this.nowSec() }]);
     const c = { tree, roots };
