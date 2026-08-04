@@ -26,7 +26,7 @@
 import { createServer } from "node:http";
 import { randomUUID, createHash, timingSafeEqual } from "node:crypto";
 import { config, MAX_SNAPSHOT_SIGS } from "./config.js";
-import { leafSetCommitment, RootWindows, NullifierStore, ChallengeStore, RateLimiter, Semaphore, loadOracle, normalizeSnapshot } from "./stores.js";
+import { leafSetCommitment, RootWindows, NullifierStore, ChallengeStore, RateLimiter, Semaphore, loadOracle, normalizeSnapshot, allowAll } from "./stores.js";
 import { loadVerificationKey, verifyMembership, verifyRegistration, readSignals } from "./verifier.js";
 import { SeasonMembers } from "./season.js";
 import { makeDmlRootHasher } from "./dml_root.js";
@@ -275,7 +275,12 @@ if (config.store === "platform") {
       // temp file in the same directory plus a rename makes the appearance atomic, and the fsync
       // before it is what makes the CONTENT durable rather than merely queued.
       await mkdir(dirname(config.platformSchedulePath), { recursive: true });
-      const tmpPath = `${config.platformSchedulePath}.tmp`;
+      // A UNIQUE TEMP NAME, and the rename is a create-or-lose race rather than a shared file.
+      // A fixed `.tmp` path meant two gateways starting together both saw no marker and both wrote
+      // the SAME temporary file, so one could be reading or renaming what the other was still
+      // writing. The pid and a random suffix make each writer's temp file its own, and since both
+      // would write identical content the rename is harmless whoever wins.
+      const tmpPath = `${config.platformSchedulePath}.${process.pid}.${randomUUID()}.tmp`;
       const fh = await open(tmpPath, "w");
       try {
         await fh.writeFile(JSON.stringify({ schedule: SCHEDULE }) + "\n");
@@ -295,6 +300,18 @@ if (config.store === "platform") {
         await dirHandle.sync();
       } finally {
         await dirHandle.close();
+      }
+      // RE-READ AFTER THE RACE. Two gateways can both have found no marker and both have written
+      // one. They agree only if their schedules agree, so read back what actually landed and refuse
+      // if it is not ours. Without this, the loser of the race would carry on believing its own
+      // schedule was recorded.
+      const landed = JSON.parse(await readFile(config.platformSchedulePath, "utf8"))?.schedule ?? null;
+      if (String(landed) !== String(SCHEDULE)) {
+        throw new Error(
+          `refusing Platform nullifier mode: ${config.platformSchedulePath} records schedule ` +
+            `${landed}, not this gateway's ${SCHEDULE}. Another process wrote it first, which means ` +
+            `two gateways are pointed at one marker under different schedules.`,
+        );
       }
     }
   }
@@ -738,7 +755,20 @@ if (twoTier) {
     monotonic: true,
     // The authoritative season, re-read inside the serialized commit so a registration cannot
     // append a record for a season wall time has already left.
-    seasonNow: () => timeGuard.season(),
+    // OBSERVES BOTH PERIODS, not just the one it returns. `regressed` only moves for the observation
+    // actually made, so a callback that sampled the season alone left a backward step that crossed an
+    // EPOCH boundary but not a season boundary invisible to the registration commit, while the
+    // membership path checked both. Same defect shape as the verify path and the members read, which
+    // is now the fourth place it has appeared: the rule is to observe everything the decision rests
+    // on, and the decision here rests on the clock being trustworthy at all.
+    seasonNow: () => {
+      timeGuard.epoch();
+      return timeGuard.season();
+    },
+    // Checked inside the serialized commit, immediately before the durable append, so a clock that
+    // went backward during the heavy proof cannot write a registration under a numbering the gateway
+    // no longer trusts.
+    clockRegressed: () => timeGuard.regressed,
   });
   await seasonMembers.ensure(timeGuard.season());
   if (config.registerRootMaxAgeSeconds <= 0) {
@@ -904,15 +934,27 @@ const server = createServer(async (req, res) => {
       // stored claim use the same form a numeric or other non-string account would otherwise mint a
       // challenge that the string-typed verify (verifyMembership) could never satisfy.
       const account = String(rawAccount);
+      // A BOUND ON THE IDENTIFIER, not just on the body. The account outlives its request: it keys a
+      // rate-limit bucket, it is stored in the pending challenge, and it is written into the durable
+      // claim record. So a single oversized string is retained long after the capped body that
+      // carried it is gone. Measured in BYTES, because a length in characters is not a bound on
+      // memory once anything outside the basic multilingual plane is involved.
+      if (Buffer.byteLength(account, "utf8") > config.maxAccountBytes) {
+        return send(res, 400, { error: `account exceeds ${config.maxAccountBytes} bytes` });
+      }
       const ctx = contextHash({ platform, communityId, roleId }).toString();
       // The per-account limit, applied now that the account is actually known. With an authenticated
       // adapter this stops one user behind that adapter from spending the whole community's window;
       // without one it is best-effort, since the caller chooses the string (see the note above).
-      if (!accountChallengeLimiter.allow(rateKey(clientKey(req), account, ctx))) {
+      // BOTH BUCKETS TOGETHER, or neither. Charging them in sequence made a request refused by the
+      // second still cost the first, so a caller the shared bucket turned away lost its own personal
+      // allowance too. Reordering just moved which one leaked, and both orderings shipped.
+      if (!allowAll([
+        [accountChallengeLimiter, rateKey(clientKey(req), account, ctx)],
+        [challengeLimiter, clientKey(req)],
+      ])) {
         return send(res, 429, { error: "rate limited" });
       }
-      // ONLY NOW the shared bucket, so a refused request costs the community nothing.
-      if (!challengeLimiter.allow(clientKey(req))) return send(res, 429, { error: "rate limited" });
       // Two-tier challenges run against this context's own members tree (review finding B2), so a
       // member registered for another community cannot prove here.
       let cur;
@@ -959,6 +1001,11 @@ const server = createServer(async (req, res) => {
       if (!ingressLimiter.allow(clientKey(req))) return send(res, 429, { error: "rate limited" });
       const { nonce, proof, publicSignals, account } = await readBody(req);
       if (!nonce || !proof || !publicSignals || !account) return send(res, 400, { error: "missing fields" });
+      // Same bound here, before the account reaches a rate-limit key. The challenge path cannot be
+      // the only place it is enforced: /v1/verify keys a limiter on this string too.
+      if (Buffer.byteLength(String(account), "utf8") > config.maxAccountBytes) {
+        return send(res, 400, { error: `account exceeds ${config.maxAccountBytes} bytes` });
+      }
       // Per-account, for the same reason as the challenge path. Checked before the challenge is
       // TAKEN, so a rate-limited caller does not consume the one-time nonce it was holding. The
       // Keyed by ACCOUNT ALONE, deliberately, and not by context. A reviewer suggested adding the
@@ -969,11 +1016,14 @@ const server = createServer(async (req, res) => {
       // a user's communities is also the conservative direction: the alternative lets someone
       // multiply their allowance by joining more communities, and the cost being limited here is
       // proof verification, which is per-user work whatever community it is for.
-      if (!accountVerifyLimiter.allow(rateKey(clientKey(req), String(account)))) {
+      // Both buckets together, and both BEFORE challenges.take(), so neither a refusal nor a partial
+      // charge consumes the one-time nonce.
+      if (!allowAll([
+        [accountVerifyLimiter, rateKey(clientKey(req), String(account))],
+        [verifyLimiter, clientKey(req)],
+      ])) {
         return send(res, 429, { error: "rate limited" });
       }
-      // Both limiters run BEFORE challenges.take(), so neither refusal consumes the one-time nonce.
-      if (!verifyLimiter.allow(clientKey(req))) return send(res, 429, { error: "rate limited" });
       const pending = challenges.take(nonce);
       if (!pending) return send(res, 410, { ok: false, reason: "unknown-or-expired-challenge" });
 

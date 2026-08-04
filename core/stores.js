@@ -403,6 +403,33 @@ export class RateLimiter {
     const now = Date.now();
     for (const [k, e] of this.hits) if (now > e.reset) this.hits.delete(k);
   }
+
+  // Would this key be allowed, WITHOUT charging it. Only for allowAll below, which needs to know
+  // every answer before it commits to any of them.
+  wouldAllow(key) {
+    const e = this.hits.get(key);
+    if (!e || Date.now() > e.reset) return true; // a fresh window always has room for one
+    return e.count + 1 <= this.max;
+  }
+}
+
+// CHARGE SEVERAL BUCKETS TOGETHER OR NOT AT ALL.
+//
+// Two limits checked in sequence charge the first even when the second refuses, so a request that
+// was never served still costs the caller allowance. Reordering only moves which bucket leaks: the
+// account bucket was charged before the shared one, and before that the shared one was charged
+// before the account one, and each ordering was fixed into the other. Neither is right, because the
+// question is not which to charge first but whether to charge at all.
+//
+// So ask every bucket first, then charge every bucket only if all of them said yes. Safe to do in
+// one pass because this runtime is single-threaded: nothing runs between the asking and the
+// charging. Returns true when the request may proceed.
+export function allowAll(pairs) {
+  for (const [limiter, key] of pairs) {
+    if (!limiter.wouldAllow(key)) return false;
+  }
+  for (const [limiter, key] of pairs) limiter.allow(key);
+  return true;
 }
 
 // A bounded concurrency gate for the expensive cryptographic verify (the PLONK proof check, or the

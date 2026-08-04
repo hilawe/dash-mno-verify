@@ -27,7 +27,7 @@ export class SeasonMembers {
   // durable-records property stays directly testable.
   // `treeDepth` exists so the capacity boundary can be exercised at a small depth; production uses
   // the MembersTree default, which is the depth the circuits are compiled for.
-  constructor({ store, rootWindow, nowSec, emptyRoot, monotonic = false, treeDepth, seasonNow = null }) {
+  constructor({ store, rootWindow, nowSec, emptyRoot, monotonic = false, treeDepth, seasonNow = null, clockRegressed = null }) {
     this.store = store;
     this.monotonic = monotonic;
     this.treeDepth = treeDepth;
@@ -38,6 +38,11 @@ export class SeasonMembers {
     // so a commit that compares against the cache alone can append to a season wall time has already
     // left. Optional so the unit tests that drive rollovers explicitly keep working unchanged.
     this.seasonNow = seasonNow;
+    // Whether the guarded clock has seen a backward step. A registration writes a durable record
+    // scoped to a season number, so committing one while the clock is not trusted writes state
+    // under a numbering that may be wrong. Optional, so a unit test that drives seasons explicitly
+    // is unaffected.
+    this.clockRegressed = clockRegressed;
     this.emptyRoot = emptyRoot;
     this.emptyRoots = new RootStore(rootWindow);
     this.emptyRoots.update([{ height: 0, root: emptyRoot, ts: nowSec() }]);
@@ -164,6 +169,13 @@ export class SeasonMembers {
       if (this.seasonNow != null) {
         const live = Number(this.seasonNow());
         if (live !== season) return { ok: false, reason: "season-rolled-retry", live };
+      }
+      // AND the clock has to be trustworthy at all. seasonNow() above observes both periods, so by
+      // this point a backward step of either kind has been seen; this is what acts on it. Without it
+      // a regression that moved the epoch but not the season passed every check here and the record
+      // was written under a numbering the gateway had already stopped trusting.
+      if (this.clockRegressed != null && this.clockRegressed()) {
+        return { ok: false, reason: "clock-regressed" };
       }
       const res = await appendDurable();
       if (res.duplicate) return { ok: false, reason: "already-registered" };

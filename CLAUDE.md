@@ -32,8 +32,9 @@ until the blockers in REVIEW_FINDINGS_dash-mno-verify_2026-06-26.md are closed.
     the atomic commit point for a two-tier registration.
   - `season.js` `SeasonMembers`, the season-scoped members tree (a cache rebuilt from records) and
     the serialization that closes the season-rollover race.
-  - `members_tree.js` the Poseidon members tree. A reference build that recomputes the root, not yet
-    incremental.
+  - `members_tree.js` the Poseidon members tree. The root is maintained INCREMENTALLY by a frontier,
+    and a rebuild from durable records is one carry-stack pass. `levels()`/`pathFor()` still do the
+    full padded build and are the only expensive path; the gateway never calls them.
   - `platform_store.js` the Dash Platform nullifier backend for sharing state across gateways.
 - `adapters/` the four platform front ends.
 - `contract/` the Dash Platform data contract (nullifier and registration document types).
@@ -46,8 +47,20 @@ until the blockers in REVIEW_FINDINGS_dash-mno-verify_2026-06-26.md are closed.
 - Two tier (`MNO_MODE=two-tier`). A heavy seasonal registration proves masternode control once and
   emits a member commitment, then a cheap per-epoch proof shows membership in the members tree.
 
-`MNO_STORE` is `memory` or `platform`. `core/config.js` holds every tunable, all read from `MNO_*`
-environment variables.
+`MNO_STORE` selects the nullifier backend: `sqlite` (the DEFAULT, durable, single gateway),
+`memory` (ephemeral, opt-in via `MNO_ALLOW_EPHEMERAL_NULLIFIERS`), or `platform` (shared across
+gateways, and currently refuses to start unless `MNO_PLATFORM_ASSUME_SCHEDULE` names this gateway's
+exact schedule). `core/config.js` holds every tunable, all read from `MNO_*` environment variables.
+
+Settings a deployment MUST attend to, because two of them refuse to boot:
+
+- `MNO_REGISTER_CONTEXTS`, the context hashes this gateway accepts registrations for. Two-tier mode
+  REFUSES to start without it, or without `MNO_ALLOW_ANY_REGISTER_CONTEXTS=1` for local dev.
+- `MNO_PLATFORM_ASSUME_SCHEDULE`, which must equal the computed schedule id rather than being a bare
+  flag. Platform mode refuses otherwise.
+- `MNO_REGISTER_ROOT_MAX_AGE` (900s), how stale a DML root a registration may anchor to.
+- `MNO_RATE_CHALLENGE_ACCOUNT`, `MNO_RATE_VERIFY_ACCOUNT`, `MNO_RATE_DML`, `MNO_RATE_INGRESS`,
+  `MNO_RATE_KEYS`.
 
 ## Security invariants (do not weaken without a clear reason)
 
@@ -97,10 +110,15 @@ the Discord adapter and the shared grant ledger are committed alongside it, most
 `REVIEW_FINDINGS_dash-mno-verify_discord_round10_2026-07-31.md`. Every finding in those adapter rounds
 is folded; they are kept as the record of what was wrong and why, which is what the handoff points back
 to. The prioritized remediation list is in
-`TODO.md`. The headline open blockers are account binding (B1, the proof binds to the nonce, not the
-requesting account) and context-scoped members roots (B2, one registration grants every community in
-a season). Both change the committed proving and verification keys, so they need a re-setup and the
-owner's sign-off on the anchor choices. Do not regenerate keys without that.
+`TODO.md`.
+
+B1 (account binding) and B2 (context-scoped members roots) ARE IMPLEMENTED and are no longer open.
+The verify path rejects a proof whose submitted account differs from the one the challenge was
+minted for (`account-mismatch`), and two-tier challenges and verifies run against the requested
+context's own members tree rather than one shared per season. This paragraph described them as the
+headline open blockers well after both had landed, which is worse than saying nothing: an agent
+reading it could undo correct work or redo finished remediation. Check the code before trusting any
+status claim here.
 
 ## Build, keys, and tests
 
@@ -129,6 +147,20 @@ This is a public repository.
 - Commit and push only when asked. Never force-push without asking.
 
 ## Review discipline
+
+AFTER PUSHING, CHECK THAT CI IS ACTUALLY GREEN. The rule below has always said keep CI green and
+nothing made anyone look, so it stayed red from 2026-07-30 to 2026-08-04 across roughly fifteen
+pushes while every local run passed. The failure was invisible locally by construction: CI installs
+with `npm ci --omit=optional` and a local checkout has the optional packages, so only CI could see
+it. One command after a push, and read the conclusion rather than assuming:
+
+    gh run list --limit 1 --json conclusion,status --jq '.[0]'
+
+If it is red, fix it before starting the next change. A red CI that everyone has stopped reading is
+worth less than no CI, because it also hides the next failure. Note the suite reports a different
+count in each job (479 with the full install, 400 plus 79 skipped without the optional packages), so
+a green `checks` job alone does NOT mean the adapters were exercised; that is what the `full` job is
+for.
 
 A non-trivial change gets an independent review from a different model than the one that wrote it.
 If Claude Code wrote the change, run `git review` (uncommitted) or `git review-branch main` (branch

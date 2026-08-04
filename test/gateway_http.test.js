@@ -1831,3 +1831,35 @@ test("a clock regression makes /v1/members report the regression, not blame the 
     gw.proc.kill();
   }
 });
+
+
+test("an oversized account is refused on both account-bearing endpoints", async () => {
+  // The account outlives its request: it keys a rate-limit bucket, it is stored in the pending
+  // challenge, and it is written into the durable claim. So the body cap does not bound it, and one
+  // enormous string is retained long after the request that carried it. Bytes, not characters,
+  // because a character count bounds nothing once anything outside the basic multilingual plane is
+  // in play.
+  const oracle = join(dir, "acct-cap.json");
+  await writeFile(oracle, JSON.stringify(snapshot()));
+  const gw = await startGateway({ MNO_ORACLE_SOURCE: oracle, MNO_ORACLE_REFRESH: "3600", MNO_MAX_ACCOUNT_BYTES: "32" });
+  try {
+    const long = "a".repeat(33);
+    const ch = await post(gw.base, "/v1/challenge", { platform: "p", communityId: "c", roleId: "r", account: long });
+    assert.equal(ch.status, 400);
+    assert.match(ch.body.error, /account exceeds 32 bytes/);
+
+    const ver = await post(gw.base, "/v1/verify", { nonce: randomUUID(), proof: {}, publicSignals: ["1"], account: long });
+    assert.equal(ver.status, 400, "the verify path keys a limiter on it too, so it bounds it too");
+
+    // Bytes, not characters: 12 multi-byte characters are under the character count and over the cap.
+    const multibyte = "é".repeat(20); // 40 bytes
+    const mb = await post(gw.base, "/v1/challenge", { platform: "p", communityId: "c", roleId: "r", account: multibyte });
+    assert.equal(mb.status, 400, "20 characters, 40 bytes, refused");
+
+    // And an ordinary account still works, so the guard has an exit.
+    const ok = await post(gw.base, "/v1/challenge", { platform: "p", communityId: "c", roleId: "r", account: "alice" });
+    assert.equal(ok.status, 200);
+  } finally {
+    gw.proc.kill();
+  }
+});

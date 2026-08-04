@@ -302,3 +302,37 @@ test("SeasonMembers builds Poseidon once and reuses it for every tree it materia
   assert.equal(trees[0].poseidon, trees[1].poseidon, "two contexts share one Poseidon");
   assert.equal(trees[1].poseidon, trees[2].poseidon, "and so does the third");
 });
+
+test("a commit refuses when the clock has gone backward, even inside the same season", async () => {
+  // A backward step that crosses an EPOCH boundary but not a season boundary left every check here
+  // satisfied: the season still matched, so the record was written under a numbering the gateway had
+  // already stopped trusting. The membership path checked both periods and registration did not.
+  // This is the fourth site where reading one clock fact instead of all of them produced a defect.
+  const store = newStore();
+  let regressed = false;
+  const sm = new SeasonMembers({
+    store, rootWindow: 8, nowSec: () => 0, emptyRoot: EMPTY_ROOT,
+    seasonNow: () => 0,             // the season is unchanged, which is the point
+    clockRegressed: () => regressed,
+  });
+  await sm.ensure(0);
+
+  regressed = true;
+  const res = await sm.commit(0, CTX, "111", async () => {
+    throw new Error("the durable append must never run under an untrusted clock");
+  });
+  assert.equal(res.ok, false);
+  assert.equal(res.reason, "clock-regressed");
+  assert.deepEqual(await store.forSeasonContext(0, CTX), [], "nothing durable was written");
+});
+
+test("an untouched clock still commits, so the guard has an exit", async () => {
+  const store = newStore();
+  const sm = new SeasonMembers({
+    store, rootWindow: 8, nowSec: () => 0, emptyRoot: EMPTY_ROOT,
+    seasonNow: () => 0, clockRegressed: () => false,
+  });
+  await sm.ensure(0);
+  const res = await sm.commit(0, CTX, "111", async () => ({ duplicate: false, index: 0 }));
+  assert.equal(res.ok, true, "ordinary correct operation is unaffected");
+});

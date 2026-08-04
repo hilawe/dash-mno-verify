@@ -103,9 +103,6 @@ export const config = {
   // Explicit opt-in to the pre-allowlist behaviour, in the same style as MNO_ALLOW_UNAUTH_GATEWAY
   // and MNO_ALLOW_UNSIGNED_ORACLE: an unset allowlist is a misconfiguration, not a default.
   allowAnyRegisterContext: process.env.MNO_ALLOW_ANY_REGISTER_CONTEXTS === "1",
-  // Where the asserted Platform schedule is recorded locally, so the assertion is pinned to ONE
-  // schedule rather than standing open for whatever the config later says.
-  platformSchedulePath: process.env.MNO_PLATFORM_SCHEDULE_PATH ?? "data/platform_schedule.json",
   // Deployment-scoped requirement for the zkVM dual-root snapshot. When any zkVM registration
   // context is served, the gateway MUST adopt only a v2 snapshot carrying the SHA-256 root under a
   // v2 quorum signature, so a downgraded v1 snapshot (which lacks the root the zkVM statement needs)
@@ -137,6 +134,11 @@ export const config = {
   // test can fill the table without sending fifty thousand requests, and so an operator can trade
   // memory against accuracy deliberately.
   rateMaxKeys: intEnv("MNO_RATE_KEYS", 50_000, { min: 16 }),
+  // The longest account identifier this gateway will accept. The body is already capped, but a
+  // single enormous account string still becomes a rate-limit key, a stored challenge field, and a
+  // durable claim value, so it is retained far past the request that carried it. Adapters supply
+  // platform user ids, which are short; this is generous next to any of them.
+  maxAccountBytes: intEnv("MNO_MAX_ACCOUNT_BYTES", 256, { min: 8 }),
   accountChallengeRateMax: intEnv("MNO_RATE_CHALLENGE_ACCOUNT", 10),
   accountVerifyRateMax: intEnv("MNO_RATE_VERIFY_ACCOUNT", 20),
   verifyRateMax: intEnv("MNO_RATE_VERIFY", 120),
