@@ -24,7 +24,11 @@ until the blockers in REVIEW_FINDINGS_dash-mno-verify_2026-06-26.md are closed.
   the single-tier membership circuit, and the two-tier registration and members circuits.
 - `prover/` the proving CLIs, single-tier (`prover.js`) and two-tier (`two_tier.js`).
 - `core/` the gateway and its state.
-  - `gateway.js` the HTTP server and request handlers.
+  - `gateway.js` the HTTP server and request handlers. IMPORTING IT BOOTS NOTHING: the module exports
+    `createGateway({ config })`, and `node core/gateway.js` boots and listens through an entry-point
+    guard at the foot of the file. The returned handle owns the server (built, not listening), the
+    timers, and the stores. `close()` gives them back, walking the same release list a failed boot
+    walks. Tests drive it in-process (`test/gateway_module.test.js`) rather than spawning it.
   - `verifier.js` the policy checks plus the PLONK proof check. `verifyMembership` and
     `verifyRegistration`.
   - `stores.js` the in-memory root, nullifier, and challenge stores.
@@ -50,7 +54,10 @@ until the blockers in REVIEW_FINDINGS_dash-mno-verify_2026-06-26.md are closed.
 `MNO_STORE` selects the nullifier backend: `sqlite` (the DEFAULT, durable, single gateway),
 `memory` (ephemeral, opt-in via `MNO_ALLOW_EPHEMERAL_NULLIFIERS`), or `platform` (shared across
 gateways, and currently refuses to start unless `MNO_PLATFORM_ASSUME_SCHEDULE` names this gateway's
-exact schedule). `core/config.js` holds every tunable, all read from `MNO_*` environment variables.
+exact schedule). `core/config.js` holds every tunable, all read from `MNO_*` environment variables
+through `buildConfig(env)`, which a test can call with a synthetic environment. NOTHING IS BUILT AT
+IMPORT: `createGateway()` reads `process.env` when it is called, so a malformed setting refuses at
+boot rather than making an import throw.
 
 Settings a deployment MUST attend to, because two of them refuse to boot:
 

@@ -43,7 +43,21 @@ const SCHEMA = `
 
 export class SqliteNullifierStore {
   // `path` is a file path, or ":memory:" for tests. Opening is synchronous and cheap.
+  //
+  // A CONSTRUCTOR THAT THROWS CLOSES WHAT IT OPENED. Everything after the open can refuse (the mode
+  // guard, a pragma, the schedule check), and a throwing constructor returns nothing, so the caller
+  // holds no reference to close the database through. Owning that here rather than in each caller is
+  // what makes "either you got a store or nothing is open" true of this class everywhere it is used.
   constructor(path, schedule = null) {
+    try {
+      this.#open(path, schedule);
+    } catch (err) {
+      this.db?.close();
+      throw err;
+    }
+  }
+
+  #open(path, schedule) {
     this.path = path;
     this.schedule = schedule;
     this.db = new DatabaseSync(path);
@@ -141,7 +155,13 @@ export class SqliteNullifierStore {
     return this._count.get().n;
   }
 
+  // Idempotent, because closing is what a teardown path does and a teardown that runs twice is
+  // ordinary (a finally block plus a test hook, a signal handler plus a normal exit). The underlying
+  // handle throws "database is not open" on a second close, which turns a harmless repeat into a
+  // failure in whichever cleanup path happened to run second.
   close() {
+    if (this._closed) return;
+    this._closed = true;
     this.db.close();
   }
 }

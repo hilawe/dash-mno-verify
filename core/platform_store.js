@@ -38,6 +38,12 @@ export class DocumentNullifierStore {
   async add(epoch, contextHash, nf, _record = {}) {
     return this.backend.insert({ epoch: Number(epoch), contextHash: String(contextHash), nf: String(nf) });
   }
+  // Release the backend's connections. The live backend holds a Dash SDK client with open DAPI
+  // connections, which a gateway shutting down has to hand back; the in-memory backend has nothing
+  // to release and says so by having no close(). Optional on the backend for exactly that reason.
+  async close() {
+    if (typeof this.backend.close === "function") await this.backend.close();
+  }
 }
 
 // In-memory backend that enforces the same unique index, for tests and single-gateway use.
@@ -98,6 +104,11 @@ export function platformBackend({ client, identity, appName = "mnoVerify", typeN
         throw err;
       }
     },
+    // Hand back the SDK client's connections. Idempotent and tolerant of an SDK build without
+    // disconnect(), because a teardown that throws is worse than one that does less than it hoped.
+    async close() {
+      if (typeof client.disconnect === "function") await client.disconnect();
+    },
   };
 }
 
@@ -116,8 +127,17 @@ export async function connectPlatform({ network, mnemonic, contractId, appName =
     wallet: { mnemonic },
     apps: { [appName]: { contractId } },
   });
-  const account = await client.getWalletAccount();
-  const identityId = account.identities.getIdentityIds()[0];
-  const identity = await client.platform.identities.get(identityId);
-  return platformBackend({ client, identity, appName, typeName });
+  // The bootstrap awaits can reject (no funded identity, DAPI unreachable), and a rejection here
+  // returns no backend, so the caller has nothing to close the client through. Disconnect before
+  // rethrowing, so a failed connect leaves no connections behind, and let the original failure
+  // through rather than whatever the disconnect attempt thinks of it.
+  try {
+    const account = await client.getWalletAccount();
+    const identityId = account.identities.getIdentityIds()[0];
+    const identity = await client.platform.identities.get(identityId);
+    return platformBackend({ client, identity, appName, typeName });
+  } catch (err) {
+    if (typeof client.disconnect === "function") await client.disconnect().catch(() => {});
+    throw err;
+  }
 }

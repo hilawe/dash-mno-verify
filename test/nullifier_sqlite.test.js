@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { DatabaseSync } from "node:sqlite";
 import { SqliteNullifierStore } from "../core/nullifier_sqlite.js";
 
 // These pin the property the durable store exists to provide: a gateway restart mid-epoch must not
@@ -105,5 +106,40 @@ test("a claim recorded without an account reads back as null, not as a match", (
     s.add("7", "ctx", "nf1", {});
     assert.deepEqual(s.get("7", "ctx", "nf1"), { account: null });
     s.close();
+  });
+});
+
+test("close() is idempotent, because two teardown paths reaching one store is ordinary", () => {
+  withStore((path) => {
+    const s = new SqliteNullifierStore(path);
+    s.close();
+    s.close();
+    s.close();
+  });
+});
+
+test("a constructor that refuses closes the database it had already opened", () => {
+  // The schedule check runs after the open, and a throwing constructor returns nothing, so the
+  // caller holds no reference to close the handle through. The database's own close is counted,
+  // because an open handle left behind is otherwise unobservable from out here.
+  withStore((path) => {
+    new SqliteNullifierStore(path, "sched-A").close();
+
+    // The DATABASE the refused construct opened, captured so the assertion can be about the handle
+    // rather than about a call having happened. A close() that recorded the call and released nothing
+    // would satisfy a counter and leave the file open, which is the whole defect.
+    const opened = [];
+    const realPrepare = DatabaseSync.prototype.prepare;
+    DatabaseSync.prototype.prepare = function patched(...args) {
+      if (!opened.includes(this)) opened.push(this);
+      return realPrepare.apply(this, args);
+    };
+    try {
+      assert.throws(() => new SqliteNullifierStore(path, "sched-B"), /was written under epoch\/season schedule/);
+      assert.equal(opened.length, 1, "the refused construct did open a database");
+      assert.throws(() => opened[0].prepare("SELECT 1"), /not open/, "and it is closed, not merely marked closed");
+    } finally {
+      DatabaseSync.prototype.prepare = realPrepare;
+    }
   });
 });

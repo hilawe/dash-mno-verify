@@ -5,6 +5,129 @@ counts and supersedes everything below it. Historical sections are append-only a
 only marked superseded. Read this first when picking the project back up, then `TODO.md` for the full
 prioritized punch list.
 
+## CURRENT STATE, 2026-08-04 (later). THE GATEWAY IS A MODULE, AND FOUR REVIEW PASSES ARE FOLDED
+
+Everything below this section is superseded. The older CURRENT STATE blocks are kept as history.
+
+### 1. WHERE TO START
+
+Nothing is half-done and nothing waits on a reviewer. Read section 5 (punch list) and take item 1,
+which is now the retained-leaves bound. Read section 3 before writing code.
+
+### 2. WHAT LANDED, and what it is worth
+
+**`core/gateway.js` is importable, which was punch-list item 1 and the root cause behind several
+sessions of weak tests.** It used to open the durable stores, load the verification keys, fetch a
+root, start its intervals, and bind a listening socket as a side effect of anyone importing it. So
+nothing in it could be unit-tested: every property of a handler had to be proven through a spawned
+process or one level down in the stores, one test had resorted to grepping the file's source text,
+and the rate-limit atomicity property could only be shown on `allowAll` rather than through the path
+that uses it. The module body is now `createGateway({ config })`, and `node core/gateway.js` still
+boots and listens through an entry-point guard at the foot of the file.
+
+**`core/config.js` is `buildConfig(env)`**, with `config` being that function applied to
+`process.env`. A test can now build a fully validated config for a synthetic environment, which is
+what makes the boot refusals ordinary function behaviour rather than a subprocess exit code.
+
+**The lifecycle is the new code, and therefore the risky part.** The handle owns the server (built,
+not listening), the timers, and the stores. `close()` gives them back, walking the SAME release list
+a failed boot walks, so a refusal after the nullifier store is open no longer strands an open
+database with no handle to reach it through. It is one memoized teardown shared by every caller. It
+waits for a refresh in flight, for a bind in progress, for the server to close, and for in-flight
+request handlers to finish, it attempts every release even when one throws, and a closed gateway
+refuses to listen again. Every one of those clauses is there because a review pass found the case,
+and every one has a test that fails when it is removed.
+
+**Twenty-five new tests exist because of the change and could not have existed before it**
+(21 in `test/gateway_module.test.js`, 3 in `test/nullifier_sqlite.test.js`, 1 in
+`test/platform_store.test.js`). Suite is 517, all passing, CI to be checked after the push. The one
+worth knowing: both orderings of the rate-limit charge are now proven through the real
+`/v1/challenge` path, in both directions, where before only the ordering that reads more naturally
+was covered and a short-circuiting sequential charge passed it.
+
+### 3. WHAT THIS SESSION CONFIRMS ABOUT THE PROCESS
+
+- **Every finding across six external passes was in the NEW code, none in the wrapped body.** The
+  first pass confirmed mechanically that the re-indentation moved, dropped, and reordered nothing,
+  and that `buildConfig(process.env)` deep-equalled the old exported object. All sixteen findings
+  were in the lifecycle surface written this session. That is the seventh consecutive round to behave
+  this way, and it is now the most reliable fact about this repository.
+- **A FOCUSED CONFIRMATION IS NOT A FULL PASS, and this session is the cleanest evidence yet.** Four
+  focused rounds converged to APPROVE. The fresh full pass immediately after found two majors and a
+  moderate, none of them adjacent to anything the focused rounds had named. The rule that a converged
+  round is followed by a fresh full round paid for itself in one use.
+- **A mutation that survives is a finding about the TEST, and four did.** The first atomicity test
+  survived a sequential-charge mutant because the code's own short-circuit made the two behave
+  identically in the direction tested. The close-idempotence test survived because the gateway's
+  emptied release list provided the property the store-level guard was supposed to. The two-tier
+  adopt test survived because it closed during the read rather than in the gap it was written for.
+  The handler-drain test survived because releasing the handler and then checking the store is a race
+  the correct code happens to win, so the assertion became "close() has NOT returned", checked before
+  the handler is released. Each was rewritten to observe the thing itself, and each then failed under
+  its mutant.
+- **A test can fail at BASELINE and be right about the code.** The shared-bucket direction of the
+  atomicity test failed the first time it ran because with a shared cap of one, only one probe fits
+  per release, so the second probe was measuring the shared limiter rather than the account's
+  allowance. The instrument was wrong, not the gateway.
+- **Rule 6 shape search, done and clean.** Every other module with import-time side effects
+  (`adapters/*/bot.js`, `adapters/web/server.js`, `oracle/oracle.js`, `prover/*.js`) is a pure entry
+  point, imported by nothing. The Discord adapter had already met this shape and solved it by
+  extraction (`access.js`, `grant_ledger.js`, `permissions.js` exist because `bot.js` logs in at
+  import). The gateway was the last instance.
+
+### 4. THE REVIEW RECORD, since the shape of it is the lesson
+
+Round 1 REQUEST-CHANGES, five majors and two minors. Round 2, after the fold, REQUEST-CHANGES with
+four more, every one a defect in a round-1 FIX. Round 3 REQUEST-CHANGES with one, a defect in a
+round-2 fix. Round 4 APPROVE. Fresh full pass: REQUEST-CHANGES with three. Second fresh full pass:
+APPROVE-WITH-FIXES with one (the cleanup tests counted close() calls rather than proving release, so
+a close() that only set a flag passed them all). Confirmation after that fold: APPROVE.
+
+**THE FRESH FULL PASS THEN FOUND TWO MAJORS AND A MODERATE THAT ALL FOUR FOCUSED PASSES HAD MISSED,
+which is the whole argument for the rule that requires it.** Stopping at round 4's APPROVE would have
+shipped every one of them:
+
+- `close()` waited for the SERVER, which waits for connections, not for the async request handlers.
+  A client that disconnects mid-request leaves its handler running with no connection to wait for, so
+  teardown released the stores underneath it. Reproduced as "statement has been finalized" on the
+  read path. On the two-tier path a disconnected registration could continue into its durable append
+  after `close()` returned.
+- A bind IN PROGRESS could outlive the teardown. `close()` only closed a server it found already
+  listening, and binding is asynchronous in a cluster worker or whenever a hostname is resolved, so
+  the socket could come up behind a gateway with stopped timers and released stores, with the
+  one-shot teardown already settled and unable to close it.
+- `export const config = buildConfig(process.env)` meant importing the config module still VALIDATED
+  the ambient environment, so a malformed `MNO_GATEWAY_PORT` in the shell made importing the gateway
+  throw. The same defect the import-time boot was, one level down, and it made the new claim not
+  quite true. No config is built at import now.
+
+The three-agent fix review (section 6b of `docs/PRECOMMIT_ADOPTION.md`) was NOT run on this commit,
+so the trial stays at 1 of 10. This session's operating rules excluded spawning agents without being
+asked for them. Recorded rather than quietly skipped, because the trial's whole value is an honest
+denominator.
+
+### 5. PUNCH LIST, in the order recommended
+
+1. **The retained-leaves bound.** The root window can hold up to sixteen full leaf arrays during a
+   changeover. Legitimate data, so normalization does not touch it.
+2. **A review round** covering direct node mode and the module refactor together.
+3. **The `merkleRootMNList` commitment check**, which is what turns the node read from trusted-node
+   into chain-authenticated. `protx diff` already returns `cbTx` and `cbTxMerkleTree`.
+4. **The audit.** Still none. Separately, `circom-ecdsa` is unaudited demonstration code by its own
+   README, a deployment blocker for any mode shipping a key-bearing Circom proof.
+
+### 6. KNOWN OPEN, unchanged from the section below except where noted
+
+- A close error after a successful durable write can duplicate a registration.
+- A challenge can be minted for a season that ended during materialization.
+- Registration readiness ignores the anchor age.
+- The Platform marker is local while the state it protects is shared. Constrained and documented.
+- The oracle CLI can publish v3 (`--read block`) but the transition for existing v2 consumers has not
+  been exercised end to end outside tests.
+- NEW, and small: `DocumentNullifierStore.close()` and the Platform backend's `close()` exist and are
+  wired, but the Platform path is not live, so neither has been exercised against a real client.
+
+<!-- superseded by the section above, kept append-only -->
 ## CURRENT STATE, 2026-08-04. COMPLETE SESSION HANDOFF
 
 `main` at `c909cb3`, pushed, clean tree. Suite 493 with the full install, 414 passing and 79 skipped

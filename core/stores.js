@@ -323,13 +323,21 @@ async function readCapped(res, maxBytes, ctrl) {
   return Buffer.concat(chunks).toString("utf8");
 }
 
-export async function loadOracle(source, { timeoutMs = 10_000, maxBytes = 16_000_000 } = {}) {
+// `allowHttp` is the plain-HTTP exception, passed in rather than read from the environment here.
+// Reading process.env directly made this the one security-bearing setting a caller's configuration
+// could not control: a gateway built for a synthetic environment would still see an ambient
+// MNO_ORACLE_ALLOW_HTTP and downgrade its transport. The environment remains the default, so the
+// setting behaves exactly as before for a caller that passes nothing.
+export async function loadOracle(
+  source,
+  { timeoutMs = 10_000, maxBytes = 16_000_000, allowHttp = process.env.MNO_ORACLE_ALLOW_HTTP === "1" } = {},
+) {
   if (/^https?:\/\//.test(source)) {
     const url = new URL(source);
     // URL keeps the brackets on an IPv6 host, so [::1] is reported as "[::1]", not "::1".
     const loopback =
       url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "::1" || url.hostname === "[::1]";
-    if (url.protocol === "http:" && !loopback && process.env.MNO_ORACLE_ALLOW_HTTP !== "1") {
+    if (url.protocol === "http:" && !loopback && !allowHttp) {
       throw new Error(
         "oracle URL must be https; set MNO_ORACLE_ALLOW_HTTP=1 only on a trusted private network",
       );

@@ -206,6 +206,30 @@ epoch. The proving and verification keys were regenerated for the new constraint
 (`scripts/rebuild_proving_keys.sh`), and `check_circuits.sh` fails if a key `>= n` is ever accepted
 again.
 
+## Testability, the gateway is a module rather than a script (2026-08-04)
+
+- [x] Make `core/gateway.js` importable. It used to open the durable stores, load the verification
+  keys, fetch a root, start its intervals, and bind a listening socket as a side effect of being
+  imported, so nothing in it could be unit-tested. Every property of a handler had to be proven
+  through a spawned process or one level down in the stores, and one test resorted to grepping the
+  file's source text for a call it had no other way to observe. That was the root cause behind
+  several sessions of weak tests, not a matter of taste.
+
+  The module body is now `createGateway({ config })`, with `node core/gateway.js` still booting and
+  listening through an entry-point guard at the foot of the file. The handle owns what the boot
+  created: the server (built, not listening), the timers, and the stores. `close()` gives them back,
+  and the release list it walks is the same one a FAILED boot walks, so a refusal after the nullifier
+  store is open no longer strands an open database with no handle to reach it through. `close()` is
+  one memoized teardown shared by every caller, so a second call cannot release the stores while the
+  first is still draining requests, and a closed gateway refuses to listen again.
+
+  `core/config.js` is now `buildConfig(env)` and builds nothing at import, so a test can construct a
+  fully validated config for a synthetic environment and a malformed ambient setting refuses at boot
+  rather than making the import throw. The one setting that escaped the config entirely
+  (`MNO_ORACLE_ALLOW_HTTP`, read inside `loadOracle`) is now passed in, since a security-bearing
+  exception the supplied config could not control was this change failing quietly. (`core/gateway.js`, `core/config.js`, `core/stores.js`, `core/nullifier_sqlite.js`,
+  `core/platform_store.js`, `test/gateway_module.test.js`)
+
 ## P0, the two-tier state model (one redesign, three symptoms)
 
 The two-tier flow now keeps a durable, season-scoped, atomically-recorded registration set,
