@@ -89,6 +89,25 @@ export const config = {
   // (see common/oracle_sig.js). With several keys and a quorum above one, an attacker must compromise
   // several independent signers. The gateway fails closed: with no keys it refuses to start unless
   // allowUnsignedOracle is set, the same shape as the adapter-secret guard below.
+  // WHERE THE DML COMES FROM. `snapshot` (the default) fetches published JSON from
+  // MNO_ORACLE_SOURCE and authenticates it against pinned oracle keys. `node` reads it directly
+  // from a Dash Core node this gateway is configured to talk to, gated on ChainLock.
+  //
+  // The two have DIFFERENT TRUST MODELS, which is the point rather than a detail. The snapshot path
+  // trusts whoever holds the oracle signing keys, and exists for split deployments where the gateway
+  // cannot reach a node. The node path trusts the node the operator already runs, which for a
+  // self-hosting operator is a strictly smaller trust set: no signing keys, no quorum, no snapshot
+  // transport, nothing to compromise between the chain and the gateway.
+  //
+  // It is NOT chain-authenticated even so. One server answers the ChainLock query, the block hash,
+  // and the list, so it can return matching hashes alongside an arbitrary set. That is a trusted-node
+  // read, and it becomes chain-authenticated only when the merkleRootMNList commitment check exists.
+  dmlSource: process.env.MNO_DML_SOURCE ?? "snapshot",
+  nodeRpcUrl: process.env.MNO_RPC_URL ?? null,
+  nodeRpcUser: process.env.MNO_RPC_USER ?? null,
+  nodeRpcPass: process.env.MNO_RPC_PASS ?? "",
+  nodeRpcHeader: process.env.MNO_RPC_HEADER ?? null,
+  nodeCallTimeoutMs: intEnv("MNO_RPC_TIMEOUT_MS", 30_000, { min: 1000 }),
   oraclePubkeys: oraclePubkeys("MNO_ORACLE_PUBKEYS"),
   oracleQuorum: intEnv("MNO_ORACLE_QUORUM", 1, { min: 1 }),
   allowUnsignedOracle: process.env.MNO_ALLOW_UNSIGNED_ORACLE === "1",
@@ -290,6 +309,14 @@ if (!isValidEngineStatement(config.registrationEngine, config.registrationStatem
 // Every value other than "two-tier" selected the single-tier keys and handlers while the challenge
 // response echoed the unvalidated string back to clients, so a typo booted the opposite gateway
 // from the operator's intent and said so in a field nobody reads.
+const DML_SOURCES = new Set(["snapshot", "node"]);
+if (!DML_SOURCES.has(config.dmlSource)) {
+  throw new Error(
+    `MNO_DML_SOURCE must be one of ${[...DML_SOURCES].join(", ")}, got ${JSON.stringify(config.dmlSource)}. ` +
+      `Refusing rather than defaulting, because the two have different trust models.`,
+  );
+}
+
 const MODES = new Set(["single", "two-tier"]);
 if (!MODES.has(config.mode)) {
   throw new Error(

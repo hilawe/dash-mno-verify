@@ -8,7 +8,7 @@ become ceremony.
 
 ## 1. Scope
 
-The full five-rule pass applies to changes in `core/`, `circuits/`, `contract/`, `prover/`, and the
+The full pass applies to changes in `core/`, `circuits/`, `contract/`, `prover/`, and the
 `adapters/` gating paths, since those change behaviour that someone relies on. Rule 3 alone applies
 to everything, including edits to `CLAUDE.md` and the review findings, because this repository's own
 history shows a false claim shipping in an instruction file rather than in code (see section 5).
@@ -64,6 +64,13 @@ defects and load-bearing invariants have come from:
   a record shape, since a hand-written record can carry a field combination the store cannot produce.
 - COVERAGE STATEMENT: before citing `npm test` as evidence, name which test file exercises the
   changed behaviour. If none does, say so rather than citing the suite.
+- SHAPE SEARCH (rule 6): after fixing a defect, grep the whole repository for its shape and record
+  the search and the hit count. This repository is where that rule was earned: one clock-reading
+  defect appeared in FOUR places, each time after being fixed elsewhere, and every instance was
+  found by an external reviewer at the cost of a round. Searchable strings that have already paid
+  off here: `timeGuard.regressed` and `.regressed` (a flag read without the call that refreshes it),
+  `allow(` on limiters (a bucket charged before another can refuse), and `_levels` (a cache used as
+  a proxy for work done).
 
 ## 5. Evidence map
 

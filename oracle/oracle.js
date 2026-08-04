@@ -15,7 +15,6 @@
 // oracle/snapshot.js behind an injectable call(), so it is unit-tested without a node.
 //
 // Usage: node oracle/oracle.js [--out oracle/root.json]
-import { execFileSync } from "node:child_process";
 import { open, rename, readFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { parseArgs } from "node:util";
@@ -23,53 +22,38 @@ import process from "node:process";
 import { createPrivateKey } from "node:crypto";
 import { addSignature } from "../common/oracle_sig.js";
 import { buildSnapshot } from "./snapshot.js";
+import { buildDiffSnapshot } from "./diff_snapshot.js";
+import { makeNodeCall, DEFAULT_TIMEOUT_MS, DEFAULT_MAX_BUFFER } from "./node_client.js";
 
 const RPC_URL = process.env.MNO_RPC_URL; // set to use JSON-RPC; otherwise local dash-cli
-// Neither call path had a deadline. A node that accepts the connection and never answers, or a
-// dash-cli that blocks, left the oracle waiting forever, so it never republished, and the gateway
-// eventually aged out its last accepted root and refused every verification. Failing the run is the
-// better outcome: a supervisor retries it, and the gateway keeps serving the previous root meanwhile.
-const CALL_TIMEOUT_MS = Number(process.env.MNO_RPC_TIMEOUT_MS ?? 30_000);
-// The mainnet list is a few megabytes of JSON, comfortably past execFileSync's 1 MB default, which
-// would fail the read on a full node rather than time out.
-const CLI_MAX_BUFFER = Number(process.env.MNO_CLI_MAX_BUFFER ?? 64 * 1024 * 1024);
 
 const { values } = parseArgs({
-  options: { out: { type: "string", default: "oracle/root.json" } },
+  options: {
+    out: { type: "string", default: "oracle/root.json" },
+    // Which read to use. `tip` is the historical current-tip read with bracket-and-retry. `block`
+    // is the block-bound, ChainLock-gated read, which produces a v3 snapshot ordered by
+    // proRegTxHash. They are not interchangeable: the same masternodes give DIFFERENT roots, which
+    // is why the gateway's window accepts both orders during a changeover.
+    read: { type: "string", default: process.env.MNO_ORACLE_READ ?? "tip" },
+  },
 });
 
-async function rpc(method, params = []) {
-  const headers = { "content-type": "application/json" };
-  if (process.env.MNO_RPC_USER) {
-    const cred = `${process.env.MNO_RPC_USER}:${process.env.MNO_RPC_PASS ?? ""}`;
-    headers.authorization = "Basic " + Buffer.from(cred).toString("base64");
-  }
-  if (process.env.MNO_RPC_HEADER) {
-    const [k, ...v] = process.env.MNO_RPC_HEADER.split(":");
-    headers[k.trim().toLowerCase()] = v.join(":").trim();
-  }
-  const res = await fetch(RPC_URL, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({ jsonrpc: "1.0", id: "mno-oracle", method, params }),
-    // Covers a server that accepts the connection and then goes quiet, which no HTTP status can.
-    signal: AbortSignal.timeout(CALL_TIMEOUT_MS),
-  });
-  if (!res.ok) throw new Error(`RPC ${method} -> HTTP ${res.status}`);
-  const j = await res.json();
-  if (j.error) throw new Error(`RPC ${method}: ${j.error.message ?? JSON.stringify(j.error)}`);
-  return j.result;
+if (!["tip", "block"].includes(values.read)) {
+  console.error(`--read must be "tip" or "block", got ${JSON.stringify(values.read)}`);
+  process.exit(2);
 }
 
-function cli(args) {
-  return JSON.parse(
-    execFileSync("dash-cli", args, { encoding: "utf8", timeout: CALL_TIMEOUT_MS, maxBuffer: CLI_MAX_BUFFER }),
-  );
-}
+const call = makeNodeCall({
+  rpcUrl: RPC_URL,
+  rpcUser: process.env.MNO_RPC_USER,
+  rpcPass: process.env.MNO_RPC_PASS,
+  rpcHeader: process.env.MNO_RPC_HEADER,
+  timeoutMs: Number(process.env.MNO_RPC_TIMEOUT_MS ?? DEFAULT_TIMEOUT_MS),
+  maxBuffer: Number(process.env.MNO_CLI_MAX_BUFFER ?? DEFAULT_MAX_BUFFER),
+});
 
-const call = (method, params) => (RPC_URL ? rpc(method, params) : cli([method, ...params.map(String)]));
-
-const snapshot = await buildSnapshot({ call, log: (msg) => console.error(msg) });
+const build = values.read === "block" ? buildDiffSnapshot : buildSnapshot;
+const snapshot = await build({ call, log: (msg) => console.error(msg) });
 
 // Sign the snapshot if a key is configured, so the gateway can authenticate the leaf set against a
 // pinned oracle key rather than trusting whoever serves the JSON. MNO_ORACLE_SIGNING_KEY is a PKCS8

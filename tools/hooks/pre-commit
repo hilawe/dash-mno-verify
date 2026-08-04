@@ -113,9 +113,43 @@ fi
 # AND IT MUST NOT LEAVE PROCESSES RUNNING. Orphaned gateway children hold their loopback ports, and
 # the next suite run then waits on them forever rather than failing, which cost real time twice in
 # one session before this check existed.
-if pgrep -f 'core/gateway.js' >/dev/null 2>&1; then
+# GRACE PERIOD, because proc.kill() returns before the child has actually gone. A test that
+# terminates its gateway correctly can still have that child alive for a moment after the suite
+# exits, and an instant check called that a leak: this gate blocked a commit on 2026-08-04 while two
+# clean runs immediately afterwards showed ZERO leaked processes. A gate that fires falsely is worse
+# than no gate, because the response to it is --no-verify and then nobody reads it again. Five
+# seconds is far longer than a shutdown and far shorter than a leak, which never resolves.
+# ONLY REAL node PROCESSES COUNT, and this took two corrections. `pgrep -f core/gateway.js` matches
+# ANY process whose argument list contains that string, which includes the shell running the commit
+# itself whenever the commit message or the invoking command mentions the path. So the gate blocked
+# a commit because of the TEXT OF ITS OWN COMMIT MESSAGE, and it did so invisibly: `ps -o args=`
+# truncates long argument lists, so a debug print of the matches showed nothing at all while pgrep
+# kept returning true. That combination is worth remembering, since it makes the false positive look
+# like a phantom.
+#
+# Filtering on the executable name fixes it by construction. A leaked gateway is `node`; a shell or
+# a python wrapper quoting the path is not, whatever its arguments say.
+#
+# The five second grace exists separately: proc.kill() returns before the child is gone, so a
+# correctly terminated gateway can still be alive for a moment after the suite exits.
+leaked_gateways() {
+  local pid
+  for pid in $(pgrep -f 'core/gateway.js' 2>/dev/null); do
+    case "$(ps -p "$pid" -o comm= 2>/dev/null)" in
+      *node) echo "$pid" ;;
+    esac
+  done
+}
+leak_deadline=$((SECONDS + 5))
+while [ $SECONDS -lt $leak_deadline ]; do
+  [ -z "$(leaked_gateways)" ] && break
+  sleep 1
+done
+stray="$(leaked_gateways)"
+if [ -n "$stray" ]; then
   echo ""
-  echo "COMMIT BLOCKED: the test suite left a gateway process running (pgrep -f core/gateway.js)."
+  echo "COMMIT BLOCKED: the test suite left a gateway process running: $(echo "$stray" | tr '\n' ' ')"
+  echo "still alive 5 seconds after the suite finished, so this is a leak rather than a slow exit."
   echo "A test started a child and did not terminate it on every path, including its failure paths."
   exit 1
 fi

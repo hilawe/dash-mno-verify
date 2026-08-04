@@ -2,6 +2,7 @@ import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
+import { createServer as createHttpServer } from "node:http";
 import { mkdtemp, writeFile, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,6 +11,7 @@ import { randomUUID, generateKeyPairSync } from "node:crypto";
 import { makeDmlRootHasher, FIELD_PRIME } from "../core/dml_root.js";
 import { shaRootFromLeaves } from "../common/dml_sha_root.js";
 import { signalHash, contextHash, scheduleId } from "../common/index.js";
+import { hash160ToAddress } from "../common/dml.js";
 import { addSignature, rawPublicB64, signSnapshot, snapshotMessage } from "../common/oracle_sig.js";
 
 // A real, self-consistent snapshot: the root is the recompute of these leaves, so it passes the
@@ -1895,4 +1897,174 @@ test("a Platform marker written for another contract is refused, not reused", as
   }
   assert.ok(err, "it must not start");
   assert.match(err, /written for contract CONTRACT-A/, "and says which state the marker actually describes");
+});
+
+// DIRECT NODE MODE. The gateway reads the DML from its own Dash Core node, gated on ChainLock,
+// instead of fetching a published snapshot and authenticating it against pinned oracle keys. For a
+// self-hosting operator that is a strictly smaller trust set: no signing keys, no quorum, no
+// snapshot transport. It is still a TRUSTED-NODE read, and the tests say so where it matters.
+//
+// Driven through a fake JSON-RPC node rather than a real one, so the gateway's own wiring is
+// exercised: its config, its caller, its refresh path, and the same validateSnapshot and window
+// every other source goes through.
+// Real base58check voting addresses, built the way the oracle test builds them, because
+// votingAddressToLeaf validates the checksum and a made-up string would fail at the boundary rather
+// than exercising the path.
+const REAL_VOTING_ADDRESSES = [hash160ToAddress(Buffer.alloc(20, 1)), hash160ToAddress(Buffer.alloc(20, 2))];
+
+function fakeNode({ height = 2_500_000, blockHash = "cd".repeat(32), entries = null, knownBlock = true } = {}) {
+  const list = entries ?? [
+    { proRegTxHash: "11".repeat(32), votingAddress: REAL_VOTING_ADDRESSES[0], isValid: true },
+    { proRegTxHash: "22".repeat(32), votingAddress: REAL_VOTING_ADDRESSES[1], isValid: true },
+  ];
+  let calls = 0;
+  const server = createHttpServer((req, res) => {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      calls += 1;
+      const { method } = JSON.parse(body);
+      const result =
+        method === "getbestchainlock"
+          ? { blockhash: blockHash, height, known_block: knownBlock }
+          : { blockHash, mnList: list, cbTx: "00", cbTxMerkleTree: "00" };
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ result, error: null, id: "t" }));
+    });
+  });
+  return { server, calls: () => calls };
+}
+
+test("direct node mode builds its own snapshot and needs no oracle key", async () => {
+  const node = fakeNode();
+  await new Promise((r) => node.server.listen(0, "127.0.0.1", r));
+  const port = node.server.address().port;
+  const gw = await startGateway({
+    MNO_DML_SOURCE: "node",
+    MNO_RPC_URL: `http://127.0.0.1:${port}`,
+    MNO_ORACLE_REFRESH: "3600",
+    // Deliberately NO MNO_ORACLE_PUBKEYS and NO MNO_ALLOW_UNSIGNED_ORACLE. The unsigned-oracle
+    // refusal is scoped to the snapshot source, because in node mode there is no publisher to
+    // authenticate and demanding a signature would be checking the wrong property.
+    MNO_ALLOW_UNSIGNED_ORACLE: "",
+  });
+  try {
+    const res = await post(gw.base, "/v1/challenge", { platform: "p", communityId: "c", roleId: "r", account: "alice" });
+    assert.equal(res.status, 200, "a root was adopted from the node with no signature anywhere");
+    assert.ok(res.body.root, "and it is servable");
+    assert.ok(node.calls() >= 2, "the gateway asked the node for both the ChainLock and the list");
+  } finally {
+    gw.proc.kill();
+    node.server.close();
+  }
+});
+
+test("node mode ignores pinned oracle keys, because nothing published the snapshot", async () => {
+  // THE TEST THAT DISCRIMINATES. The one above cannot: with no keys pinned, oracleSignaturesOk
+  // returns true regardless, so removing the node-mode scoping changes nothing there and the
+  // mutation passes. Caught by mutation, which is the fourth time this session that an author-picked
+  // mutation of the obvious test proved less than it looked like.
+  //
+  // Keys ARE pinned here, which is a realistic upgrade path: an operator who ran snapshot mode and
+  // switched to node mode still has MNO_ORACLE_PUBKEYS in their environment. A locally built
+  // snapshot carries no sigs, so without the scoping it would be refused for lacking a signature
+  // nobody was ever going to produce, and the gateway would serve nothing.
+  const kp = generateKeyPairSync("ed25519");
+  const node = fakeNode();
+  await new Promise((r) => node.server.listen(0, "127.0.0.1", r));
+  const port = node.server.address().port;
+  const gw = await startGateway({
+    MNO_DML_SOURCE: "node",
+    MNO_RPC_URL: `http://127.0.0.1:${port}`,
+    MNO_ORACLE_REFRESH: "3600",
+    MNO_ORACLE_PUBKEYS: rawPublicB64(kp.privateKey), // left over from a snapshot deployment
+  });
+  try {
+    const res = await post(gw.base, "/v1/challenge", { platform: "p", communityId: "c", roleId: "r", account: "alice" });
+    assert.equal(res.status, 200, "the node-read snapshot is adopted despite pinned keys it cannot satisfy");
+  } finally {
+    gw.proc.kill();
+    node.server.close();
+  }
+});
+
+test("direct node mode refuses a node whose diff describes a different block", async () => {
+  // The block-bound check is the whole point of this read: the response must describe the block the
+  // ChainLock named. A node answering from another branch is refused rather than papered over.
+  const node = fakeNode();
+  // Answer the ChainLock with one hash and the diff with another.
+  node.server.removeAllListeners("request");
+  node.server.on("request", (req, res) => {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      const { method } = JSON.parse(body);
+      const result =
+        method === "getbestchainlock"
+          ? { blockhash: "aa".repeat(32), height: 2_500_000, known_block: true }
+          : { blockHash: "bb".repeat(32), mnList: [], cbTx: "00", cbTxMerkleTree: "00" };
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ result, error: null, id: "t" }));
+    });
+  });
+  await new Promise((r) => node.server.listen(0, "127.0.0.1", r));
+  const port = node.server.address().port;
+  const gw = await startGateway({
+    MNO_DML_SOURCE: "node",
+    MNO_RPC_URL: `http://127.0.0.1:${port}`,
+    MNO_ORACLE_REFRESH: "3600",
+    MNO_ALLOW_UNSIGNED_ORACLE: "",
+  });
+  try {
+    const res = await post(gw.base, "/v1/challenge", { platform: "p", communityId: "c", roleId: "r", account: "alice" });
+    assert.equal(res.status, 503, "no root is adopted from a node answering about another block");
+  } finally {
+    gw.proc.kill();
+    node.server.close();
+  }
+});
+
+test("an unrecognised MNO_DML_SOURCE refuses to boot rather than defaulting", async () => {
+  const oracle = join(dir, "dmlsrc.json");
+  await writeFile(oracle, JSON.stringify(snapshot()));
+  let started = null;
+  try {
+    started = await startGateway({ MNO_ORACLE_SOURCE: oracle, MNO_DML_SOURCE: "nodee" });
+  } catch (err) {
+    assert.match(String(err.message), /MNO_DML_SOURCE must be one of|gateway exited early/);
+    return;
+  } finally {
+    started?.proc.kill();
+  }
+  assert.fail("the two sources have different trust models, so a typo must not pick one");
+});
+
+test("health reports which DML source is in use, since the two trust models differ", async () => {
+  // An operator reading health should not have to infer the trust model from a startup log they may
+  // not have kept: `snapshot` trusts whoever holds the oracle signing keys, `node` trusts their own
+  // Dash Core node and no signing key at all.
+  const oracle = join(dir, "health-src.json");
+  await writeFile(oracle, JSON.stringify(snapshot()));
+  const gw = await startGateway({ MNO_ORACLE_SOURCE: oracle, MNO_ORACLE_REFRESH: "3600" });
+  try {
+    const h = await (await fetch(gw.base + "/v1/health")).json();
+    assert.equal(h.dmlSource, "snapshot");
+  } finally {
+    gw.proc.kill();
+  }
+
+  const node = fakeNode();
+  await new Promise((r) => node.server.listen(0, "127.0.0.1", r));
+  const gw2 = await startGateway({
+    MNO_DML_SOURCE: "node",
+    MNO_RPC_URL: `http://127.0.0.1:${node.server.address().port}`,
+    MNO_ORACLE_REFRESH: "3600",
+  });
+  try {
+    const h = await (await fetch(gw2.base + "/v1/health")).json();
+    assert.equal(h.dmlSource, "node", "and it says so rather than leaving the operator to guess");
+  } finally {
+    gw2.proc.kill();
+    node.server.close();
+  }
 });

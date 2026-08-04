@@ -35,6 +35,8 @@ import { isCanonicalField } from "../common/field.js";
 import { contextHash, signalHash, epochNow, seasonNow, scheduleId } from "../common/index.js";
 import { TimeGuard } from "./time_guard.js";
 import { snapshotMessage, verifySnapshotSig, snapshotVersion, publicKeyFromRaw, rawPublicB64 } from "../common/oracle_sig.js";
+import { buildDiffSnapshot } from "../oracle/diff_snapshot.js";
+import { makeNodeCall } from "../oracle/node_client.js";
 
 const twoTier = config.mode === "two-tier";
 const nowSec = () => Math.floor(Date.now() / 1000);
@@ -58,7 +60,11 @@ if (!config.adapterSecret && !config.allowUnauthGateway) {
 // Fail closed on the oracle too: without trusted oracle keys, the gateway would adopt any
 // self-consistent snapshot a source serves, so a forged membership set could grant access. Require
 // pinned keys unless the operator opts into an unsigned oracle on purpose.
-if (config.oraclePubkeys.length === 0 && !config.allowUnsignedOracle) {
+// The signed-snapshot requirement applies to the SNAPSHOT source only. In node mode there is no
+// snapshot and no publisher: the gateway reads the list from a node it is configured to talk to, and
+// that node is the trust anchor. Demanding oracle keys there would be demanding a signature on data
+// nobody published, which is why this is scoped rather than universal.
+if (config.dmlSource === "snapshot" && config.oraclePubkeys.length === 0 && !config.allowUnsignedOracle) {
   throw new Error(
     "refusing to start with an unauthenticated oracle: set MNO_ORACLE_PUBKEYS to the trusted oracle " +
       "public key(s), or MNO_ALLOW_UNSIGNED_ORACLE=1 to trust an unsigned source on purpose (local " +
@@ -405,6 +411,27 @@ function windowOrderKey(version, order) {
 // SHA-256 view (dmlRoots.shaView(), for the zkVM registration statement) are structurally in lockstep
 // and cannot drift. The zkVM registration verify (deferred with the live receipt verifier) uses
 // dmlRoots.shaView() as its rootStore.
+// The node caller, built once, only in node mode. Shared with the oracle CLI so the timeout and
+// buffer limits that exist because of specific failures are not re-derived here.
+const nodeCall = config.dmlSource === "node"
+  ? makeNodeCall({
+      rpcUrl: config.nodeRpcUrl,
+      rpcUser: config.nodeRpcUser,
+      rpcPass: config.nodeRpcPass,
+      rpcHeader: config.nodeRpcHeader,
+      timeoutMs: config.nodeCallTimeoutMs,
+    })
+  : null;
+if (config.dmlSource === "node") {
+  console.warn(
+    `[gateway] DIRECT NODE MODE: the DML is read from ${config.nodeRpcUrl ?? "the local dash-cli"} ` +
+      `and gated on ChainLock, so no oracle signing key is trusted. This is a TRUSTED-NODE read: one ` +
+      `server answers the ChainLock query, the block hash, and the list, so it can return matching ` +
+      `hashes over an arbitrary set. It becomes chain-authenticated only when the merkleRootMNList ` +
+      `commitment check exists.`,
+  );
+}
+
 const dmlRoots = new RootWindows(config.rootWindow);
 // The last verified oracle snapshot, so provers can fetch leaves and build paths. DERIVED from the
 // window rather than tracked beside it: the snapshot rides in the same record as its roots, so
@@ -627,7 +654,13 @@ async function refreshRoots() {
   }
   refreshInFlight = true;
   try {
-    const o = await loadOracle(config.oracleSource);
+    // THE READ, from whichever source this deployment trusts. In node mode the gateway builds the
+    // snapshot itself from its own node, so nothing is fetched, nothing is signed, and there is no
+    // publisher between the chain and here. Everything downstream is identical: the same
+    // validateSnapshot, the same root recompute, the same window. Only the origin differs.
+    const o = config.dmlSource === "node"
+      ? await buildDiffSnapshot({ call: nodeCall, log: (m) => console.error(m) })
+      : await loadOracle(config.oracleSource);
     // Require v2 if configured OR if a durable zkVM registration exists in the current season, so a
     // deployment that has served zkVM registrations cannot be downgraded to v1 by clearing the flag.
     let requiresSha = config.requireShaRoot;
@@ -641,7 +674,10 @@ async function refreshRoots() {
     // both roots before rejecting it blocks the event loop for seconds per refresh, which is a
     // denial of service against every endpoint. Ed25519 verification is cheap and decides the same
     // question. On an unsigned deployment this is a no-op, so the order costs nothing there.
-    const signaturesOk = oracleSignaturesOk(o);
+    // A locally built snapshot has no signatures and needs none: it never left this process, so
+    // there is no transport to authenticate. oracleSignaturesOk would refuse it for having no
+    // block-hash-bearing sigs array, which would be checking the wrong property entirely.
+    const signaturesOk = config.dmlSource === "node" ? true : oracleSignaturesOk(o);
     // Always recompute the root from the published leaves and trust only a self-consistent snapshot,
     // whether the root is new or a republish of the current one. The fast hasher is O(real leaves),
     // so this runs every refresh cheaply, and a snapshot whose leaves do not hash to its root is
@@ -1325,6 +1361,12 @@ const server = createServer(async (req, res) => {
         canVerify,
         canRegister,
         mode: config.mode,
+        // WHICH TRUST MODEL THIS GATEWAY IS RUNNING, because the two differ and nothing else here
+        // says. `snapshot` trusts whoever holds the oracle signing keys; `node` trusts the operator's
+        // own Dash Core node and no signing key at all. An operator reading health should not have to
+        // infer that from a startup log they may not have kept. Surfaced after a rule 6 shape search
+        // over the change that added the second source found every branch handled except this one.
+        dmlSource: config.dmlSource,
         root: twoTier ? null : dmlRoot,
         dmlRoot,
         season,
