@@ -327,6 +327,47 @@ follow-up below.
 
 ## P1, before any non-local or public deployment
 
+- [ ] Keep the proof and the challenge off the chat platform (2026-08-04). Today the Discord flow
+  hands the member their challenge as a Discord file attachment and the member uploads `proof.json`
+  back as another, which the bot downloads from Discord's content delivery network before forwarding
+  it to the gateway (`adapters/discord/bot.js`, the `AttachmentBuilder` on the challenge reply and
+  the `getAttachment("proof")` read on submit). Telegram and Matrix take a proof document the same
+  way. So the platform holds two files it has no need to hold.
+
+  WHAT THAT ACTUALLY EXPOSES, stated narrowly rather than alarmingly. The proof is zero-knowledge and
+  the nullifier is a one-way tag, so nothing there names a masternode, a voting key, a collateral
+  outpoint, or an address. What the platform gains is the NULLIFIER, which is a stable pseudonym for
+  one (voting key, epoch, context), plus the exact time the member proved. It changes every epoch and
+  differs per context, so it does not link a member across epochs or across communities, and the
+  gateway would reject a second account presenting the same tag anyway. The disclosure is real and
+  bounded, and it is entirely avoidable, which is why it is worth closing.
+
+  WHAT IS NOT AVOIDABLE, and must not be implied otherwise in user-facing text. The platform enforces
+  the access, so it necessarily knows who holds the role, sees every message in the gated channel,
+  and sees when each grant happened. The sensitive fact that cannot be hidden from Discord is that a
+  given account controls a masternode, which implies holding the collateral. For some members that
+  wealth signal attached to a real account is the actual risk, not the node identity.
+
+  THE FIX, and why it is safe. The gateway already stores the account with the challenge when it
+  mints it (`challenges.put(nonce, { account, ... })`), so a member can submit nonce plus proof
+  straight to the gateway over HTTPS and the grant still lands on the bound account without the
+  submitter naming one. That needs an endpoint accepting a nonce and a proof WITHOUT the adapter
+  bearer token, deriving the account from the stored challenge rather than from the request. It
+  weakens nothing: the nonce is one-time, the signal hash binds it to that account, and a stolen
+  nonce buys an attacker no grant because the grant follows the stored account. The residual is that
+  anyone holding a leaked nonce can consume it with a failing submission and force a re-challenge,
+  which is griefing bounded by the existing rate limits, and delivering the challenge out of band
+  removes even that. Then the platform sees a role grant and nothing else.
+
+  Three related notes. If membership itself must be hidden from the platform, Discord is the wrong
+  host and no change here fixes it, because a platform that enforces access must know who has it. The
+  Matrix adapter on a self-hosted homeserver with end-to-end encryption is the answer to that
+  question. A throwaway platform account is a weak mitigation, given phone verification, address, and
+  device correlation. And the same reasoning applies to any future adapter, so the direct-submit path
+  belongs in the gateway rather than being reimplemented per platform.
+  (`core/gateway.js`, `adapters/discord/bot.js`, `adapters/telegram/bot.js`, `adapters/matrix/bot.js`,
+  `adapters/web/server.js`, `docs/THREAT_MODEL.md`)
+
 - [x] Close B1, the account relay. The gateway binds the requesting account into the signal hash (`signalHash(nonce, account)` in `common/index.js`), so a proof committed for one account's challenge cannot satisfy another's. `/v1/verify` takes the submitter `account` and rejects with `account-mismatch` unless it equals the account the challenge was minted for, checked before the proof verify and the nullifier spend, so a relayed proof can neither grant the relayer nor burn the real owner's epoch. With `MNO_ADAPTER_SECRET` set (see "Authenticate the gateway" below), only an authenticated adapter can supply that account, so the binding is authoritative and not merely an adapter-relay guard. No circuit change. (`common/index.js`, `core/gateway.js`, all four adapters, `prover/two_tier.js`)
 - [x] Idempotent grants. The nullifier store now records the account that first spent each membership tag in the same record as the spend (`NullifierStore` in `core/stores.js`), so the same account can re-verify and re-grant within the epoch if its adapter died after the spend but before applying the grant. The re-grant still needs a fresh valid proof, and a different account hitting the same tag is still rejected, so one voting key still maps to one membership per epoch and context. Keeping the spend and the account in one record (rather than a second grant store) means the two cannot fall out of step, and the property follows the configured store backend. `verifyMembership` reads the prior account from the store's `get()` and gained an injectable `verifyProof` for unit testing (`test/verifier_idempotent.test.js`). The adapters needed no change, because they already apply the grant on `ok`. (`core/stores.js`, `core/verifier.js`, `core/gateway.js`)
 - [ ] Durable, privacy-preserving claim on the Platform-backed store. The Platform store shares the spent set across gateways but does not persist the granting account, so re-grant is a memory-mode property and a member whose adapter failed in `MNO_STORE=platform` mode still waits out the epoch. The fix is not to write the raw account: a platform user id (or anything trivially derived from it) in a public document would link that user to masternode control on-chain, the disclosure the design avoids. Persist an account commitment instead (for example `HMAC(cluster-secret, account)` under a secret shared by the operator's gateways, so it is deterministic across them but opaque to the public), add the commitment field to the contract nullifier document, and have `DocumentNullifierStore.get()` return it. This is a deliberate design step (a contract change plus a commitment scheme), so decide it explicitly rather than defaulting it. (`core/platform_store.js`, `contract/mno-verify.contract.json`, `core/gateway.js`)
