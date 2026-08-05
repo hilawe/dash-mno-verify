@@ -41,8 +41,25 @@ export class DocumentNullifierStore {
   // Release the backend's connections. The live backend holds a Dash SDK client with open DAPI
   // connections, which a gateway shutting down has to hand back; the in-memory backend has nothing
   // to release and says so by having no close(). Optional on the backend for exactly that reason.
-  async close() {
-    if (typeof this.backend.close === "function") await this.backend.close();
+  //
+  // IDEMPOTENT BY A GUARD, not by hoping the backend tolerates a repeat. An earlier version claimed
+  // idempotence while calling disconnect() on every call, and its test passed only because the fake
+  // client accepted being disconnected twice. That is the same defect as counting a close() call and
+  // treating it as evidence of a release, since the claim was about this method while the check was
+  // about something else. A real SDK client is not obliged to accept a second disconnect, and two
+  // teardown paths reaching one store is ordinary.
+  //
+  // THE GUARD IS THE PROMISE, NOT A FLAG, which is the same shape the gateway's own teardown uses. A
+  // boolean set before the await reports success to every later caller the moment the release
+  // STARTS, so a disconnect that then fails is remembered as a completed close, and a second caller
+  // racing the first returns before the release it is supposed to be waiting for has finished.
+  // Memoizing the operation instead means every caller awaits the same one and sees the same
+  // outcome, including a failure.
+  close() {
+    this._closing ??= (async () => {
+      if (typeof this.backend.close === "function") await this.backend.close();
+    })();
+    return this._closing;
   }
 }
 
@@ -77,6 +94,7 @@ function toBytes32(decimal) {
 // docs/PLATFORM.md. Not exercised in CI.
 export function platformBackend({ client, identity, appName = "mnoVerify", typeName = "nullifier" }) {
   const locator = `${appName}.${typeName}`;
+  let disconnecting = null;
   return {
     async exists({ epoch, contextHash, nf }) {
       const docs = await client.platform.documents.get(locator, {
@@ -104,10 +122,17 @@ export function platformBackend({ client, identity, appName = "mnoVerify", typeN
         throw err;
       }
     },
-    // Hand back the SDK client's connections. Idempotent and tolerant of an SDK build without
-    // disconnect(), because a teardown that throws is worse than one that does less than it hoped.
-    async close() {
-      if (typeof client.disconnect === "function") await client.disconnect();
+    // Hand back the SDK client's connections. Memoized so a repeat call disconnects once, and
+    // tolerant of an SDK build without disconnect(), because a teardown that throws is worse than
+    // one that does less than it hoped. The guard is here as well as on the store because this
+    // object is reachable on its own (platformBackend is exported and constructed directly), so the
+    // property has to hold wherever the claim is made rather than only through its usual caller.
+    // The promise rather than a flag, for the reason spelled out on the store's close above.
+    close() {
+      disconnecting ??= (async () => {
+        if (typeof client.disconnect === "function") await client.disconnect();
+      })();
+      return disconnecting;
     },
   };
 }

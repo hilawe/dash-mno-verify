@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { buildConfig } from "../core/config.js";
 import { createGateway } from "../core/gateway.js";
 import { makeDmlRootHasher } from "../core/dml_root.js";
+import { signalHash } from "../common/index.js";
 
 // The gateway as a MODULE rather than as a process. Everything here was unreachable while
 // core/gateway.js opened its stores and bound a socket at import time: a boot refusal could only be
@@ -698,11 +699,17 @@ test("a request the shared bucket refuses does not spend the account's own allow
   }
 });
 
-test("the challenge and verify accounts are bound, observed through the store the gateway actually keeps", async () => {
-  // /v1/verify rejects a proof submitted for another account's challenge (review finding B1). The
-  // check runs before the proof verify, so no proof is needed to reach it, and the challenge store is
-  // now visible: the nonce must be CONSUMED by the mismatched attempt, since a one-time nonce that
-  // survived a failed verify would be replayable.
+test("the challenge's signal is bound to the account it was minted for, which is what makes the check meaningful", async () => {
+  // A DIRECT OBSERVATION, replacing a proxy. The previous version of this test posted a MALFORMED
+  // fake proof and asserted the gateway answered account-mismatch. That proves the gateway compares
+  // the submitted account with the stored one, which is worth having, but an external audit pointed
+  // out it would pass unchanged if `account` were removed from signalHash() entirely, so it was
+  // evidence for a weaker claim than its name made.
+  //
+  // The binding that matters is a cryptographic one. The signal a prover must commit to is derived
+  // from the nonce AND the account, so a proof made for one account's challenge cannot satisfy another's
+  // (review finding B1). That is checkable without any proof at all, by asking whether the signal the
+  // gateway minted and stored is the one the account determines.
   const { dir, env } = await envWithSnapshot();
   const gateway = await createGateway({ config: buildConfig(env) });
   try {
@@ -710,10 +717,30 @@ test("the challenge and verify accounts are bound, observed through the store th
     const base = `http://127.0.0.1:${port}`;
     const minted = await post(base, "/v1/challenge", { platform: "p", communityId: "c", roleId: "r", account: "alice" });
     assert.equal(minted.status, 200);
-    assert.equal(gateway.state.challenges.pending.size, 1, "one challenge is outstanding");
 
+    const nonce = minted.body.nonce;
+    assert.equal(
+      minted.body.signalHash,
+      signalHash(nonce, "alice").toString(),
+      "the signal the prover must commit to is the one alice's account determines",
+    );
+    assert.notEqual(
+      signalHash(nonce, "alice").toString(),
+      signalHash(nonce, "mallory").toString(),
+      "and another account on the SAME nonce yields a different signal, so a proof cannot carry across",
+    );
+    // The stored challenge holds that same signal, so the verifier compares against the bound value
+    // rather than against something the caller sends.
+    const stored = gateway.state.challenges.pending.get(nonce);
+    assert.equal(stored.signalHash, signalHash(nonce, "alice").toString());
+    assert.equal(stored.account, "alice");
+
+    // And the gateway's own account check, the cheap guard in front of that binding. A submission
+    // naming a different account is refused before any proof work, and it CONSUMES the one-time
+    // nonce, since a nonce surviving a failed verify would be replayable.
+    assert.equal(gateway.state.challenges.pending.size, 1, "one challenge is outstanding");
     const relayed = await post(base, "/v1/verify", {
-      nonce: minted.body.nonce,
+      nonce,
       proof: { fake: true },
       publicSignals: ["1", "2", "3", "4"],
       account: "mallory",

@@ -5,6 +5,37 @@ counts and supersedes everything below it. Historical sections are append-only a
 only marked superseded. Read this first when picking the project back up, then `TODO.md` for the full
 prioritized punch list.
 
+## ADDENDUM FOLLOW-UP, 2026-08-04. F5, F6 AND THE BINDING PROXY ARE CLOSED
+
+Three of the six findings are fixed. F1 to F4 are untouched, deliberately, because two of them are
+profile decisions (turn direct-node mode off, mark Platform nullifier mode unsupported) rather than
+code fixes, and F4 needs a design call that reaches all three eviction rules rather than only the new
+one. Suite 528.
+
+- **F5 is closed, and the fix went further than the finding.** The Platform close claimed idempotence
+  with no guard at all, and its test passed only because the fake client tolerated a repeat. Both
+  `DocumentNullifierStore.close()` and `platformBackend.close()` now MEMOIZE the operation rather
+  than setting a flag, which is the shape the gateway's own teardown already uses. A boolean set
+  before the await was the first fix and an external pass reproduced two defects in it: a disconnect
+  that then failed was remembered as a completed close, and a racing second caller returned before
+  the release it was waiting on had finished. Four tests cover it now, including a store over an
+  unguarded backend (so the store's own guard is observed rather than the backend's) and the backend
+  driven directly (so reverting only the backend fails a test).
+- **The binding proxy is replaced by a direct test.** The old one posted a malformed fake proof and
+  asserted `account-mismatch`, which is real but weaker than its name: it would have passed unchanged
+  with `account` removed from `signalHash()` entirely. The new one asserts the minted signal equals
+  `signalHash(nonce, account)`, that a different account on the same nonce yields a different signal,
+  and that the stored challenge holds the bound value. Mutation-checked against exactly that removal.
+  The account-mismatch and nonce-consumption assertions are kept underneath it as the cheap guard in
+  front of the binding.
+- **F6 is corrected.** The module refactor added 24 tests, not 25 (21 gateway, 2 SQLite, 1 Platform),
+  counted from `3a6aadf` itself rather than from memory.
+
+WHAT THIS ROUND CONFIRMS. Every finding was about EVIDENCE rather than about behaviour, and the fix
+for the first one had two defects of its own that a further pass reproduced. Both of those were the
+same shape the session had already met twice: a flag set before the work it stands for, and a test
+that observes a consequence something else also produces.
+
 ## CURRENT STATE ADDENDUM, 2026-08-04 (orchestrated freeze). AN INDEPENDENT PASS RETURNED REVISE
 
 Run differently from the earlier passes: the candidate was frozen first from a CLEAN CHECKOUT,
@@ -98,9 +129,11 @@ request handlers to finish, it attempts every release even when one throws, and 
 refuses to listen again. Every one of those clauses is there because a review pass found the case,
 and every one has a test that fails when it is removed.
 
-**Twenty-five new tests exist because of the change and could not have existed before it**
-(21 in `test/gateway_module.test.js`, 3 in `test/nullifier_sqlite.test.js`, 1 in
-`test/platform_store.test.js`). Suite is 517, all passing, and all three CI jobs green on `3a6aadf`. The one
+**Twenty-four new tests exist because of the change and could not have existed before it**
+(21 in `test/gateway_module.test.js`, 2 in `test/nullifier_sqlite.test.js`, 1 in
+`test/platform_store.test.js`). Suite is 517, all passing, and all three CI jobs green on `3a6aadf`.
+An earlier version of this line said twenty-five and credited three to the SQLite file. The counts
+come from `3a6aadf` itself and are 21, 2, and 1. The one
 worth knowing: both orderings of the rate-limit charge are now proven through the real
 `/v1/challenge` path, in both directions, where before only the ordering that reads more naturally
 was covered and a short-circuiting sequential charge passed it.
