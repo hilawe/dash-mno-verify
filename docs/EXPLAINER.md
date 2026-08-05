@@ -29,6 +29,8 @@ That certificate is what cryptographers call a zero-knowledge proof. It proves a
 3. The doorman (called the gateway). It receives a proof, checks it against the current list, and answers yes or no. It never sees the key or learns which masternode is involved.
 4. The front door (called the adapter). This is the thin layer that talks to the chat platform. For Discord it hands the member a challenge, takes their proof, passes it to the doorman, and on a yes assigns the role. The same doorman serves Discord, Telegram, a website, and more, so each platform only needs its own small front door.
 
+An operator who runs their own Dash node can now skip the list keeper altogether and have the doorman read the list straight from that node. That removes a whole party from the arrangement, along with the signing keys and the transport that went with it. What it does not remove is trust in the node itself, which is covered under the limits below.
+
 ## What it guarantees
 
 - Privacy. The bot learns only that some masternode vouched for this person. It never learns which one, and never an address.
@@ -38,6 +40,23 @@ That certificate is what cryptographers call a zero-knowledge proof. It proves a
 
 ## What it does not do yet
 
-- It is a working prototype, not a professionally audited system. It has had a careful, adversarial self-review, which is valuable but is not the same as a formal audit.
-- Making a proof asks a lot of the member's computer. It needs a large helper file of about 2.3 GB, downloaded once, and it runs some heavy computation. That step on the member's side is the main rough edge for wide adoption.
-- The doorman trusts the list keeper to report the masternode list honestly. Today that is softened by having the keeper sign the list, and by optionally running several independent keepers, so forging the list would mean compromising a quorum of them rather than one machine. The known next step removes the keeper from the trust entirely, by having the doorman check the list against Dash's own on-chain record of the masternode set that every node already agrees on. That is real work because the doorman would have to verify chain data the way a light Dash node does, and because the chain stores the list in a different form than the proof system uses, so the two cannot be compared directly without rebuilding one from the other. The design already signs the block reference this check would build on.
+- It is a working prototype, not a professionally audited system. It has been reviewed repeatedly and adversarially, which is valuable and is not the same as a formal audit by a security firm.
+- Making a proof asks a lot of the member's computer. There are two ways to run the system. The simple one makes a full proof every time, which needs a helper file of about 2.3 GB downloaded once and several minutes of heavy computation, measured at just under five minutes on one test machine. The other splits the work, so the expensive proof happens once a season and the routine proof that runs the rest of the time uses a 35 MB helper file instead. The heavy step is still the main rough edge for wide adoption, and reducing it is an open line of work with its own notes in the repository.
+- The doorman still has to trust something about where the list came from, though less than before. Part of that trust has moved, and part of it has not.
+
+  Dash's own blockchain carries a fingerprint of the masternode list inside every block, and the network's rules require it to match. The doorman now rebuilds that fingerprint from the list it was handed and refuses the list if the two disagree. It reads the fingerprint out of the block's own contents rather than believing a summary the node offers alongside it, which is the difference between checking a document and taking someone's word for what the document says. That was verified against live Dash mainnet data, on a block with 2,971 masternodes in it.
+
+  What is still missing is the last link. The doorman cannot yet confirm that the block it was shown is genuinely a block from the chain, as opposed to a convincing one manufactured by whoever handed it over. Dash identifies blocks using a hashing method this build has not implemented, so a node that fabricates a block, a fingerprint, and a matching list, all consistent with one another, would still be believed. In short, the check now catches a node that is broken or inconsistent, and does not yet catch one that is deliberately lying. Until that last link exists, the honest description is that the doorman trusts the node it reads from, and this mode is not one to rely on for anything of value.
+- The most recent independent review raised findings that are not all fixed. Several findings are closed, including the ones about how the system proved its own claims to itself. Others are open and are recorded in the repository rather than left implicit, among them the trust gap described just above. The repository keeps its review findings in public alongside the code, which is deliberate.
+
+## Where the work stands, August 2026
+
+Recent work went in three directions, and it is worth separating them because they carry different weight.
+
+The largest piece is the on-chain check described above, which moves the masternode list from something the doorman accepts on trust toward something it verifies. Three of the four steps that check needs are built and confirmed against real Dash mainnet data. The fourth is not, and the gap it leaves is stated plainly rather than rounded off.
+
+The second is unglamorous internal work. The doorman's code was restructured so its behaviour can actually be tested, and a limit was put on how much memory it holds while lists change over. Neither changes what a member sees. Both matter because most of the defects found in this project have been in recently written code, so the ability to test a change is worth more than any single fix.
+
+The third is the review discipline itself. Every substantial change here is checked by reviewers that did not write it, and the record of what they found, including the mistakes, is kept in the repository. Several defects this month were caught that way rather than by the author, which is the point of doing it.
+
+None of this makes the system audited. It remains a working prototype, and the advice at the top of the repository stands, which is not to use it to gate anything of real value yet.
