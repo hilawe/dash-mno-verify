@@ -19,16 +19,17 @@
 // reorg inside the read window now produces a mismatch and a refusal instead of a silently torn
 // snapshot. That is the failure the old bracketing could not detect at all.
 //
-// Against a DISHONEST OR BUGGY node it closes nothing. One server answers the ChainLock query,
-// `known_block`, `diff.blockHash`, AND `mnList`. It can return matching hashes alongside an arbitrary
-// list, and reading the lock first does not stop the same server choosing both answers. This is a
-// TRUSTED-NODE read, not a chain-authenticated one, and the pinned signer trust it was meant to
-// replace is still doing work until the commitment check exists.
+// Against a BUGGY node, the commitment check below now closes most of it. The list is rebuilt into
+// the DIP4 simplified-list commitment and compared against the `merkleRootMNList` carried in the
+// block's own coinbase, the coinbase is checked against the merkle branch, and the branch against the
+// header. A node whose list does not match what the block committed to is refused.
 //
-// The commitment check is what would make it chain-authenticated: verify the header, verify the
-// coinbase inclusion proof, decode `merkleRootMNList`, rebuild the simplified-list commitment from
-// these entries, and compare. `protx diff` already carries the coinbase transaction and its merkle
-// branch, so the material is here, and none of it is verified yet.
+// Against a DISHONEST node it still closes nothing, and the reason is narrow and specific. Nothing
+// here identifies the header: a Dash block is named by the X11 hash of its header, this build has no
+// X11, and so a node that fabricates a header, a coinbase, and a list that all agree with one another
+// passes every check. This remains a TRUSTED-NODE read, and the pinned signer trust it was meant to
+// replace is still doing work until the header is tied to the chain, by X11 with its proof of work or
+// by verifying the ChainLock signature against the signing quorum. Neither is started.
 //
 // CHAINLOCK IS THE GATE, and it is doing real work rather than being belt-and-braces. A ChainLocked
 // block cannot be reorged away, so pinning the read to one removes the reorg question entirely rather
@@ -40,7 +41,15 @@
 // order for these entries is `proRegTxHash`. Aligning with DIP4's own order is the right direction,
 // since the eventual commitment check merkleizes in exactly that order, but the same set of
 // masternodes now produces a DIFFERENT root. That is a version bump and a transition, not a drop-in.
+//
+// THE TWO ORDERS ARE BOTH BY proRegTxHash AND THEY ARE NOT THE SAME ORDER, which an earlier version
+// of this comment ran together. The leaves below are sorted on the DISPLAYED hex, and the on-chain
+// commitment in dml_commitment.js sorts on the INTERNAL bytes, which are that hex reversed. Both are
+// deterministic and every honest reader reproduces either one, so the tree here is well defined, but
+// a reader who assumes the leaf index matches the position in the DIP4 commitment gets a different
+// index for nearly every member. The membership proof does not depend on the two agreeing.
 import { votingAddressToLeaf } from "../common/dml.js";
+import { verifyDmlCommitment } from "./dml_commitment.js";
 import { makeDmlRootHasher } from "../common/dml_root.js";
 import { makeShaDmlRootHasher, leafToKeyId } from "../common/dml_sha_root.js";
 
@@ -55,6 +64,11 @@ export async function buildDiffSnapshot({
   depth = TREE_DEPTH,
   now = () => Math.floor(Date.now() / 1000),
   log = () => {},
+  // Check the list against the commitment the block's coinbase carries. On by default, in the same
+  // style as every other guard here: a read that skips it is a read that believed the node's list on
+  // the node's word. A caller turns it off only to exercise a different boundary, which is what the
+  // tests that do so are doing.
+  verifyCommitment = true,
 }) {
   // 1. The best ChainLock. This is the block the read is pinned to, chosen BEFORE the list is read so
   //    the node cannot pick a convenient one.
@@ -169,6 +183,62 @@ export async function buildDiffSnapshot({
     }
     seenHashes.add(m.proRegTxHash);
   }
+  // 4b. THE ON-CHAIN COMMITMENT, checked over the WHOLE list before anything is filtered out of it.
+  //     The coinbase commits to every entry, valid and invalid alike, so verifying the survivors of
+  //     the isValid filter would be verifying a different set than the one the chain committed to and
+  //     would fail on every real block.
+  //
+  //     What this establishes and what it does not is spelled out in oracle/dml_commitment.js, and the
+  //     short version belongs here too, because a reader of this file is deciding how much to trust
+  //     the result. It proves the list, the coinbase, and the header the node returned all agree. It
+  //     does NOT prove the header is the ChainLocked block, because identifying a Dash block means
+  //     hashing its header with X11 and this build has no X11. So a node that fabricates a consistent
+  //     header, coinbase, and list still passes. This closes the inconsistent or buggy node, not the
+  //     dishonest one, and direct node mode stays a trusted-node read until that last link exists.
+  if (verifyCommitment) {
+    const header = await call("getblockheader", [lockedHash, false]);
+    if (typeof header !== "string" || !/^[0-9a-f]+$/i.test(header)) {
+      throw new Error(
+        `oracle: getblockheader returned ${typeof header === "string" ? "a non-hex string" : typeof header}, ` +
+          `and the commitment cannot be checked without the header the list is supposed to belong to.`,
+      );
+    }
+    // The two commitment artefacts get the same boundary treatment as every other field of this
+    // response. Without it a missing cbTx surfaced as a raw TypeError from the parser, which fails
+    // closed but does not say the node's response shape was the problem, the norm this file sets
+    // everywhere else.
+    for (const [name, value] of [["cbTx", diff?.cbTx], ["cbTxMerkleTree", diff?.cbTxMerkleTree]]) {
+      if (typeof value !== "string" || value.length === 0 || !/^[0-9a-f]+$/i.test(value) || value.length % 2 !== 0) {
+        throw new Error(
+          `oracle: protx diff returned a ${value === undefined ? "missing" : "malformed"} ${name}, and the ` +
+            `commitment cannot be checked without it.`,
+        );
+      }
+    }
+    const proof = verifyDmlCommitment({
+      mnList,
+      cbTx: diff?.cbTx,
+      cbTxMerkleTree: diff?.cbTxMerkleTree,
+      blockHeader: header,
+    });
+    // The coinbase names the height it was mined at, and it must be the height the ChainLock named.
+    //
+    // WHAT THIS CATCHES IS THE INCONSISTENT REPLAY, and the distinction matters because an earlier
+    // version of this comment claimed more. It catches an old coinbase served under a current
+    // ChainLock, which is the mismatch a partly-stale node produces. It does NOT catch a node that
+    // moves BOTH: answering getbestchainlock with an old block and then serving that same old block's
+    // list, coinbase, and header is internally consistent at every check here, including this one,
+    // because both operands come from the same node in the same read. That residual is the same
+    // trusted-node residual as the header, and it closes with the same work.
+    if (Number(proof.height) !== Number(lockedHeight)) {
+      throw new Error(
+        `oracle: the coinbase commits to height ${proof.height} but the ChainLock names ${lockedHeight}. ` +
+          `Refusing rather than publishing a list from a different block.`,
+      );
+    }
+    log(`[oracle] commitment verified: ${proof.entries} entries hash to ${proof.merkleRootMNList}, committed by the coinbase of block ${lockedHeight}`);
+  }
+
   const valid = mnList.filter((m) => m.isValid === true);
 
   // 5. Canonical DIP4 order, by proRegTxHash. Every honest reader builds the same tree, and it is the
@@ -206,6 +276,14 @@ export async function buildDiffSnapshot({
     leaves,
     // What this snapshot's ordering and validity claims rest on, recorded rather than implied, so a
     // verifier reading the JSON alone can tell which rules produced this leaf set.
+    //
+    // THE COMMITMENT CHECK IS DELIBERATELY NOT RECORDED HERE. Saying "this list was checked against
+    // the block's coinbase" in the artefact was the obvious next step and it is the wrong one: the
+    // signed message (common/oracle_sig.js) covers a fixed set of fields, so a claim added beside
+    // them travels unauthenticated, and a consumer that trusted it would be trusting whoever served
+    // the file rather than whoever signed it. A field that says a security check happened, which
+    // anyone can flip, is worse than no field. Recording it properly means extending the signed
+    // message, which is a format change and a decision of its own.
     order: "proRegTxHash",
     chainlocked: true,
   };

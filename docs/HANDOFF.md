@@ -5,6 +5,63 @@ counts and supersedes everything below it. Historical sections are append-only a
 only marked superseded. Read this first when picking the project back up, then `TODO.md` for the full
 prioritized punch list.
 
+## F1 IN PROGRESS, 2026-08-04. THE COMMITMENT IS VERIFIED, THE HEADER IS NOT
+
+Three of the four links F1 asked for are implemented and verified against live mainnet. The fourth
+needs X11 and is not started, so direct node mode is still a trusted-node read and F1 stays open with
+a narrower residual than it had.
+
+### What was built
+
+`oracle/dml_commitment.js` rebuilds the DIP4 simplified masternode list commitment and checks it
+against the block's own coinbase. `oracle/diff_snapshot.js` runs it on every direct-node read, by
+default, with no environment switch to turn it off. The checks, in order:
+
+1. The list hashes to the `merkleRootMNList` PARSED OUT OF THE COINBASE, not the copy the node also
+   reports at the top level of the response. That distinction is the point of the check.
+2. The `cbTxMerkleTree` branch marks that coinbase specifically, not merely some transaction.
+3. The branch reproduces the merkle root in the block header.
+4. The height the coinbase names equals the height the ChainLock named, which catches a node serving
+   an older but internally consistent block.
+
+Verified over the WHOLE list rather than the survivors of the isValid filter, because the coinbase
+commits to banned nodes too and filtering first would compare a different set than the chain did.
+
+### What it does not do, and this must not blur
+
+It does not establish that the header is the ChainLocked block. A Dash block is named by the X11 hash
+of its header (`CBlockHeader::GetHash` calls `HashX11`, confirmed in the Core source), and this build
+has no X11. A node that fabricates a header, a coinbase, and a list that agree with one another passes
+all four checks. So this closes the INCONSISTENT or BUGGY node and not the dishonest one.
+
+Closing it needs either X11, which makes forging a header cost real mining work and is testable
+against any number of known block hashes, or ChainLock signature verification against the signing
+quorum, which is stronger but carries its own bootstrap problem. Neither is started. Until one is,
+the security review's alternative remediation stands: direct node mode does not belong in a
+production profile.
+
+### THE SERIALIZATION WAS DERIVED BY MEASUREMENT, which is the part worth carrying forward
+
+The DIP4 entry encoding was not written from the specification. Four attempts built from reading
+failed, and a wrong serialization tells you nothing except that the root differs, with no indication
+which field is at fault. What worked was isolating the problem: a historical height where the list
+was 14 entries and every one was version 1 and type 0 pinned the base encoding by brute force over
+the plausible ambiguities, and the tip then pinned the version 2 and evo extras against it. The field
+that had broken every attempt was `platformNodeID`, which the RPC displays reversed from the order it
+is hashed in.
+
+Confirmed at two very different shapes: 14 entries at height 1,028,162, and 2,971 entries at the tip
+mixing versions and node types. The small block is committed as a fixture, the tip is recorded as a
+measurement. The whole read against the live node takes 2.1 seconds.
+
+### Where the node is
+
+The mainnet container `dash-mno-node` is still up and synced. It was started with RPC credentials on
+its command line and it has no cookie file, so a bare `dash-cli` inside it fails with a credentials
+error that reads like a broken node when it is nothing of the kind. Read the flags it was started
+with from `docker inspect dash-mno-node --format '{{join .Config.Cmd " "}}'` and pass the same user
+and password to `dash-cli`. The values are not repeated here, because this file is published.
+
 ## ADDENDUM FOLLOW-UP, 2026-08-04. F5, F6 AND THE BINDING PROXY ARE CLOSED
 
 Three of the six findings are fixed. F1 to F4 are untouched, deliberately, because two of them are

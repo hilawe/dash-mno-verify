@@ -327,6 +327,45 @@ follow-up below.
 
 ## P1, before any non-local or public deployment
 
+- [ ] Tie the block header to the chain, which is the last link direct node mode needs (2026-08-04).
+  The commitment check below now rebuilds the DIP4 simplified-list root from the entries and compares
+  it against the `merkleRootMNList` the block's own coinbase carries, checks the merkle branch marks
+  that coinbase, and checks the branch reproduces the merkle root in the header. What it cannot do is
+  say the header IS the ChainLocked block: a Dash block is named by the X11 hash of its header
+  (`CBlockHeader::GetHash` calls `HashX11`), and this build has no X11. So a node that fabricates a
+  header, a coinbase, and a list that agree with one another passes every check, and direct node mode
+  is still a TRUSTED-NODE read.
+
+  Two ways to close it, and they are not equivalent. Implementing X11 makes fabricating a header cost
+  real mining work at mainnet difficulty, which is a hard bar, and it is testable against any number of
+  known block hashes, so a subtle error is loud rather than silent. Verifying the ChainLock signature
+  against the signing quorum is stronger in principle and needs quorum tracking from a trusted
+  starting point, which is its own bootstrap problem. Neither is started. Until one is, direct node
+  mode should stay out of a production profile, which is the alternative remediation the security
+  review offered. (`oracle/dml_commitment.js`, `oracle/diff_snapshot.js`)
+
+- [x] Verify the masternode list against the on-chain commitment (2026-08-04), the first three of the
+  four links F1 asked for. `oracle/dml_commitment.js` serializes each DIP4 simplified entry, sorts by
+  proRegTxHash in its internal byte order, builds the merkle root, and compares it against the
+  `merkleRootMNList` parsed out of the coinbase special transaction rather than the copy the node
+  also reports. It then walks the `cbTxMerkleTree` partial merkle tree, requires the matched leaf to
+  be the coinbase supplied, and requires the branch to reproduce the merkle root in the block header.
+  `buildDiffSnapshot` runs all of it by default, over the WHOLE list rather than the survivors of the
+  isValid filter (the coinbase commits to banned nodes too), and additionally requires the height the
+  coinbase names to equal the height the ChainLock named, which is what catches a node serving an
+  older but internally consistent block.
+
+  THE SERIALIZATION WAS DERIVED BY MEASUREMENT, not from the specification, because a serialization
+  that is subtly wrong just produces a different root and says nothing about which field is at fault.
+  Four attempts failed before one reproduced the live commitment. The field that broke them was
+  `platformNodeID`, which the RPC displays reversed from the order it is hashed in. Confirmed at two
+  very different shapes against a synced mainnet node: 14 entries at height 1,028,162, all version 1
+  and type 0, and 2,971 entries at the tip, mixing versions 1 and 2 and regular and evo nodes. The
+  14-entry block is committed as a fixture, and the tip is recorded as a measurement because a fixture of
+  2,971 entries would not be. Measured cost of the whole read against the live node, 2.1 seconds.
+  (`oracle/dml_commitment.js`, `oracle/diff_snapshot.js`, `test/dml_commitment.test.js`,
+  `test/vectors/`)
+
 - [ ] Keep the proof and the challenge off the chat platform (2026-08-04). Today the Discord flow
   hands the member their challenge as a Discord file attachment and the member uploads `proof.json`
   back as another, which the bot downloads from Discord's content delivery network before forwarding

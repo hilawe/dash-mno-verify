@@ -20,6 +20,12 @@ until the blockers in REVIEW_FINDINGS_dash-mno-verify_2026-06-26.md are closed.
 ## Module layout
 
 - `oracle/` reads the masternode list (`masternodelist json` from Dash Core) and builds the DML tree.
+  - `dml_commitment.js` rebuilds the DIP4 simplified-list commitment and checks it against the
+    `merkleRootMNList` in the block's coinbase, plus the coinbase's merkle branch and the header's
+    merkle root. It does NOT identify the header, because that needs X11 and this build has none, so
+    direct node mode remains a trusted-node read. The entry serialization was derived by reproducing
+    the live mainnet commitment, not from the specification, and the file records the two heights it
+    was confirmed at.
 - `circuits/` the five circom circuits. hash160, Merkle inclusion, the Semaphore-style signal binding,
   the single-tier membership circuit, and the two-tier registration and members circuits.
 - `prover/` the proving CLIs, single-tier (`prover.js`) and two-tier (`two_tier.js`).

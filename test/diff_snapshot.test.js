@@ -3,6 +3,10 @@ import assert from "node:assert/strict";
 
 import { buildDiffSnapshot } from "../oracle/diff_snapshot.js";
 import { hash160ToAddress, votingAddressToLeaf } from "../common/dml.js";
+import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { smlMerkleRoot } from "../oracle/dml_commitment.js";
+import { fileURLToPath } from "node:url";
 
 // Real base58check addresses, built the same way the existing oracle test builds them, because
 // votingAddressToLeaf validates the checksum and a made-up string fails at the boundary rather than
@@ -52,7 +56,12 @@ const goodDiff = (blockHash = LOCK.blockhash) => ({
 
 test("the read is pinned to the ChainLocked block, chosen before the list is asked for", async () => {
   const { call, seen } = callerFor({ diff: goodDiff() });
-  const snap = await buildDiffSnapshot({ call });
+  // verifyCommitment is off HERE ONLY, and for a reason worth stating rather than for convenience.
+  // These cases drive synthetic lists to exercise the ordering, filtering, and versioning boundaries,
+  // and a synthetic list has no real coinbase committing to it. The commitment check has its own
+  // tests against captured mainnet blocks in test/dml_commitment.test.js, and the read path that
+  // wires it is covered below.
+  const snap = await buildDiffSnapshot({ call, verifyCommitment: false });
 
   assert.equal(seen[0][0], "getbestchainlock", "the lock is read FIRST, so the node cannot pick a block to suit the answer");
   assert.deepEqual(seen[1], ["protx", "diff", 1, LOCK.height]);
@@ -163,13 +172,13 @@ test("no ChainLock means no snapshot, because there is no degraded mode here", a
 
 test("isValid is the validity filter, so a PoSe-banned node is in the list and out of the tree", async () => {
   const { call } = callerFor({ diff: goodDiff() });
-  const snap = await buildDiffSnapshot({ call });
+  const snap = await buildDiffSnapshot({ call, verifyCommitment: false });
   assert.equal(snap.leaves.length, 2, "three entries, one banned");
 });
 
 test("leaves are ordered by proRegTxHash, which is DIP4's own canonical order", async () => {
   const { call } = callerFor({ diff: goodDiff() });
-  const snap = await buildDiffSnapshot({ call });
+  const snap = await buildDiffSnapshot({ call, verifyCommitment: false });
 
   // Recompute independently: sort the valid entries by hash and map to leaves in that order.
   const expected = [
@@ -194,7 +203,7 @@ test("a diff with no mnList is refused rather than published as an empty tree", 
 
 test("the snapshot is version 3, because the leaf ORDER changed and roots are not interchangeable", async () => {
   const { call } = callerFor({ diff: goodDiff() });
-  const snap = await buildDiffSnapshot({ call });
+  const snap = await buildDiffSnapshot({ call, verifyCommitment: false });
   assert.equal(snap.version, 3);
   assert.ok(typeof snap.root === "string" && snap.root.length > 0);
   assert.ok(typeof snap.shaRoot === "string" && snap.shaRoot.length === 64);
@@ -205,4 +214,150 @@ test("a primitive list entry is refused by name, not by a raw TypeError from the
   broken.mnList.push(42);
   const { call } = callerFor({ diff: broken });
   await assert.rejects(() => buildDiffSnapshot({ call }), /is 42, not an object/);
+});
+
+// THE COMMITMENT CHECK, driven through the read path with a real mainnet block. The fixture is the
+// whole `protx diff` response and block header for height 1,028,162, so the node these cases stand up
+// answers exactly as a real one did. Its 14 entries are all nVersion 1 and nType 0; the version 2,
+// evo, and IPv6 shapes are covered by their own vectors in test/dml_commitment.test.js.
+const BLOCK = JSON.parse(
+  readFileSync(fileURLToPath(new URL("./vectors/dml_commitment_mainnet_1028162.json", import.meta.url)), "utf8"),
+);
+
+function nodeServing(over = {}) {
+  const b = { ...BLOCK, ...over };
+  return async (method, params) => {
+    if (method === "getbestchainlock") return { blockhash: b.blockHash, height: b.height, known_block: true };
+    if (method === "protx") return { blockHash: b.blockHash, mnList: b.mnList, cbTx: b.cbTx, cbTxMerkleTree: b.cbTxMerkleTree };
+    if (method === "getblockheader") return b.blockHeader;
+    throw new Error(`unexpected call ${method} ${JSON.stringify(params)}`);
+  };
+}
+
+test("a real block passes the commitment check through the read path, with the check ON by default", async () => {
+  const snap = await buildDiffSnapshot({ call: nodeServing() });
+  assert.equal(snap.version, 3);
+  assert.equal(snap.height, BLOCK.height);
+  // Every entry in this block is valid, so the leaf count is the entry count. That is a property of
+  // the fixture rather than of the check, and it is asserted so a fixture swap cannot quietly change
+  // what these cases are testing.
+  assert.equal(BLOCK.mnList.filter((m) => m.isValid).length, BLOCK.mnList.length);
+  assert.equal(snap.leaves.length, BLOCK.mnList.length);
+});
+
+test("a node that alters the list is refused, even though every other answer it gives is consistent", async () => {
+  // The whole point. This node returns the real block hash, the real ChainLock, the real coinbase,
+  // the real header and merkle branch, and a list with one entry's validity flipped. Every check that
+  // existed before this one passes.
+  const tampered = BLOCK.mnList.map((e, i) => (i === 5 ? { ...e, isValid: !e.isValid } : e));
+  await assert.rejects(
+    () => buildDiffSnapshot({ call: nodeServing({ mnList: tampered }) }),
+    /does not match the coinbase commitment/,
+  );
+
+  // And an entry removed, which is how a node would hide a masternode from the membership set.
+  await assert.rejects(
+    () => buildDiffSnapshot({ call: nodeServing({ mnList: BLOCK.mnList.slice(1) }) }),
+    /does not match the coinbase commitment/,
+  );
+});
+
+// A SYNTHETIC SINGLE-TRANSACTION BLOCK around a given list. Needed because the property below is
+// "which list reaches the checker", and no committable real block can show it: mainnet lists were
+// entirely valid until they were already thousands of entries long, so every small real block has
+// nothing for the filter to remove. The pieces here are honest about what they are. The entry
+// serialization and the merkle root are the real implementation, anchored by the mainnet fixtures in
+// this file and in test/dml_commitment.test.js. The block around them is fabricated, which is exactly
+// what a node CAN do today and what the missing header check is about.
+function syntheticBlockFor(mnList) {
+  const root = Buffer.from(smlMerkleRoot(mnList)); // internal order, as the coinbase carries it
+  // The fixture's coinbase payload is version, height, root, and the root is its final 32 bytes.
+  const cb = Buffer.from(BLOCK.cbTx, "hex");
+  root.copy(cb, cb.length - 32);
+  const cbTxid = createHash("sha256").update(createHash("sha256").update(cb).digest()).digest();
+  // One transaction, so the merkle root IS its id, and the branch is the smallest one the format has.
+  const branch = Buffer.concat([
+    Buffer.from([1, 0, 0, 0]), // nTransactions
+    Buffer.from([1]), // one hash
+    cbTxid,
+    Buffer.from([1]), // one flag byte
+    Buffer.from([1]), // that leaf is the matched one
+  ]);
+  const header = Buffer.from(BLOCK.blockHeader, "hex");
+  cbTxid.copy(header, 36);
+  return { cbTx: cb.toString("hex"), cbTxMerkleTree: branch.toString("hex"), blockHeader: header.toString("hex") };
+}
+
+test("the commitment is verified over the WHOLE list, so a banned node still counts toward it", async () => {
+  // The coinbase commits to every entry, valid or not, so verifying the survivors of the isValid
+  // filter would compare a different set than the chain committed to. On mainnet that would fail on
+  // essentially every block, since real lists carry banned nodes, but no small real block shows it.
+  const withInvalid = BLOCK.mnList.map((e, i) => (i === 2 ? { ...e, isValid: false } : e));
+  assert.equal(withInvalid.filter((m) => m.isValid).length, BLOCK.mnList.length - 1, "the list really does contain a banned node");
+
+  const block = syntheticBlockFor(withInvalid);
+  const call = async (method) => {
+    if (method === "getbestchainlock") return { blockhash: BLOCK.blockHash, height: BLOCK.height, known_block: true };
+    if (method === "protx") return { blockHash: BLOCK.blockHash, mnList: withInvalid, cbTx: block.cbTx, cbTxMerkleTree: block.cbTxMerkleTree };
+    if (method === "getblockheader") return block.blockHeader;
+    throw new Error(`unexpected call ${method}`);
+  };
+  const snap = await buildDiffSnapshot({ call });
+  assert.equal(snap.leaves.length, BLOCK.mnList.length - 1, "the banned node is out of the TREE");
+  // and the commitment it was verified against covered it, which is what the read not throwing means.
+});
+
+test("the commitment rejects a list altered after the block committed to it", async () => {
+  // The coinbase commits to every entry, valid or not. Verifying after the filter would compare a
+  // different set than the chain committed to and would fail on any block containing a banned node,
+  // which is most of them. This drives that case: a list where one entry is invalid, taken from a
+  // real block, must still verify.
+  const withInvalid = BLOCK.mnList.map((e, i) => (i === 2 ? { ...e, isValid: false } : e));
+  // It no longer matches the real commitment, so this cannot use the real fixture root. What it CAN
+  // establish is that the failure names the commitment rather than the filter, and that the valid
+  // count and the verified count differ, which is the arrangement that would break a filter-first
+  // implementation.
+  await assert.rejects(() => buildDiffSnapshot({ call: nodeServing({ mnList: withInvalid }) }), /does not match the coinbase commitment/);
+  assert.equal(withInvalid.filter((m) => m.isValid).length, BLOCK.mnList.length - 1, "the fixture really does contain an invalid entry now");
+});
+
+test("a coinbase from a different height is refused even when everything else agrees with it", async () => {
+  // A node serving an older block's coinbase, header, list, and hash as a consistent trio passes the
+  // three commitment checks, because they are consistent. The height the coinbase names is what
+  // catches it, compared against the height the ChainLock named.
+  const call = async (method, params) => {
+    if (method === "getbestchainlock") return { blockhash: BLOCK.blockHash, height: BLOCK.height + 1, known_block: true };
+    if (method === "protx") return { blockHash: BLOCK.blockHash, mnList: BLOCK.mnList, cbTx: BLOCK.cbTx, cbTxMerkleTree: BLOCK.cbTxMerkleTree };
+    if (method === "getblockheader") return BLOCK.blockHeader;
+    throw new Error(`unexpected call ${method}`);
+  };
+  await assert.rejects(() => buildDiffSnapshot({ call }), /coinbase commits to height 1028162 but the ChainLock names 1028163/);
+});
+
+test("a node that cannot produce a header is refused rather than skipping the check", async () => {
+  for (const header of [undefined, null, 42, "not-hex!!"]) {
+    await assert.rejects(
+      () => buildDiffSnapshot({ call: nodeServing({ blockHeader: header }) }),
+      /the commitment cannot be checked without the header/,
+      `header ${JSON.stringify(header)}`,
+    );
+  }
+});
+
+test("the header is fetched for the CHAINLOCKED hash, not for whatever the diff named", async () => {
+  // The read already refuses a diff describing another block, so the two hashes agree by the time the
+  // header is fetched. Asking by the ChainLocked hash keeps that true if the earlier check is ever
+  // reordered, and this records which one is asked for.
+  const asked = [];
+  const call = async (method, params) => {
+    if (method === "getbestchainlock") return { blockhash: BLOCK.blockHash, height: BLOCK.height, known_block: true };
+    if (method === "protx") return { blockHash: BLOCK.blockHash, mnList: BLOCK.mnList, cbTx: BLOCK.cbTx, cbTxMerkleTree: BLOCK.cbTxMerkleTree };
+    if (method === "getblockheader") {
+      asked.push(params);
+      return BLOCK.blockHeader;
+    }
+    throw new Error(`unexpected call ${method}`);
+  };
+  await buildDiffSnapshot({ call });
+  assert.deepEqual(asked, [[BLOCK.blockHash, false]], "asked for the ChainLocked block's header, in raw form");
 });

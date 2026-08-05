@@ -1,0 +1,92 @@
+{
+ "_source": "mainnet height 2516624, 2971 entries, captured 2026-08-04 from a synced node",
+ "_authority": "REGRESSION LOCKS, NOT INDEPENDENT EVIDENCE, and the distinction is the point. These byte strings were produced by the implementation they are compared against, so nothing in CI re-derives them from an outside source. What anchors them is a run against a synced mainnet node: these exact entries take part in the list that reproduced the merkle root below, which the block's own coinbase commits to. That run is not reproducible inside the repository, because the list at that height is 2,971 entries. Treat these as pinning the version 2, evo, and IPv6 branches against silent change, and treat test/vectors/dml_commitment_mainnet_1028162.json as the evidence, since it is a whole real block that CI re-derives end to end.",
+ "_why": "the committed 14-entry fixture is all nVersion 1 and nType 0, so these cover the version 2, evo, and IPv6 shapes it cannot",
+ "entries": [
+  {
+   "entry": {
+    "nVersion": 1,
+    "nType": 0,
+    "proRegTxHash": "b2e4d784149c04c5aaca458510c686514f05ed8b804ce4cae95f486c15404800",
+    "confirmedHash": "0000000000000004b542de3c65e662a47b98e91449a485205bca27ef1fdbb241",
+    "service": "168.119.80.4:9999",
+    "addresses": {
+     "core_p2p": [
+      "168.119.80.4:9999"
+     ]
+    },
+    "pubKeyOperator": "82027b2f0b86356e54ad9f6f9d09cc6b9397b194f01efa72cc9fcc15101014c7b870c7787b082c7ed08aaf3a1a9a4134",
+    "votingAddress": "XxFirfb6c8ManwuYMyodZAZMVXSksr7BwS",
+    "isValid": true
+   },
+   "serialized": "004840156c485fe9cae44c808bed054f5186c6108545caaac5049c1484d7e4b241b2db1fef27ca5b2085a44914e9987ba462e6653cde42b5040000000000000000000000000000000000ffffa8775004270f82027b2f0b86356e54ad9f6f9d09cc6b9397b194f01efa72cc9fcc15101014c7b870c7787b082c7ed08aaf3a1a9a4134ec928b93d0bdde60120a61f4e79944b3e201cc8401"
+  },
+  {
+   "entry": {
+    "nVersion": 2,
+    "nType": 0,
+    "proRegTxHash": "a1bbb245cf646267fb5989640b70515d778b4c369b4a5fcf2b7cda8a0d822200",
+    "confirmedHash": "0000000000000003b75692b99a26ff47be8f953a3cd4f00abc7c871fe64c632f",
+    "service": "151.244.85.136:9999",
+    "addresses": {
+     "core_p2p": [
+      "151.244.85.136:9999"
+     ]
+    },
+    "pubKeyOperator": "91e4e299fc305e580405d886e86f110a39e78c524e947cb620292dfccd88e0adbe9e6f11e60afd1d418c6338388f78ed",
+    "votingAddress": "XiB3VxtQz13BuZQwBUaAH6Rb72rCx57xyb",
+    "isValid": true
+   },
+   "serialized": "0022820d8ada7c2bcf5f4a9b364c8b775d51700b648959fb676264cf45b2bba12f634ce61f877cbc0af0d43c3a958fbe47ff269ab99256b7030000000000000000000000000000000000ffff97f45588270f91e4e299fc305e580405d886e86f110a39e78c524e947cb620292dfccd88e0adbe9e6f11e60afd1d418c6338388f78ed521e445350584f9afb9a9852840180486b275f2d010000"
+  },
+  {
+   "entry": {
+    "nVersion": 2,
+    "nType": 1,
+    "proRegTxHash": "3e596421618da23ec6700771c2f4cf819fd9ddec753f7889c96f7d1ecb6f9c40",
+    "confirmedHash": "000000000000001139f2d742383bcb7824a2297a12ee305e260f85b9c947bb44",
+    "service": "149.28.241.190:9999",
+    "addresses": {
+     "core_p2p": [
+      "149.28.241.190:9999"
+     ],
+     "platform_https": [
+      "149.28.241.190:443"
+     ]
+    },
+    "pubKeyOperator": "a18ab76ac05b494c300ba486a745cf6a34598d297f24a1db01750241630e9f04423a0b9f28d6557b87ee459e0759c29d",
+    "votingAddress": "XgXvrB96ppgkJnDw6uVf4ugXJnJBUdMyg3",
+    "isValid": true,
+    "platformHTTPPort": 443,
+    "platformNodeID": "ee9ab93559e6e931d7dbcf269e1ea8446e7068e5"
+   },
+   "serialized": "409c6fcb1e7d6fc989783f75ecddd99f81cff4c2710770c63ea28d612164593e44bb47c9b9850f265e30ee127a29a22478cb3b3842d7f239110000000000000000000000000000000000ffff951cf1be270fa18ab76ac05b494c300ba486a745cf6a34598d297f24a1db01750241630e9f04423a0b9f28d6557b87ee459e0759c29d402132b7406709b65610b00e3f6ae10b6cbaccd9010100bb01e568706e44a81e9e26cfdbd731e9e65935b99aee"
+  },
+  {
+   "entry": {
+    "nVersion": 1,
+    "nType": 0,
+    "proRegTxHash": "37009baa3c2f952cbba3b2fc99197ff3632b6f22bfe58ec69a23e0e898661ca0",
+    "confirmedHash": "0000000000000016ffa0fbdf61b74a9dd0c72d79c845b0aace0071c7acc82098",
+    "service": "[::]:0",
+    "addresses": {},
+    "pubKeyOperator": "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+    "votingAddress": "XswapQBfWs9F6YEUjcKTqQeYcW3UuLmS5B",
+    "isValid": false
+   },
+   "serialized": "a01c6698e8e0239ac68ee5bf226f2b63f37f1999fcb2a3bb2c952f3caa9b00379820c8acc77100ceaab045c8792dc7d09d4ab761dffba0ff1600000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000bd43d817556f42a6f546777684a9f6edfbc5972000"
+  }
+ ],
+ "_reproduce": {
+  "note": "re-derive against any synced mainnet node to turn these locks back into evidence",
+  "height": 2516624,
+  "entries": 2971,
+  "merkleRootMNList": "3687f8f3545e7a4f2db926c46a8fe89015d97926d18164979976a947de75360f",
+  "commands": [
+   "dash-cli getbestchainlock",
+   "dash-cli protx diff 1 <height>",
+   "dash-cli getblockheader <blockhash> false",
+   "then: verifyDmlCommitment({ mnList, cbTx, cbTxMerkleTree, blockHeader }) from oracle/dml_commitment.js"
+  ]
+ }
+}

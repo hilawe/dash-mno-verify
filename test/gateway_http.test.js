@@ -7,6 +7,7 @@ import { mkdtemp, writeFile, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { readFileSync } from "node:fs";
 import { randomUUID, generateKeyPairSync } from "node:crypto";
 import { makeDmlRootHasher, FIELD_PRIME } from "../core/dml_root.js";
 import { shaRootFromLeaves } from "../common/dml_sha_root.js";
@@ -1912,11 +1913,17 @@ test("a Platform marker written for another contract is refused, not reused", as
 // than exercising the path.
 const REAL_VOTING_ADDRESSES = [hash160ToAddress(Buffer.alloc(20, 1)), hash160ToAddress(Buffer.alloc(20, 2))];
 
-function fakeNode({ height = 2_500_000, blockHash = "cd".repeat(32), entries = null, knownBlock = true } = {}) {
-  const list = entries ?? [
-    { proRegTxHash: "11".repeat(32), votingAddress: REAL_VOTING_ADDRESSES[0], isValid: true },
-    { proRegTxHash: "22".repeat(32), votingAddress: REAL_VOTING_ADDRESSES[1], isValid: true },
-  ];
+// A CAPTURED MAINNET BLOCK, so the fake node answers the way a real one does. It used to serve a
+// made-up pair of entries with cbTx and cbTxMerkleTree set to "00", which was fine while nothing
+// looked at them. The read now rebuilds the DIP4 commitment from the list and checks it against the
+// block's own coinbase, so a node serving placeholders is refused exactly as a real broken node would
+// be, and these tests would have been testing the refusal rather than the mode they are named for.
+const NODE_BLOCK = JSON.parse(
+  readFileSync(fileURLToPath(new URL("./vectors/dml_commitment_mainnet_1028162.json", import.meta.url)), "utf8"),
+);
+
+function fakeNode({ height = NODE_BLOCK.height, blockHash = NODE_BLOCK.blockHash, entries = null, knownBlock = true } = {}) {
+  const list = entries ?? NODE_BLOCK.mnList;
   let calls = 0;
   const server = createHttpServer((req, res) => {
     let body = "";
@@ -1927,7 +1934,9 @@ function fakeNode({ height = 2_500_000, blockHash = "cd".repeat(32), entries = n
       const result =
         method === "getbestchainlock"
           ? { blockhash: blockHash, height, known_block: knownBlock }
-          : { blockHash, mnList: list, cbTx: "00", cbTxMerkleTree: "00" };
+          : method === "getblockheader"
+            ? NODE_BLOCK.blockHeader
+            : { blockHash, mnList: list, cbTx: NODE_BLOCK.cbTx, cbTxMerkleTree: NODE_BLOCK.cbTxMerkleTree };
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ result, error: null, id: "t" }));
     });

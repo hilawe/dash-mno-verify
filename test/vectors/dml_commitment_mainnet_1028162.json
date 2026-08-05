@@ -1,0 +1,222 @@
+{
+ "_source": "dash-cli protx diff 1 1028162 plus getblockheader, mainnet, captured 2026-08-04 from a synced node",
+ "_why": "14 entries, every one nVersion 1 and nType 0, which is the whole commitment chain at a size that fits in the repository",
+ "height": 1028162,
+ "blockHash": "000000000000001b46f68f6607c2c4cacfd07e3f29eeefd6c4d97155e06121e3",
+ "blockHeader": "00000020dd94cc9918fb2408ba7d5f7b58778cfee82120a7a12ada743d00000000000000f4ef5c9137268e0ebed4076dd3f36e67b6a811323375c67c6e39552c62099caef225765c0b174319b455432a",
+ "merkleRootMNList": "3c2a79ec82c1b7ee65d0fee03ea5aa59aeccec06f2dbd0610b428876572ae9cc",
+ "cbTx": "03000500010000000000000000000000000000000000000000000000000000000000000000ffffffff270342b00f048326765c08680000a5690cc60a142f70726f68617368696e672e636f6dbfb700002f0000000002d5a1f809000000001976a914ece5625a51d7fc10a02ad98f6d4db85813fbcf4e88acd4a1f809000000001976a91482d82babbfc4f6f0a8618fe7760a60aef5abee9988ac0000000026010042b00f00cce92a577688420b61d0dbf206ecccae59aaa53ee0fed065eeb7c182ec792a3c",
+ "cbTxMerkleTree": "1900000006b48548adf9db2250731b5ce3ca2d6a295190896835791cbce3be27908674b52171ae911ce9aa1ad195bb05b470a10b16303f6a7db272483dc7049fd709328fe17ecad2c5a34c648688afcb23307e2f931a75a0d175842eba798ad8ae9bd6408c9e3b9daeee6d4ac98fc7e39da34ea57cbf5bc4851b667c2ef11c917d1773b36f166c755da3ab20938dbc00933d69b3fbd2a97f9d12c8c352b875bf083d56b248f2ecc1b9ed5c65f6528dd3868eb9b06f9215c429f5378f162a8445a796a12af4023f00",
+ "mnList": [
+  {
+   "nVersion": 1,
+   "nType": 0,
+   "proRegTxHash": "0a421fe964b53fdbe6499c47381df9821ae1521c49cab2665c0250c016ea7982",
+   "confirmedHash": "0000000000000000000000000000000000000000000000000000000000000000",
+   "service": "95.183.53.128:9999",
+   "addresses": {
+    "core_p2p": [
+     "95.183.53.128:9999"
+    ]
+   },
+   "pubKeyOperator": "8bbcde771276e982e286b3654baa63c9f0687ba38a8794d36a9c80551068965cf0f8d9b723e4785159af4cb6e465063c",
+   "votingAddress": "XeXceFebFDHWYxXssxvcqYdprQABEZKoLJ",
+   "isValid": true
+  },
+  {
+   "nVersion": 1,
+   "nType": 0,
+   "proRegTxHash": "951d652d87ced72ee4a7fa760ba435002731fae36b86c2c173c501099eb8de4a",
+   "confirmedHash": "0000000000000000000000000000000000000000000000000000000000000000",
+   "service": "45.76.18.120:9999",
+   "addresses": {
+    "core_p2p": [
+     "45.76.18.120:9999"
+    ]
+   },
+   "pubKeyOperator": "88cb31764fb69ed3c43901d81a45b8f995651ed6edb2232aee8dc53d206eaed2b0489f91c563f51cd5e81d5fab16f020",
+   "votingAddress": "XfWADRf63H9dK8mAwZei2Cpp9MuxybGY8w",
+   "isValid": true
+  },
+  {
+   "nVersion": 1,
+   "nType": 0,
+   "proRegTxHash": "e790bdb01472bed7580b958d43705f56a11b271a4ad9355da9d12a0d5fd2f7cc",
+   "confirmedHash": "0000000000000000000000000000000000000000000000000000000000000000",
+   "service": "95.183.50.97:9999",
+   "addresses": {
+    "core_p2p": [
+     "95.183.50.97:9999"
+    ]
+   },
+   "pubKeyOperator": "17ea47dbafcb62df8bd5325c097536d689ea79508b609db954cd731a40a7e5399fb41390a25060b92bbb82f2c77416b6",
+   "votingAddress": "XiJoKaRsovegXrg3X1aDtDDVjnCLaEizZB",
+   "isValid": true
+  },
+  {
+   "nVersion": 1,
+   "nType": 0,
+   "proRegTxHash": "10dbf37adb7a401e45612befed0a61c38bd281d97e60b3b97401faf3eeaddaed",
+   "confirmedHash": "0000000000000000000000000000000000000000000000000000000000000000",
+   "service": "109.235.69.170:9999",
+   "addresses": {
+    "core_p2p": [
+     "109.235.69.170:9999"
+    ]
+   },
+   "pubKeyOperator": "0f17671e74bad1d6a7e23b60bb699e07bebf00ede335543f50d9d8b15075062fe71de06a93821f31fcaa2d5ba6539da1",
+   "votingAddress": "XsNtyP9GpDvYKhg8Hf5CfyEqU7fTPaufpa",
+   "isValid": true
+  },
+  {
+   "nVersion": 1,
+   "nType": 0,
+   "proRegTxHash": "e4182ea906fc868cdc4f7bcb856dea126e2f7f2c5e7047c3a851c1e0768da6f9",
+   "confirmedHash": "0000000000000000000000000000000000000000000000000000000000000000",
+   "service": "185.5.54.23:9999",
+   "addresses": {
+    "core_p2p": [
+     "185.5.54.23:9999"
+    ]
+   },
+   "pubKeyOperator": "96afe5414b242b18048bbb8d8283cf88b2a6ec6c2051866e43d5323688ef484e3eca29683c68f160d17926d848e6b1db",
+   "votingAddress": "XkKh4PENHGrLp1WNypDv2SDVonj6bqptuV",
+   "isValid": true
+  },
+  {
+   "nVersion": 1,
+   "nType": 0,
+   "proRegTxHash": "a5d7b48c7413fef0dc5f580a4bc89438c61a35451549f6e41eac931120ae3fbb",
+   "confirmedHash": "0000000000000000000000000000000000000000000000000000000000000000",
+   "service": "212.24.97.251:9999",
+   "addresses": {
+    "core_p2p": [
+     "212.24.97.251:9999"
+    ]
+   },
+   "pubKeyOperator": "01342f4e06ec0a9af80eab0e000d4985757a00350d23c53ab04e53113191905dfeb69ba4c2978d645f7dfc9283c1ec72",
+   "votingAddress": "XxrLoxrS5pXqhT6rFro4mp3Yhnm4DpTNzM",
+   "isValid": true
+  },
+  {
+   "nVersion": 1,
+   "nType": 0,
+   "proRegTxHash": "7bbb879068ea6cac3c41ead871b7e2cf935fa12e6be5a2cba757dce687ec54a4",
+   "confirmedHash": "0000000000000000000000000000000000000000000000000000000000000000",
+   "service": "95.183.53.36:9999",
+   "addresses": {
+    "core_p2p": [
+     "95.183.53.36:9999"
+    ]
+   },
+   "pubKeyOperator": "962fc9c7cf655237237fbad7d8c86ed9be6575236dd67ec2ff0a5cda3b15e63c4bc16b1eee1ec9dabd4ba69e109b2fa1",
+   "votingAddress": "Xj4Z9z9qa9fYwa5XNULT72MRr2qhJWjJfC",
+   "isValid": true
+  },
+  {
+   "nVersion": 1,
+   "nType": 0,
+   "proRegTxHash": "07b177c01799c3cddf3b1991cc2163e1d90d1e74773a26f0cfc7d1e7a5c1c7c4",
+   "confirmedHash": "0000000000000000000000000000000000000000000000000000000000000000",
+   "service": "185.81.165.7:9999",
+   "addresses": {
+    "core_p2p": [
+     "185.81.165.7:9999"
+    ]
+   },
+   "pubKeyOperator": "81a0a1bb3eda550b13d1fc6c6b940fd04900753c4652187bcd8b6abc1f8a62d69e2ded62e19be67516d8f73c7e44b288",
+   "votingAddress": "Xam1RvBM2bXBcv5pYBY7W9Q8Bee7ejGYTL",
+   "isValid": true
+  },
+  {
+   "nVersion": 1,
+   "nType": 0,
+   "proRegTxHash": "7b60a94a3949d13ce1d5baf7b3636c0a02a1f04330481e128f9c3ca5146d2991",
+   "confirmedHash": "0000000000000000000000000000000000000000000000000000000000000000",
+   "service": "95.183.53.17:9999",
+   "addresses": {
+    "core_p2p": [
+     "95.183.53.17:9999"
+    ]
+   },
+   "pubKeyOperator": "92062f866d4ae7e850f2abffdad6b50a67ccb7c1c65660084fe91b7bed5e0a7a167ac7c8bd189ad00a109b13f577b98a",
+   "votingAddress": "XbfNgUhsXDrayno2wHx73xnUcQwNiJoPmp",
+   "isValid": true
+  },
+  {
+   "nVersion": 1,
+   "nType": 0,
+   "proRegTxHash": "e18f3209d79f04c73d4872b27d6a3f30160ba170b405bb95d11aaae91c91ae71",
+   "confirmedHash": "0000000000000000000000000000000000000000000000000000000000000000",
+   "service": "122.106.55.214:9999",
+   "addresses": {
+    "core_p2p": [
+     "122.106.55.214:9999"
+    ]
+   },
+   "pubKeyOperator": "937393f710ab2051b477be698bf92b78647d944c82bc11a573a751943790fb2cf44360c54189fbb96bf62b29373588aa",
+   "votingAddress": "Xn4RAMjUJxJGH631RCndasmgpS3XqShV5s",
+   "isValid": true
+  },
+  {
+   "nVersion": 1,
+   "nType": 0,
+   "proRegTxHash": "5eef57d7c296a00d5722727cd9f578b4f280b2805a50f333b781da5196b8f87a",
+   "confirmedHash": "0000000000000000000000000000000000000000000000000000000000000000",
+   "service": "194.135.84.242:9999",
+   "addresses": {
+    "core_p2p": [
+     "194.135.84.242:9999"
+    ]
+   },
+   "pubKeyOperator": "82d8f3b0a93705142cb1bc6ddd2e09fdb2e51831e1a86f23459e85092bd4026ff798d50fbc1263dd31684777cdd92799",
+   "votingAddress": "Xe2CkY5yUk8miaQisHbVdgzEoCg84VA9AL",
+   "isValid": true
+  },
+  {
+   "nVersion": 1,
+   "nType": 0,
+   "proRegTxHash": "97b1ae2e3531fc7c7efd60e8e14d2c05a4ce9ef0918eefc6b166e0c7c557d95a",
+   "confirmedHash": "0000000000000000000000000000000000000000000000000000000000000000",
+   "service": "185.81.164.189:9999",
+   "addresses": {
+    "core_p2p": [
+     "185.81.164.189:9999"
+    ]
+   },
+   "pubKeyOperator": "0a847128197137f6fd4a70a3e46f66ceac8d823221f9bd881164c0e12c62aa9aeec625cc88067a445f30ab4800c61fd2",
+   "votingAddress": "XkHq46G3YAtaLXXQWv3SXPiHWtvK7NEuAW",
+   "isValid": true
+  },
+  {
+   "nVersion": 1,
+   "nType": 0,
+   "proRegTxHash": "75700408f7a97fc071d5e5f48cad678486604ed28f569ca0b9ecc0d02b49981e",
+   "confirmedHash": "0000000000000000000000000000000000000000000000000000000000000000",
+   "service": "95.183.51.146:9999",
+   "addresses": {
+    "core_p2p": [
+     "95.183.51.146:9999"
+    ]
+   },
+   "pubKeyOperator": "02d25f24c33455868d248d18b5cd6f8b32726cadc994c9cba1ff1780dd07aa93c14a45a6d5dacb38055fd46e1ba39739",
+   "votingAddress": "XfhysTXVxfox8GDEqbWGNQiS4uPa6cWzP4",
+   "isValid": true
+  },
+  {
+   "nVersion": 1,
+   "nType": 0,
+   "proRegTxHash": "774570a70170788b302e7b5da95275b8428d9eb68dab90f109e6068ff8f5885e",
+   "confirmedHash": "0000000000000000000000000000000000000000000000000000000000000000",
+   "service": "194.135.83.183:9999",
+   "addresses": {
+    "core_p2p": [
+     "194.135.83.183:9999"
+    ]
+   },
+   "pubKeyOperator": "0d91a1af81ebb7fc8993537a53d9672121e78cb47df187c31b5d02d935410c5baf4aacd974f8924beac1db3936c43261",
+   "votingAddress": "XuSUuww5AwSE384uPs3po47GBNqHWERfef",
+   "isValid": true
+  }
+ ]
+}
