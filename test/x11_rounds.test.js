@@ -19,16 +19,32 @@ import { fileURLToPath } from "node:url";
 import { blake512 } from "@noble/hashes/blake1.js";
 import { keccak_512 } from "@noble/hashes/sha3.js";
 import { cubehash512 } from "../common/x11/cubehash.js";
+import { bmw512 } from "../common/x11/bmw.js";
+import { groestl512 } from "../common/x11/groestl.js";
+import { skein512 } from "../common/x11/skein.js";
+import { jh512 } from "../common/x11/jh.js";
+import { luffa512 } from "../common/x11/luffa.js";
+import { shavite512 } from "../common/x11/shavite.js";
+import { simd512 } from "../common/x11/simd.js";
+import { echo512 } from "../common/x11/echo.js";
+import { blockHashFromHeader, ROUNDS, x11 } from "../common/x11/index.js";
 
 const VECTORS = JSON.parse(readFileSync(fileURLToPath(new URL("./vectors/x11_round_vectors.json", import.meta.url)), "utf8"));
 
-// The rounds this build has. The remaining eight are being ported, and the list is deliberately
-// explicit rather than derived from the vector file, so a round that is dropped or renamed fails here
-// instead of quietly falling out of the suite.
+// All eleven, listed explicitly rather than derived from the vector file, so a round that is dropped
+// or renamed fails here instead of quietly falling out of the suite.
 const IMPLEMENTED = {
   blake: (b) => Buffer.from(blake512(b)),
+  bmw: bmw512,
+  groestl: groestl512,
+  skein: skein512,
+  jh: jh512,
   keccak: (b) => Buffer.from(keccak_512(b)),
+  luffa: luffa512,
   cubehash: cubehash512,
+  shavite: shavite512,
+  simd: simd512,
+  echo: echo512,
 };
 
 for (const [name, fn] of Object.entries(IMPLEMENTED)) {
@@ -69,4 +85,46 @@ test("the block-hash cases are real mainnet headers, kept for the composition ch
     // these cases are here to cover.
     assert.match(c.hash, /^0{5}/, `height ${c.height} hash has the leading zeroes proof of work implies`);
   }
+});
+
+test("the composed chain reproduces the block hash Dash assigns real mainnet headers", () => {
+  // THE TEST THE PER-ROUND ONES CANNOT REPLACE. Eleven correct rounds assembled in the wrong order,
+  // or fed each other's output in the wrong byte order, satisfies every vector above and still names
+  // no block correctly. These cases span genesis to the current tip, so a port that happens to work
+  // for one era of headers does not pass by luck.
+  const cases = VECTORS.blockHashes.cases;
+  for (const c of cases) {
+    assert.equal(blockHashFromHeader(c.header), c.hash, `height ${c.height}`);
+  }
+  assert.ok(cases.length >= 10, "and there are enough of them for that to mean something");
+});
+
+test("the chain is the eleven rounds in the order Dash applies them", () => {
+  // Recorded as a property rather than left implicit in the imports, because the order is the thing
+  // the block-hash cases above would catch and nothing else would explain.
+  assert.deepEqual(
+    ROUNDS.map(([name]) => name),
+    ["blake", "bmw", "groestl", "skein", "jh", "keccak", "luffa", "cubehash", "shavite", "simd", "echo"],
+  );
+  // Every round in the chain is one the vectors cover, so none of them is unverified.
+  for (const [name] of ROUNDS) assert.ok(VECTORS.vectors[name], `${name} has reference vectors`);
+});
+
+test("a header of the wrong length is refused rather than hashed anyway", () => {
+  // A caller passing a whole block, or a header with the transaction count appended, would otherwise
+  // get a perfectly well-formed hash of the wrong bytes, and a wrong hash here reads as "this is not
+  // the ChainLocked block" rather than as a mistake in the call.
+  const good = VECTORS.blockHashes.cases[0].header;
+  assert.throws(() => blockHashFromHeader(good + "00"), /80 bytes/);
+  assert.throws(() => blockHashFromHeader(good.slice(0, 100)), /80 bytes/);
+  assert.equal(blockHashFromHeader(Buffer.from(good, "hex")).length, 64, "a Buffer is accepted as well as hex");
+});
+
+test("x11 returns the internal byte order, and the block hash is its reverse", () => {
+  // The two differ by a reversal and confusing them produces a hash that looks right and matches
+  // nothing. Pinned so the distinction survives a refactor.
+  const c = VECTORS.blockHashes.cases[0];
+  const internal = Buffer.from(x11(Buffer.from(c.header, "hex")));
+  assert.equal(internal.length, 32);
+  assert.equal(Buffer.from(internal).reverse().toString("hex"), c.hash);
 });
