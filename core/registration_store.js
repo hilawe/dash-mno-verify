@@ -109,6 +109,21 @@ export class RegistrationStore {
 function declarationOfRecord(record) {
   return { engine: record.engine ?? DEFAULT_ENGINE, statement: record.statement ?? DEFAULT_STATEMENT };
 }
+// Two loaded records for one key are the same registration only if they agree on everything that
+// record carries. Comparing the fields explicitly rather than by serialization, so a difference in key
+// order or a field added later cannot read as a mismatch.
+function sameRegistrationRecord(a, b) {
+  return (
+    String(a.season) === String(b.season) &&
+    String(a.contextHash) === String(b.contextHash) &&
+    String(a.regNullifier) === String(b.regNullifier) &&
+    String(a.commitment) === String(b.commitment) &&
+    String(a.engine ?? "") === String(b.engine ?? "") &&
+    String(a.statement ?? "") === String(b.statement ?? "") &&
+    Number(a.index) === Number(b.index)
+  );
+}
+
 function sameDeclaration(a, b) {
   return a.engine === b.engine && a.statement === b.statement;
 }
@@ -186,10 +201,16 @@ function bucketsHaveEngine(byBucket, season, engine) {
 // Durable append-only backend. One JSON record per line. The in-memory index is rebuilt from
 // the file on load, so the tree survives a restart and every member keeps their leaf position.
 export class FileBackend {
-  constructor(path, schedule = null, assumeSchedule = false) {
+  // `open` is injectable for ONE reason: the uncertain write, where the bytes reach the file and the
+  // sync or close still reports an error, cannot be produced from outside this class. It is the exact
+  // sequence F3 describes, so a test that cannot create it can only assert the fix by reading it. The
+  // default is the real thing and no production path passes anything else, the same shape the
+  // verifier's injectable proof check already uses.
+  constructor(path, schedule = null, assumeSchedule = false, { open: openFile = open } = {}) {
     this.path = path;
     this.schedule = schedule;
     this.assumeSchedule = assumeSchedule;
+    this.openFile = openFile;
     this.seen = new Set();
     this.byBucket = new Map(); // "season:contextHash" -> records[] in insertion order
     this._loading = null; // memoized load, so concurrent first-callers share one read
@@ -203,8 +224,18 @@ export class FileBackend {
     return this._loading;
   }
 
+  // Rebuild the in-memory index from the file. Used after an uncertain write, so a retry decides
+  // against what is actually on disk rather than against what this process believes.
+  async #reload() {
+    this.seen = new Set();
+    this.byBucket = new Map();
+    this._loading = this.#load();
+    return this._loading;
+  }
+
   async #load() {
     await mkdir(dirname(this.path), { recursive: true });
+    let duplicatesCollapsed = 0;
     let raw = "";
     try {
       raw = await readFile(this.path, "utf8");
@@ -287,7 +318,38 @@ export class FileBackend {
         }
         continue;
       }
+      // A DUPLICATE KEY IN THE FILE, which the write path can produce when a sync or close reports an
+      // error after the record's bytes landed: the caller sees failure, the in-memory index never
+      // learned the record, and a retry appends it again. Taking both would put the same commitment
+      // in the members tree twice and change the root relative to the tree before the restart, which
+      // is the harm. The write path below now rereads after an uncertain write so this should not
+      // arise, and this stays as the safety net for a file written by an older build.
+      //
+      // IDENTICAL RECORDS COLLAPSE, DIFFERING ONES REFUSE. Keeping the first occurrence is
+      // deterministic and reproduces the same tree on every load, which is the property that matters.
+      // Two records sharing a key but disagreeing on what they say is corruption this cannot resolve,
+      // and picking one would be inventing an answer.
+      if (rec && this.seen.has(keyOf(rec))) {
+        const first = (this.byBucket.get(bucketOf(rec)) ?? []).find((r) => keyOf(r) === keyOf(rec));
+        if (!first || !sameRegistrationRecord(first, rec)) {
+          throw new Error(
+            `${this.path} line ${i + 1} repeats registration key ${keyOf(rec)} with different content. ` +
+              `Two records for one key cannot both be right and this cannot choose between them. ` +
+              `Repair the file.`,
+          );
+        }
+        duplicatesCollapsed += 1;
+        continue;
+      }
       this.#remember(rec);
+    }
+    if (duplicatesCollapsed > 0) {
+      console.warn(
+        `[registration] ${this.path} contained ${duplicatesCollapsed} duplicate registration ` +
+          `record(s), identical to ones already loaded. Kept the first of each, so the members tree ` +
+          `rebuilds the same way every time. This is the signature of an interrupted write from an ` +
+          `older build; the file is usable and worth repairing.`,
+      );
     }
     // REPAIR THE FILE SO IT ENDS ON A RECORD BOUNDARY, whatever shape the interruption left. There
     // are two, and the first version of this only handled one.
@@ -399,12 +461,34 @@ export class FileBackend {
       statement: d.statement,
       index,
     };
-    const fh = await open(this.path, "a");
+    // AN UNCERTAIN WRITE IS RESOLVED BEFORE THE CALLER CAN RETRY. The bytes can reach the file and the
+    // sync or the close can still report an error, in which case the caller is told the registration
+    // failed while the record is durable. The in-memory index would not know it, so the retry appended
+    // the same registration a second time, and a later restart loaded both and put one commitment into
+    // the members tree twice, changing the root. Rereading here is what makes the retry see the truth:
+    // if the record landed, the reload learns it and the retry answers duplicate, which the
+    // registration path already treats as success for the member.
+    //
+    // The original error is still what the caller sees. The write really was uncertain, and reporting
+    // success because the reread happened to find the record would be answering a different question
+    // than the one asked.
     try {
-      await fh.appendFile(JSON.stringify(record) + "\n");
-      await fh.sync(); // the record is on disk before we report success
-    } finally {
-      await fh.close();
+      const fh = await this.openFile(this.path, "a");
+      try {
+        await fh.appendFile(JSON.stringify(record) + "\n");
+        await fh.sync(); // the record is on disk before we report success
+      } finally {
+        await fh.close();
+      }
+    } catch (err) {
+      try {
+        await this.#reload();
+      } catch {
+        // A reread that itself fails leaves the index as it was, which is the state that made the
+        // duplicate possible. The load path refuses or collapses a duplicate key, so the outcome is
+        // bounded either way, and hiding the original write error behind a read error would be worse.
+      }
+      throw err;
     }
     this.#remember(record);
     return { duplicate: false, index };

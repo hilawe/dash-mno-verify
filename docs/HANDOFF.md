@@ -5,6 +5,44 @@ counts and supersedes everything below it. Historical sections are append-only a
 only marked superseded. Read this first when picking the project back up, then `TODO.md` for the full
 prioritized punch list.
 
+## SESSION IN PROGRESS, 2026-08-05. F2, F3, F4 AND THE CHAINLOCK FIELD
+
+Committed and safe to leave. What landed after F1 closed:
+
+- **F3 (major, real durability bug), fixed.** `core/registration_store.js` wrote and synced a
+  registration before the in-memory unique index learned of it, so a sync or close error AFTER the
+  bytes landed told the caller it failed while the record was durable. The retry appended the same
+  registration again, a restart loaded both, and the members tree carried one commitment twice and
+  changed root. Two halves now: an uncertain write REREADS the file before the caller can retry, so
+  the retry answers duplicate (which the registration path already treats as success for the member),
+  and the load path collapses identical duplicate keys deterministically while REFUSING two records
+  that share a key and disagree. Kept the original error either way, because the write really was
+  uncertain.
+- **F4 (moderate), fixed.** The retained-leaves bound evicted heights on leaf totals alone and knew
+  nothing about outstanding challenges, so a member handed a root could return to
+  stale-or-unknown-root through no fault of their own. `RootWindows` now takes a `pinnedRoots`
+  callback, the gateway wires it to the challenge store, and eviction prefers unpinned heights. The
+  bound still wins when everything is pinned, because honouring pins unconditionally would let any
+  caller raise a memory bound by asking for challenges.
+- **F2 (major), enforced rather than documented.** Platform nullifier mode now REFUSES to boot unless
+  `MNO_PLATFORM_ACCEPT_UNCERTAIN_BROADCAST=1`. Consensus can accept the nullifier document while the
+  client sees a timeout, and with no account binding stored the member's retry is answered
+  already-used, costing them the epoch. Not fixable without a contract change plus a commitment
+  scheme, so the mode is outside the supported profile and the opt-in names the finding.
+- **The `chainlocked` field** now says in the code what it means. It records that the read was GATED
+  on a ChainLock, not that a ChainLock signature was verified, because nothing verifies one. The name
+  is kept because v3 consumers read it and the signed message covers it.
+
+STILL OPEN, and the next session should start here:
+
+1. The X11 vector generator and fuzz harness are NOT in the repository. The vectors cannot be
+   re-derived by anyone and the fuzz cannot be re-run. This was on the list for this session and did
+   not get done.
+2. `docs/EXPLAINER.md` understates the position now. It says the doorman "cannot yet confirm the block
+   is genuinely from the chain", which predates F1 closing. Not wrong, since the ChainLock signature
+   genuinely is not verified, but it is out of date in the direction of understating.
+3. No review round has covered F2, F3, F4, or the X11 work. That is the largest outstanding risk.
+
 ## F1 CLOSED, 2026-08-05. THE HEADER IS NAMED AND ITS WORK IS CHECKED
 
 X11 is implemented and wired in. The read now proves the header IS the block the ChainLock named, and

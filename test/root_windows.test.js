@@ -608,3 +608,45 @@ test("a window configured larger than the leaf bound allows is shortened by the 
   assert.equal(wide.snaps.length, Math.floor(shipped / perRecord), "and what it delivers is exactly what the bound allows");
   assert.equal(wide.current().root, "w100", "the newest is still what is served");
 });
+
+test("a root a live challenge was minted against is not evicted by the leaf bound", () => {
+  // F4 FROM THE INDEPENDENT SECURITY REVIEW. The bound evicted whole heights on leaf totals alone,
+  // knowing nothing about challenges outstanding against those roots, so a member who asked for a
+  // challenge and went away to build a proof could come back to stale-or-unknown-root through no
+  // fault of their own. The proof was correct when it was asked for.
+  const pinned = new Set();
+  const w = new RootWindows(8, { maxLeaves: 250, pinnedRoots: () => pinned });
+  w.adopt({ height: 1, root: "r1", ts: 1, order: null, snapshot: withLeaves(100, "a") });
+  w.adopt({ height: 2, root: "r2", ts: 2, order: null, snapshot: withLeaves(100, "b") });
+
+  // A challenge names r1, so the member is off proving against height 1.
+  pinned.add("r1");
+  w.adopt({ height: 3, root: "r3", ts: 3, order: null, snapshot: withLeaves(100, "c") });
+
+  assert.equal(w.isRecent("r1"), true, "the pinned root survived, so the member's proof can still land");
+  assert.equal(w.isRecent("r2"), false, "and the unpinned neighbour is what made room for the new height");
+  assert.equal(w.isRecent("r3"), true);
+  assert.ok(w.retainedLeaves() <= 250, "the bound still holds");
+});
+
+test("pinning cannot hold the window open without limit, so the bound wins when everything is pinned", () => {
+  // The other half of the finding, which asked that the retention design still cap what pinning can
+  // hold. Honouring every pin unconditionally would turn a memory bound into one that any caller can
+  // raise by asking for challenges, so the fallback evicts the oldest height even when it is pinned.
+  // Those challenges then fail exactly as they did before pinning existed.
+  const pinned = new Set(["r1", "r2", "r3"]);
+  const w = new RootWindows(8, { maxLeaves: 250, pinnedRoots: () => pinned });
+  w.adopt({ height: 1, root: "r1", ts: 1, order: null, snapshot: withLeaves(100, "a") });
+  w.adopt({ height: 2, root: "r2", ts: 2, order: null, snapshot: withLeaves(100, "b") });
+  w.adopt({ height: 3, root: "r3", ts: 3, order: null, snapshot: withLeaves(100, "c") });
+
+  assert.ok(w.retainedLeaves() <= 250, `the bound is not negotiable, retained ${w.retainedLeaves()}`);
+  assert.equal(w.isRecent("r1"), false, "the oldest went even though it was pinned");
+  assert.equal(w.isRecent("r3"), true, "and the newest is always kept");
+});
+
+test("a window given no pin source behaves exactly as it did before pinning existed", () => {
+  const w = new RootWindows(8, { maxLeaves: 250 });
+  for (let h = 1; h <= 3; h++) w.adopt({ height: h, root: `r${h}`, ts: h, order: null, snapshot: withLeaves(100, `h${h}`) });
+  assert.deepEqual(w.snaps.map((s) => s.height), [2, 3]);
+});

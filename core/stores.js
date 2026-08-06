@@ -118,9 +118,13 @@ export class RootWindows {
   // leaking and no attacker chooses those numbers, which is exactly why it went unbounded in the
   // stated sense for so long. This turns the worst case into ONE number an operator sets rather than
   // a figure that has to be recomputed from three unrelated places whenever one of them changes.
-  constructor(window = 8, { maxLeaves = 0 } = {}) {
+  // `pinnedRoots` names the roots a live challenge was minted against, so the leaf bound does not
+  // evict the ground under a proof that is still on its way. Default none, which is the behaviour
+  // before pinning existed.
+  constructor(window = 8, { maxLeaves = 0, pinnedRoots = () => null } = {}) {
     this.window = window;
     this.maxLeaves = maxLeaves;
+    this.pinnedRoots = pinnedRoots;
     this.snaps = []; // sorted by height ascending, newest last; each { height, root, shaRoot, ts }
   }
   // Adopt one snapshot, keyed by height AND leaf order.
@@ -226,6 +230,18 @@ export class RootWindows {
   // refused to retain the snapshot it is currently serving would be a guard with no exit reached by
   // ordinary operation: the root would be current with no leaves behind it. The bound governs how
   // much HISTORY is kept, not whether the present is kept.
+  // A height is pinned when any record at it carries a root some live challenge was minted against.
+  // Evicting it refuses a proof that was correct when it was asked for, which is the F4 finding.
+  #pinnedHeights() {
+    const pinned = this.pinnedRoots?.();
+    if (!pinned || typeof pinned.has !== "function") return new Set();
+    const heights = new Set();
+    for (const s of this.snaps) {
+      if (pinned.has(s.root) || (s.shaRoot != null && pinned.has(s.shaRoot))) heights.add(s.height);
+    }
+    return heights;
+  }
+
   #enforceLeafBound() {
     if (!(this.maxLeaves > 0)) return;
     // A loop rather than one pass: a snapshot larger than the ones already held (the list grows, or
@@ -234,8 +250,17 @@ export class RootWindows {
     while (this.retainedLeaves() > this.maxLeaves) {
       const heights = [...new Set(this.snaps.map((s) => s.height))];
       if (heights.length <= 1) break;
-      const oldest = heights[0]; // the array is height-ascending, so this is the oldest height
-      this.snaps = this.snaps.filter((s) => s.height !== oldest);
+      const pinned = this.#pinnedHeights();
+      // UNPINNED FIRST, oldest of those. A challenge names a root and the member is off building a
+      // proof against it, so dropping that height turns a correct proof into stale-or-unknown-root
+      // for a reason the member cannot see or avoid.
+      const target = heights.find((h) => !pinned.has(h)) ?? heights[0];
+      // THE BOUND STILL WINS WHEN EVERYTHING IS PINNED, and that is deliberate. Honouring every pin
+      // unconditionally would let pending challenges hold the window open without limit, which turns
+      // a memory bound into a request-driven one. So the fallback drops the oldest height even when
+      // pinned, and those challenges fail exactly as they did before pinning existed. Pinning makes
+      // the common case correct rather than making the bound negotiable.
+      this.snaps = this.snaps.filter((s) => s.height !== target);
     }
   }
   // The newest snapshot. With two orders at one height during a changeover, the LAST adopted wins,
@@ -576,6 +601,14 @@ export class ChallengeStore {
     this.ttl = ttlSeconds * 1000;
     this.maxPending = maxPending;
     this.pending = new Map();
+  }
+  // The roots live challenges were minted against, for the root window's pinning. Expired entries are
+  // swept first, so a root is not held open by a challenge that can no longer be used.
+  pinnedRoots() {
+    this.sweep();
+    const roots = new Set();
+    for (const v of this.pending.values()) if (v.root != null) roots.add(v.root);
+    return roots;
   }
   // Returns false when the store is full, so the gateway can shed load rather than let the map grow
   // without bound. A full sweep of expired entries is tried first, so the cap only bites under a

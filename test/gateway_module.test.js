@@ -754,3 +754,31 @@ test("the challenge's signal is bound to the account it was minted for, which is
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("a minted challenge pins the root it named, so the leaf bound cannot evict it", async () => {
+  // Review finding F4. The root window evicts on leaf totals and knew nothing about outstanding
+  // challenges, so a member could be handed a root, go away to build a proof, and come back to
+  // stale-or-unknown-root. The window now asks the challenge store which roots are live, and this
+  // covers the wiring between them: the unit test in test/root_windows.test.js proves the window
+  // honours a pin, and without this one the gateway could simply never record a root to pin.
+  const { dir, env } = await envWithSnapshot();
+  const gateway = await createGateway({ config: buildConfig(env) });
+  try {
+    const port = await gateway.listen(0);
+    const minted = await post(`http://127.0.0.1:${port}`, "/v1/challenge", {
+      platform: "p", communityId: "c", roleId: "r", account: "alice",
+    });
+    assert.equal(minted.status, 200);
+    assert.ok(minted.body.root, "the challenge names a root the member will prove against");
+
+    const pinned = gateway.state.challenges.pinnedRoots();
+    assert.ok(pinned.has(minted.body.root), "and that root is pinned while the challenge is live");
+
+    // Taking the challenge ends the pin, so a nonce that has been spent does not hold a root open.
+    gateway.state.challenges.take(minted.body.nonce);
+    assert.equal(gateway.state.challenges.pinnedRoots().has(minted.body.root), false, "a consumed challenge pins nothing");
+  } finally {
+    await gateway.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});

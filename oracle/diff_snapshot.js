@@ -329,6 +329,15 @@ export async function buildDiffSnapshot({
     // anyone can flip, is worse than no field. Recording it properly means extending the signed
     // message, which is a format change and a decision of its own.
     order: "proRegTxHash",
+    // WHAT THIS FIELD MEANS, AND WHAT IT DOES NOT. It says the read was gated on a ChainLock: the node
+    // was asked for its best ChainLock before anything else, refused to proceed unless it reported
+    // known_block true, and every later answer was required to describe that block. It does NOT say a
+    // ChainLock SIGNATURE was verified against the quorum that signed it, because nothing here does
+    // that. An external review raised the field for asserting more than is checked, and it is right
+    // that the distinction matters: a node that simply calls a block ChainLocked is believed on that
+    // point. The name is kept because v3 consumers already read it and the signed message covers it,
+    // and renaming a signed field is a format change; what changes here is that the meaning is
+    // written down where the value is produced. Tracked in TODO.md.
     chainlocked: true,
   };
 }

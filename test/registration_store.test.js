@@ -4,6 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { writeFile, readFile } from "node:fs/promises";
+import { mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import {
   RegistrationStore,
   MemoryRegistrationBackend,
@@ -350,4 +351,98 @@ test("a normal file ending in a newline is not touched by the repair", async () 
   await b.ready();
   assert.notEqual(b.tornTailTerminated, true, "nothing to repair");
   assert.equal(await readFile(path, "utf8"), before, "the file is byte-identical");
+});
+
+// F3 FROM THE INDEPENDENT SECURITY REVIEW: a successful write followed by a sync or close error can
+// duplicate the registration. The bytes reach the file, the caller is told the write failed, the
+// in-memory index never learns the record exists, a retry appends it again, and a restart loads both
+// and puts one commitment into the members tree twice, which changes the root.
+//
+// Driven by faulting the real file handle rather than by reasoning about it, so the sequence the
+// finding describes is the sequence that runs.
+
+test("a sync error after the bytes land does not let a retry write the registration twice", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mno-reg-f3-"));
+  const path = join(dir, "registrations.jsonl");
+  try {
+    const { FileBackend } = await import("../core/registration_store.js");
+    const { open: realOpen } = await import("node:fs/promises");
+
+    // Fault the NEXT sync only. Every byte of the record has been written by the time sync runs, so
+    // this is exactly the uncertain write: durable on disk, reported to the caller as a failure.
+    let faultArmed = true;
+    const faultingOpen = async (...args) => {
+      const fh = await realOpen(...args);
+      if (!faultArmed) return fh;
+      faultArmed = false;
+      return new Proxy(fh, {
+        get(target, prop) {
+          if (prop === "sync") {
+            return async () => {
+              throw new Error("simulated sync failure");
+            };
+          }
+          const v = target[prop];
+          return typeof v === "function" ? v.bind(target) : v;
+        },
+      });
+    };
+
+    const backend = new FileBackend(path, null, false, { open: faultingOpen });
+    await backend.ready();
+    const record = { season: 1, contextHash: "c", regNullifier: "n1", commitment: "m1", engine: "plonk", statement: "derive" };
+    await assert.rejects(() => backend.append(record), /simulated sync failure/, "the caller is told the write failed");
+
+    // THE RETRY IS THE POINT. It must not append a second copy.
+    const retry = await backend.append(record);
+    assert.equal(retry.duplicate, true, "the retry sees the record that actually landed rather than writing it again");
+
+    const records = readFileSync(path, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)).filter((r) => r.type !== "schedule");
+    assert.equal(records.length, 1, `the file holds one registration, not ${records.length}`);
+
+    // And a restart rebuilds the same single-member tree, which is the harm the finding named.
+    const reopened = new FileBackend(path, null, false);
+    await reopened.ready();
+    const after = await reopened.forSeasonContext(1, "c");
+    assert.equal(after.length, 1, "a restart loads one record");
+    assert.equal(after[0].commitment, "m1");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a file that already holds a duplicate loads deterministically rather than doubling a member", async () => {
+  // The safety net, for a file written by a build without the reread above. Two identical records for
+  // one key collapse to the first, so the members tree rebuilds the same way every time.
+  const dir = mkdtempSync(join(tmpdir(), "mno-reg-dup-"));
+  const path = join(dir, "registrations.jsonl");
+  try {
+    const { FileBackend } = await import("../core/registration_store.js");
+    const rec = { season: 1, contextHash: "c", regNullifier: "n1", commitment: "m1", engine: "plonk", statement: "derive", index: 0 };
+    writeFileSync(path, JSON.stringify(rec) + "\n" + JSON.stringify(rec) + "\n");
+
+    const backend = new FileBackend(path, null, false);
+    await backend.ready();
+    const recs = await backend.forSeasonContext(1, "c");
+    assert.equal(recs.length, 1, "the duplicate collapsed, so the commitment appears once");
+    assert.equal(recs[0].index, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("two records for one key that DISAGREE are refused, because neither can be chosen", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mno-reg-conflict-"));
+  const path = join(dir, "registrations.jsonl");
+  try {
+    const { FileBackend } = await import("../core/registration_store.js");
+    const a = { season: 1, contextHash: "c", regNullifier: "n1", commitment: "m1", engine: "plonk", statement: "derive", index: 0 };
+    const b = { ...a, commitment: "m2" };
+    writeFileSync(path, JSON.stringify(a) + "\n" + JSON.stringify(b) + "\n");
+
+    const backend = new FileBackend(path, null, false);
+    await assert.rejects(() => backend.ready(), /repeats registration key .* with different content/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

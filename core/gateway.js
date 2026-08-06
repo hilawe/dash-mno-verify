@@ -304,6 +304,32 @@ async function bootGateway({ config = buildConfig(process.env) } = {}, release) 
     // the honest position rather than shipping a check that cannot check. The override exists for a
     // deployment that knows its shared state was written under this exact schedule, and it is an
     // ASSERTION by the operator, in the same style as the registration file's.
+    // F2, AND IT IS A SEPARATE REFUSAL FROM THE SCHEDULE ONE BELOW. An independent security review
+    // reproduced this: Platform consensus can ACCEPT the nullifier document while the client sees a
+    // timeout or a dropped connection, so the request fails with the tag already spent. Nothing can
+    // recover it, because this store deliberately writes no account binding (writing a platform user
+    // id into a public document would link that user to masternode control on chain, the exact
+    // disclosure the design exists to avoid), so `get()` returns null and the retry with a fresh valid
+    // proof is answered already-used. The member loses the epoch through no fault of their own.
+    //
+    // That breaks the stated rule that a failed request cannot consume a durable claim. Closing it
+    // needs an atomically stored, privacy-safe account or operation commitment that an uncertain
+    // broadcast can query before deciding whether it won, which is a contract change and a commitment
+    // scheme, so it is a decision rather than a patch.
+    //
+    // UNTIL THEN THE MODE IS OUTSIDE THE SUPPORTED PROFILE, and that is enforced here rather than
+    // written in a document nobody reads at deploy time. The opt-in names the finding, so an operator
+    // enabling it is saying they know which one they are accepting.
+    if (!config.platformAcceptUncertainBroadcast) {
+      throw new Error(
+        `refusing Platform nullifier mode: an uncertain broadcast can consume a membership claim ` +
+          `without granting it. Platform consensus may accept the nullifier document while this ` +
+          `client sees a timeout, and because no account binding is stored, the member's retry is ` +
+          `refused as already-used and they lose the epoch. This is review finding F2 and it is not ` +
+          `fixed. Set MNO_PLATFORM_ACCEPT_UNCERTAIN_BROADCAST=1 to run the mode anyway, accepting ` +
+          `that a network failure at the wrong moment costs a member their membership for the epoch.`,
+      );
+    }
     if (config.platformAssumeSchedule !== SCHEDULE) {
       throw new Error(
         `refusing Platform nullifier mode: the contract's nullifier document cannot carry an ` +
@@ -512,7 +538,12 @@ async function bootGateway({ config = buildConfig(process.env) } = {}, release) 
     );
   }
 
-  const dmlRoots = new RootWindows(config.rootWindow, { maxLeaves: config.rootWindowMaxLeaves });
+  const dmlRoots = new RootWindows(config.rootWindow, {
+    maxLeaves: config.rootWindowMaxLeaves,
+    // The leaf bound must not evict a root a live challenge was minted against, which would refuse a
+    // proof that was correct when the member asked for it (review finding F4).
+    pinnedRoots: () => challenges.pinnedRoots(),
+  });
   // The last verified oracle snapshot, so provers can fetch leaves and build paths. DERIVED from the
   // window rather than tracked beside it: the snapshot rides in the same record as its roots, so
   // aging, eviction, and adoption move all of them together.
@@ -1155,7 +1186,9 @@ async function bootGateway({ config = buildConfig(process.env) } = {}, release) 
         // The season is recorded with the challenge so the verify path can tell whether the season it
         // was minted in is still current. Without it a two-tier verify could only compare root store
         // identity, which a rollover-then-rematerialize could make equal again.
-        if (!challenges.put(nonce, { account, signalHash: sig, epoch, contextHash: ctx, season: challengeSeason }))
+        // The root is stored so the window can PIN it, keeping the leaf bound from evicting the ground
+      // this member is about to prove against.
+      if (!challenges.put(nonce, { account, signalHash: sig, epoch, contextHash: ctx, season: challengeSeason, root: cur.root }))
           return send(res, 429, { error: "too many pending challenges" });
         return send(res, 200, {
           nonce,

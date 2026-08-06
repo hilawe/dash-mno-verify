@@ -1681,7 +1681,16 @@ test("Platform nullifier mode refuses without a schedule assertion, and starts w
   // error and is what proves the schedule guard is no longer the thing stopping it).
   const oracle = join(dir, "platform.json");
   await writeFile(oracle, JSON.stringify(snapshot()));
-  const base = { MNO_ORACLE_SOURCE: oracle, MNO_ORACLE_REFRESH: "3600", MNO_STORE: "platform" };
+  // The F2 acknowledgement is set throughout these cases because they exercise the SCHEDULE and
+  // CONTRACT guards, which sit after it. Without it every one of them would stop at the uncertain
+  // broadcast refusal and prove nothing about the guard it is named for. F2's own refusal has its own
+  // case below.
+  const base = {
+    MNO_ORACLE_SOURCE: oracle,
+    MNO_ORACLE_REFRESH: "3600",
+    MNO_STORE: "platform",
+    MNO_PLATFORM_ACCEPT_UNCERTAIN_BROADCAST: "1",
+  };
 
   let refused = null;
   try {
@@ -1888,6 +1897,8 @@ test("a Platform marker written for another contract is refused, not reused", as
       MNO_ORACLE_SOURCE: oracle,
       MNO_ORACLE_REFRESH: "3600",
       MNO_STORE: "platform",
+      // Set because this case is about the CONTRACT binding, which sits after the F2 refusal.
+      MNO_PLATFORM_ACCEPT_UNCERTAIN_BROADCAST: "1",
       MNO_PLATFORM_ASSUME_SCHEDULE: scheduleId(7 * 24 * 3600, 90 * 24 * 3600),
       MNO_PLATFORM_SCHEDULE_PATH: marker,
       MNO_PLATFORM_CONTRACT_ID: "CONTRACT-B",

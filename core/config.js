@@ -155,6 +155,10 @@ export function buildConfig(env = process.env) {
     // "1". A boolean stands for whatever the config later says, so an operator who set it once to boot
     // and then changed the epoch or season length would have their old assertion wave the new schedule
     // through, which is the exact silent reinterpretation the refusal exists to prevent.
+    // An operator's acknowledgement of review finding F2: an uncertain Platform broadcast can consume
+    // a membership claim without granting it, and no retry recovers it. Off by default, so the mode
+    // refuses to start rather than silently carrying a defect that costs members their epoch.
+    platformAcceptUncertainBroadcast: env.MNO_PLATFORM_ACCEPT_UNCERTAIN_BROADCAST === "1",
     platformAssumeSchedule: env.MNO_PLATFORM_ASSUME_SCHEDULE ?? "",
     platformSchedulePath: env.MNO_PLATFORM_SCHEDULE_PATH ?? "data/platform_schedule.json",
     // Explicit opt-in to the pre-allowlist behaviour, in the same style as MNO_ALLOW_UNAUTH_GATEWAY
