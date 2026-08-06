@@ -24,12 +24,19 @@
 // block's own coinbase, the coinbase is checked against the merkle branch, and the branch against the
 // header. A node whose list does not match what the block committed to is refused.
 //
-// Against a DISHONEST node it still closes nothing, and the reason is narrow and specific. Nothing
-// here identifies the header: a Dash block is named by the X11 hash of its header, this build has no
-// X11, and so a node that fabricates a header, a coinbase, and a list that all agree with one another
-// passes every check. This remains a TRUSTED-NODE read, and the pinned signer trust it was meant to
-// replace is still doing work until the header is tied to the chain, by X11 with its proof of work or
-// by verifying the ChainLock signature against the signing quorum. Neither is started.
+// Against a DISHONEST node, most of it is now closed too. The header is hashed with X11 and must equal
+// the block hash the ChainLock named, so the header is the block the node claimed rather than one it
+// assembled, and the hash must meet the proof of work the header's own target declares, so inventing a
+// block costs mining rather than nothing.
+//
+// TWO RESIDUALS REMAIN, both narrow and both stated where they are relied on. The target is read from
+// the header, so the work proven is work against the difficulty that header claims, not against the
+// difficulty the network was at, and a node willing to mine could offer a low-difficulty header.
+// Ruling that out means following the header chain to judge the difficulty, which is a light client,
+// or verifying the ChainLock signature against the signing quorum. And a node can REPLAY a real old
+// block, which passes every check here because it is real; the coinbase height is compared against the
+// ChainLock height, but both come from the same node in one read, so that catches an inconsistent
+// replay rather than a consistent one.
 //
 // CHAINLOCK IS THE GATE, and it is doing real work rather than being belt-and-braces. A ChainLocked
 // block cannot be reorged away, so pinning the read to one removes the reorg question entirely rather
@@ -50,6 +57,8 @@
 // index for nearly every member. The membership proof does not depend on the two agreeing.
 import { votingAddressToLeaf } from "../common/dml.js";
 import { verifyDmlCommitment } from "./dml_commitment.js";
+import { blockHashFromHeader } from "../common/x11/index.js";
+import { meetsProofOfWork } from "./proof_of_work.js";
 import { makeDmlRootHasher } from "../common/dml_root.js";
 import { makeShaDmlRootHasher, leafToKeyId } from "../common/dml_sha_root.js";
 
@@ -190,11 +199,9 @@ export async function buildDiffSnapshot({
   //
   //     What this establishes and what it does not is spelled out in oracle/dml_commitment.js, and the
   //     short version belongs here too, because a reader of this file is deciding how much to trust
-  //     the result. It proves the list, the coinbase, and the header the node returned all agree. It
-  //     does NOT prove the header is the ChainLocked block, because identifying a Dash block means
-  //     hashing its header with X11 and this build has no X11. So a node that fabricates a consistent
-  //     header, coinbase, and list still passes. This closes the inconsistent or buggy node, not the
-  //     dishonest one, and direct node mode stays a trusted-node read until that last link exists.
+  //     the result. It proves the list, the coinbase, and the header agree with one another, and the
+  //     header check below proves the header is the block the ChainLock named and that real work went
+  //     into it.
   if (verifyCommitment) {
     const header = await call("getblockheader", [lockedHash, false]);
     if (typeof header !== "string" || !/^[0-9a-f]+$/i.test(header)) {
@@ -215,6 +222,45 @@ export async function buildDiffSnapshot({
         );
       }
     }
+    // 4c. THE HEADER IS THE BLOCK THE CHAINLOCK NAMED, which is what the rest of this rests on.
+    //     Everything above establishes that the list, the coinbase, and this header agree with each
+    //     other. Agreeing with each other is cheap: a node can build a header, a coinbase, and a list
+    //     that agree in the time it takes to hash them. What is not cheap is making a header whose
+    //     X11 hash is a particular value, and that is the check here.
+    const named = blockHashFromHeader(header);
+    if (named !== lockedHash) {
+      throw new Error(
+        `oracle: the header the node returned for ${lockedHash} hashes to ${named}. A block is named by ` +
+          `the X11 hash of its header, so this is not that block, whatever the node called it.`,
+      );
+    }
+
+    // 4d. AND REAL WORK WENT INTO IT. Naming the block only says the header is self-consistent with
+    //     the hash claimed for it, and a node is free to invent a header and claim its hash. Proof of
+    //     work is what makes inventing one expensive: the hash has to fall below the target the
+    //     header itself declares.
+    //
+    //     WHAT THIS DOES NOT ESTABLISH, and it is the residual that remains after all of the above.
+    //     The target is read from the header, so the work proven is work against the difficulty THIS
+    //     header claims, not against the difficulty the network was actually at. A node willing to
+    //     mine could produce a low-difficulty header that passes. Ruling that out means either
+    //     following the header chain to judge the difficulty (a light client, and a much larger
+    //     piece of work) or verifying the ChainLock signature against the signing quorum. Neither is
+    //     started, and a difficulty floor is a configuration decision rather than something to invent
+    //     a default for here, since Dash retargets every block and a floor set too high refuses
+    //     legitimate blocks.
+    //
+    //     A node can also REPLAY a real old block, which passes every check here because it is real.
+    //     The height the coinbase names is compared against the ChainLock's height below, and both
+    //     come from the same node in the same read, so that comparison catches an inconsistent replay
+    //     and not a consistent one.
+    if (!meetsProofOfWork(header)) {
+      throw new Error(
+        `oracle: the header for ${lockedHash} does not meet the proof of work its own target declares. ` +
+          `A real block cannot fail this, so the node is serving something that was never mined.`,
+      );
+    }
+
     const proof = verifyDmlCommitment({
       mnList,
       cbTx: diff?.cbTx,

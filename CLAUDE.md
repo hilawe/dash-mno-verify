@@ -22,10 +22,10 @@ until the blockers in REVIEW_FINDINGS_dash-mno-verify_2026-06-26.md are closed.
 - `oracle/` reads the masternode list (`masternodelist json` from Dash Core) and builds the DML tree.
   - `dml_commitment.js` rebuilds the DIP4 simplified-list commitment and checks it against the
     `merkleRootMNList` in the block's coinbase, plus the coinbase's merkle branch and the header's
-    merkle root. It does NOT identify the header, because that needs X11 and this build has none, so
-    direct node mode remains a trusted-node read. The entry serialization was derived by reproducing
-    the live mainnet commitment, not from the specification, and the file records the two heights it
-    was confirmed at.
+    merkle root. The entry serialization was derived by reproducing the live mainnet commitment, not
+    from the specification, and the file records the two heights it was confirmed at.
+  - `proof_of_work.js` decodes the compact target in a header and checks the header's X11 hash against
+    it, which is what makes inventing a block cost mining.
 - `circuits/` the five circom circuits. hash160, Merkle inclusion, the Semaphore-style signal binding,
   the single-tier membership circuit, and the two-tier registration and members circuits.
 - `prover/` the proving CLIs, single-tier (`prover.js`) and two-tier (`two_tier.js`).
@@ -49,6 +49,10 @@ until the blockers in REVIEW_FINDINGS_dash-mno-verify_2026-06-26.md are closed.
 - `adapters/` the four platform front ends.
 - `contract/` the Dash Platform data contract (nullifier and registration document types).
 - `common/` shared encoding (context hash, signal hash, epoch and season math, DML leaf).
+  - `common/x11/` the eleven rounds Dash chains to name a block, ported from the reference that ships
+    with Dash Core and verified against vectors generated from it, plus a differential run of 134
+    random inputs. The chain reproduces the block hash of real mainnet headers from block 1 to the
+    tip. Used by the direct-node read to prove a header IS the ChainLocked block.
 
 ## Two proving designs
 

@@ -393,3 +393,47 @@ test("the branch must place the coinbase at index 0, not merely somewhere in the
     "a transaction present in the branch but not at index 0 is not a coinbase",
   );
 });
+
+test("the commitment covers banned nodes too, so it must be checked over the unfiltered list", () => {
+  // The coinbase commits to every entry, valid or not. A caller that verified only the entries which
+  // survive an isValid filter would be comparing a different set than the chain committed to, and on
+  // mainnet that fails on essentially every block, since real lists carry PoSe-banned nodes.
+  //
+  // A synthetic block is legitimate here and only here. verifyDmlCommitment reads the header's merkle
+  // root and never names the block, so a fabricated header exercises exactly the path under test. The
+  // read path refuses fabricated blocks outright now, which is why this property cannot be shown
+  // there and is shown here instead. The entry serialization and the root are the real implementation,
+  // anchored by the mainnet fixtures above.
+  const withBanned = BLOCK.mnList.map((e, i) => (i === 2 ? { ...e, isValid: false } : e));
+  assert.equal(withBanned.filter((m) => m.isValid).length, BLOCK.mnList.length - 1, "the list really does contain a banned node");
+
+  const root = Buffer.from(smlMerkleRoot(withBanned));
+  const cb = Buffer.from(BLOCK.cbTx, "hex");
+  root.copy(cb, cb.length - 32); // a version 1 payload ends with the root
+  const cbTxid = createHash("sha256").update(createHash("sha256").update(cb).digest()).digest();
+  const branch = Buffer.concat([
+    Buffer.from([1, 0, 0, 0]), Buffer.from([1]), cbTxid, Buffer.from([1]), Buffer.from([1]),
+  ]);
+  const header = Buffer.from(BLOCK.blockHeader, "hex");
+  cbTxid.copy(header, 36);
+
+  const ok = verifyDmlCommitment({
+    mnList: withBanned,
+    cbTx: cb.toString("hex"),
+    cbTxMerkleTree: branch.toString("hex"),
+    blockHeader: header.toString("hex"),
+  });
+  assert.equal(ok.entries, withBanned.length, "all fourteen were verified, not the thirteen that are valid");
+
+  // And the filtered set does NOT satisfy that same commitment, which is what makes the ordering
+  // load-bearing rather than a matter of taste.
+  assert.throws(
+    () => verifyDmlCommitment({
+      mnList: withBanned.filter((m) => m.isValid),
+      cbTx: cb.toString("hex"),
+      cbTxMerkleTree: branch.toString("hex"),
+      blockHeader: header.toString("hex"),
+    }),
+    /does not match the coinbase commitment/,
+  );
+});

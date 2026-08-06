@@ -327,7 +327,7 @@ follow-up below.
 
 ## P1, before any non-local or public deployment
 
-- [ ] Tie the block header to the chain, which is the last link direct node mode needs (2026-08-04).
+- [x] Tie the block header to the chain, the last link direct node mode needed (done 2026-08-05).
   The commitment check below now rebuilds the DIP4 simplified-list root from the entries and compares
   it against the `merkleRootMNList` the block's own coinbase carries, checks the merkle branch marks
   that coinbase, and checks the branch reproduces the merkle root in the header. What it cannot do is
@@ -336,13 +336,21 @@ follow-up below.
   header, a coinbase, and a list that agree with one another passes every check, and direct node mode
   is still a TRUSTED-NODE read.
 
-  Two ways to close it, and they are not equivalent. Implementing X11 makes fabricating a header cost
-  real mining work at mainnet difficulty, which is a hard bar, and it is testable against any number of
-  known block hashes, so a subtle error is loud rather than silent. Verifying the ChainLock signature
-  against the signing quorum is stronger in principle and needs quorum tracking from a trusted
-  starting point, which is its own bootstrap problem. Neither is started. Until one is, direct node
-  mode should stay out of a production profile, which is the alternative remediation the security
-  review offered. (`oracle/dml_commitment.js`, `oracle/diff_snapshot.js`)
+  DONE by implementing X11. `common/x11/` holds the eleven rounds, ported from the reference that
+  ships with Dash Core and verified three ways: every round against vectors generated from that
+  reference compiled unmodified, a differential run of 134 random inputs across all eleven with no
+  mismatch, and the composed chain reproducing the block hash of real mainnet headers from block 1 to
+  the current tip. The read now hashes the header, requires it to equal the block hash the ChainLock
+  named, and requires that hash to meet the proof of work the header's own target declares.
+
+  TWO RESIDUALS REMAIN, and neither is closed by this. The target is read from the header, so the work
+  proven is against the difficulty that header claims rather than the difficulty the network was at, so
+  a node willing to mine could offer a low-difficulty header. Closing that means following the header
+  chain, which is a light client, or verifying the ChainLock signature against the signing quorum. And
+  a node can replay a real old block, which passes every check because it is real. A difficulty floor
+  would raise the first bar cheaply and is deliberately not invented here, since Dash retargets every
+  block and a floor set too high refuses legitimate blocks.
+  (`common/x11/`, `oracle/proof_of_work.js`, `oracle/diff_snapshot.js`)
 
 - [x] Verify the masternode list against the on-chain commitment (2026-08-04), the first three of the
   four links F1 asked for. `oracle/dml_commitment.js` serializes each DIP4 simplified entry, sorts by

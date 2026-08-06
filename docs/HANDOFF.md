@@ -5,6 +5,51 @@ counts and supersedes everything below it. Historical sections are append-only a
 only marked superseded. Read this first when picking the project back up, then `TODO.md` for the full
 prioritized punch list.
 
+## F1 CLOSED, 2026-08-05. THE HEADER IS NAMED AND ITS WORK IS CHECKED
+
+X11 is implemented and wired in. The read now proves the header IS the block the ChainLock named, and
+that real mining went into it. F1's remediation asked for header, coinbase inclusion,
+merkleRootMNList, and simplified-list commitment verification, and all four now exist.
+
+### What closed it
+
+`common/x11/` holds the eleven rounds Dash chains to name a block. Two came from a dependency the
+project already had, and that was checked rather than assumed. The other nine were ported from the
+reference that ships with Dash Core.
+
+Verified three ways, which matters because this is new cryptographic code:
+
+1. Every round against vectors generated from that reference compiled unmodified in a container.
+2. A differential run of 134 random inputs from 0 to 300 bytes across all eleven rounds, 1,474
+   comparisons against the reference, no mismatch. The fixed vectors stop at 128 bytes, so the random
+   set is what covers multi-block inputs and block-count carries.
+3. The composed chain reproducing the block hash of eleven real mainnet headers, block 1 to the tip.
+   That third one is separate on purpose: eleven correct rounds assembled in the wrong order satisfy
+   every per-round vector and still name no block correctly.
+
+`oracle/diff_snapshot.js` hashes the header, requires it to equal the ChainLocked hash, and requires
+the hash to meet the proof of work the header's own target declares. Live read against mainnet takes
+3.6 seconds for 2,971 entries.
+
+### Two residuals, neither closed
+
+- The target is read from the header, so the work proven is against the difficulty THAT header claims,
+  not the difficulty the network was at. A node willing to mine could offer a low-difficulty header.
+  Closing it means a light client following the header chain, or ChainLock signature verification
+  against the signing quorum. A difficulty floor would raise the bar cheaply and is deliberately not
+  invented, because Dash retargets every block and a floor set too high refuses real blocks.
+- A node can replay a real old block. It passes every check because it is real. The coinbase height is
+  compared against the ChainLock height, but both come from the same node in one read, so that catches
+  an inconsistent replay and not a consistent one.
+
+### NOT YET REVIEWED
+
+This landed at the end of a session and has had NO review round. Two thousand lines of new
+cryptographic code, eight files of it written by parallel agents against the reference, plus the
+wiring. It is verified against the reference far more thoroughly than most code here, and verification
+against a reference is not the same as a review looking for what the reference cannot tell you.
+Take a full review round before this is relied on. Nothing else waits on it.
+
 ## F1 IN PROGRESS, 2026-08-04. THE COMMITMENT IS VERIFIED, THE HEADER IS NOT
 
 Three of the four links F1 asked for are implemented and verified against live mainnet. The fourth

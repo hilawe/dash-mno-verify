@@ -6,6 +6,8 @@ import { hash160ToAddress, votingAddressToLeaf } from "../common/dml.js";
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { smlMerkleRoot } from "../oracle/dml_commitment.js";
+import { blockHashFromHeader } from "../common/x11/index.js";
+import { meetsProofOfWork } from "../oracle/proof_of_work.js";
 import { fileURLToPath } from "node:url";
 
 // Real base58check addresses, built the same way the existing oracle test builds them, because
@@ -262,50 +264,17 @@ test("a node that alters the list is refused, even though every other answer it 
   );
 });
 
-// A SYNTHETIC SINGLE-TRANSACTION BLOCK around a given list. Needed because the property below is
-// "which list reaches the checker", and no committable real block can show it: mainnet lists were
-// entirely valid until they were already thousands of entries long, so every small real block has
-// nothing for the filter to remove. The pieces here are honest about what they are. The entry
-// serialization and the merkle root are the real implementation, anchored by the mainnet fixtures in
-// this file and in test/dml_commitment.test.js. The block around them is fabricated, which is exactly
-// what a node CAN do today and what the missing header check is about.
-function syntheticBlockFor(mnList) {
-  const root = Buffer.from(smlMerkleRoot(mnList)); // internal order, as the coinbase carries it
-  // The fixture's coinbase payload is version, height, root, and the root is its final 32 bytes.
-  const cb = Buffer.from(BLOCK.cbTx, "hex");
-  root.copy(cb, cb.length - 32);
-  const cbTxid = createHash("sha256").update(createHash("sha256").update(cb).digest()).digest();
-  // One transaction, so the merkle root IS its id, and the branch is the smallest one the format has.
-  const branch = Buffer.concat([
-    Buffer.from([1, 0, 0, 0]), // nTransactions
-    Buffer.from([1]), // one hash
-    cbTxid,
-    Buffer.from([1]), // one flag byte
-    Buffer.from([1]), // that leaf is the matched one
-  ]);
-  const header = Buffer.from(BLOCK.blockHeader, "hex");
-  cbTxid.copy(header, 36);
-  return { cbTx: cb.toString("hex"), cbTxMerkleTree: branch.toString("hex"), blockHeader: header.toString("hex") };
-}
+// THE WHOLE-LIST PROPERTY IS TESTED ONE LEVEL DOWN, and this note records why it cannot be tested
+// here. The commitment must be verified over the unfiltered list, because the coinbase commits to
+// banned nodes too. Showing that requires a block whose full list matches the commitment while the
+// filtered list does not, which means a block containing a banned node. On mainnet no such block is
+// small: lists were entirely valid until they were already thousands of entries, so no committable
+// fixture has one. The previous version of this test built a synthetic block to get there, and the
+// header identity and proof of work checks now refuse a fabricated block, which is the checks working
+// rather than a regression. The property lives in test/dml_commitment.test.js, where verifyDmlCommitment
+// is called directly and a synthetic block is legitimate because that function reads only the header's
+// merkle root and never names the block.
 
-test("the commitment is verified over the WHOLE list, so a banned node still counts toward it", async () => {
-  // The coinbase commits to every entry, valid or not, so verifying the survivors of the isValid
-  // filter would compare a different set than the chain committed to. On mainnet that would fail on
-  // essentially every block, since real lists carry banned nodes, but no small real block shows it.
-  const withInvalid = BLOCK.mnList.map((e, i) => (i === 2 ? { ...e, isValid: false } : e));
-  assert.equal(withInvalid.filter((m) => m.isValid).length, BLOCK.mnList.length - 1, "the list really does contain a banned node");
-
-  const block = syntheticBlockFor(withInvalid);
-  const call = async (method) => {
-    if (method === "getbestchainlock") return { blockhash: BLOCK.blockHash, height: BLOCK.height, known_block: true };
-    if (method === "protx") return { blockHash: BLOCK.blockHash, mnList: withInvalid, cbTx: block.cbTx, cbTxMerkleTree: block.cbTxMerkleTree };
-    if (method === "getblockheader") return block.blockHeader;
-    throw new Error(`unexpected call ${method}`);
-  };
-  const snap = await buildDiffSnapshot({ call });
-  assert.equal(snap.leaves.length, BLOCK.mnList.length - 1, "the banned node is out of the TREE");
-  // and the commitment it was verified against covered it, which is what the read not throwing means.
-});
 
 test("the commitment rejects a list altered after the block committed to it", async () => {
   // The coinbase commits to every entry, valid or not. Verifying after the filter would compare a
@@ -360,4 +329,59 @@ test("the header is fetched for the CHAINLOCKED hash, not for whatever the diff 
   };
   await buildDiffSnapshot({ call });
   assert.deepEqual(asked, [[BLOCK.blockHash, false]], "asked for the ChainLocked block's header, in raw form");
+});
+
+test("the header must BE the ChainLocked block, not merely agree with the list and coinbase", async () => {
+  // THE CHECK THAT CHANGES THE TRUST MODEL. Everything else establishes that the list, the coinbase,
+  // and the header agree with one another, and agreeing is cheap: a node can build all three to
+  // agree in the time it takes to hash them. Naming the block is not cheap, because it means
+  // producing a header whose X11 hash is a particular value.
+  //
+  // The fixture block is real, so the honest node passes. The dishonest one here serves a header
+  // that is internally fine and simply is not the block it was asked for.
+  const other = JSON.parse(
+    readFileSync(fileURLToPath(new URL("./vectors/x11_round_vectors.json", import.meta.url)), "utf8"),
+  ).blockHashes.cases.find((c) => c.height !== BLOCK.height);
+  await assert.rejects(
+    () => buildDiffSnapshot({ call: nodeServing({ blockHeader: other.header }) }),
+    /hashes to .*\. A block is named by/,
+    "a real header for a different block is refused",
+  );
+
+  // And the honest case still passes, so the check has an exit.
+  const snap = await buildDiffSnapshot({ call: nodeServing() });
+  assert.equal(snap.height, BLOCK.height);
+});
+
+test("a header that was never mined is refused, so inventing one is not free", async () => {
+  // Naming the block only says the header is self-consistent with the hash claimed for it. A node is
+  // free to invent a header and claim its hash, so proof of work is what puts a price on it.
+  //
+  // Built by taking the real header and moving its nonce, which destroys the work while leaving every
+  // other field exactly as the chain has it. The node then reports the hash of that header as the
+  // ChainLocked one, so the identity check above passes and this one is what refuses.
+  const forged = Buffer.from(BLOCK.blockHeader, "hex");
+  forged.writeUInt32LE(0x0badf00d, 76);
+  const forgedHex = forged.toString("hex");
+  const forgedHash = blockHashFromHeader(forgedHex);
+  assert.notEqual(forgedHash, BLOCK.blockHash, "moving the nonce really does change the block's name");
+
+  const call = async (method) => {
+    if (method === "getbestchainlock") return { blockhash: forgedHash, height: BLOCK.height, known_block: true };
+    if (method === "protx") return { blockHash: forgedHash, mnList: BLOCK.mnList, cbTx: BLOCK.cbTx, cbTxMerkleTree: BLOCK.cbTxMerkleTree };
+    if (method === "getblockheader") return forgedHex;
+    throw new Error(`unexpected call ${method}`);
+  };
+  await assert.rejects(() => buildDiffSnapshot({ call }), /does not meet the proof of work/);
+});
+
+test("every real header in the fixture set meets its own proof of work", () => {
+  // The refusal above is only worth having if it never fires on a real block. These span the chain
+  // from genesis to the current tip, across every difficulty era Dash has had.
+  const cases = JSON.parse(
+    readFileSync(fileURLToPath(new URL("./vectors/x11_round_vectors.json", import.meta.url)), "utf8"),
+  ).blockHashes.cases;
+  for (const c of cases) {
+    assert.equal(meetsProofOfWork(c.header), true, `height ${c.height}`);
+  }
 });
