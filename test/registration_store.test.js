@@ -4,7 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { writeFile, readFile } from "node:fs/promises";
-import { mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import {
   RegistrationStore,
   MemoryRegistrationBackend,
@@ -391,7 +391,15 @@ test("a sync error after the bytes land does not let a retry write the registrat
     const backend = new FileBackend(path, null, false, { open: faultingOpen });
     await backend.ready();
     const record = { season: 1, contextHash: "c", regNullifier: "n1", commitment: "m1", engine: "plonk", statement: "derive" };
-    await assert.rejects(() => backend.append(record), /simulated sync failure/, "the caller is told the write failed");
+    // THE WRITE SUCCEEDED, AND ONLY ITS CONFIRMATION FAILED, so this resolves rather than rejecting.
+    // An earlier version of this test asserted a rejection, and two reviewers showed that expectation
+    // was the defect rather than the behaviour. Reporting failure for a record that IS durable is
+    // wrong twice: the member is refused although they are registered, and the caller never appends
+    // the commitment to the live members tree, so the tree serves a root missing a member the store
+    // holds on disk until a restart rebuilds it.
+    const first = await backend.append(record);
+    assert.equal(first.duplicate, false, "the record landed, so this is a commit and not a duplicate");
+    assert.equal(first.index, 0, "and it carries the index the record on disk actually has");
 
     // THE RETRY IS THE POINT. It must not append a second copy.
     const retry = await backend.append(record);
@@ -442,6 +450,93 @@ test("two records for one key that DISAGREE are refused, because neither can be 
 
     const backend = new FileBackend(path, null, false);
     await assert.rejects(() => backend.ready(), /repeats registration key .* with different content/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a reload that fails leaves the store as usable as it was, rather than wedging it", async () => {
+  // Two reviewers reproduced this independently. The first version of the reread emptied the index and
+  // memoized the load promise BEFORE reading, so a read that failed left the store with no index and a
+  // rejected promise that ready() would never replace, because it only rebuilds when the promise is
+  // falsy and a rejected promise is truthy. Every later call threw that same stale error for the rest
+  // of the process lifetime.
+  const dir = mkdtempSync(join(tmpdir(), "reg-reload-"));
+  const path = join(dir, "registrations.jsonl");
+  try {
+    const backend = new FileBackend(path, null, false);
+    await backend.ready();
+    await backend.append({ season: 1, contextHash: "c", regNullifier: "n1", commitment: "m1", engine: "plonk", statement: "derive" });
+
+    // A read failure during a reload, then the file becomes readable again.
+    let failNextRead = true;
+    const realReadFile = readFile;
+    const backendWithFlakyRead = new FileBackend(path, null, false, {
+      readFile: async (...args) => {
+        if (failNextRead) {
+          failNextRead = false;
+          throw Object.assign(new Error("simulated read failure"), { code: "EIO" });
+        }
+        return realReadFile(...args);
+      },
+    });
+    await assert.rejects(() => backendWithFlakyRead.ready(), /simulated read failure/);
+
+    // The store must recover on the next call rather than repeating the stale error forever.
+    const recovered = await backendWithFlakyRead.forSeasonContext(1, "c");
+    assert.equal(recovered.length, 1, "the index rebuilt once the file was readable again");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a duplicate written at a different index still loads, because the index is not the registration", async () => {
+  // A reviewer reproduced this exact file from an honest interrupted write on an older build. K's
+  // bytes land, the sync errors, the in-memory index never learns it, a DIFFERENT registration M
+  // succeeds and takes position 0, and the member's retry for K then computes index 1. The file holds
+  // K at 0, M at 0, and K at 1.
+  //
+  // Comparing the stored index as part of identity made that file unloadable, so the gateway refused
+  // to start on state that is perfectly recoverable, which is the opposite of what the duplicate
+  // handling is for. The index is a position this process assigned, not part of what the registration
+  // means, and the four identity fields plus the commitment are what decide whether admitting both
+  // would admit the same member twice.
+  const dir = mkdtempSync(join(tmpdir(), "reg-dupidx-"));
+  const path = join(dir, "registrations.jsonl");
+  try {
+    const K = { season: 1, contextHash: "c", regNullifier: "nK", commitment: "mK", engine: "plonk", statement: "derive" };
+    const M = { season: 1, contextHash: "c", regNullifier: "nM", commitment: "mM", engine: "plonk", statement: "derive" };
+    writeFileSync(path, [
+      JSON.stringify({ ...K, index: 0 }),
+      JSON.stringify({ ...M, index: 0 }),
+      JSON.stringify({ ...K, index: 1 }),
+      "",
+    ].join("\n"));
+
+    const backend = new FileBackend(path, null, false);
+    await backend.ready(); // must not throw
+    const recs = await backend.forSeasonContext(1, "c");
+    assert.equal(recs.length, 2, "two distinct registrations survive, and the repeated one collapsed");
+    assert.deepEqual(recs.map((r) => r.regNullifier).sort(), ["nK", "nM"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("but two records sharing a key while disagreeing on the registration are still refused", async () => {
+  // The other half. Differing content under one key is corruption this cannot resolve, and picking
+  // one would be inventing an answer, so the refusal stays.
+  const dir = mkdtempSync(join(tmpdir(), "reg-dupbad-"));
+  const path = join(dir, "registrations.jsonl");
+  try {
+    const base = { season: 1, contextHash: "c", regNullifier: "nK", engine: "plonk", statement: "derive" };
+    writeFileSync(path, [
+      JSON.stringify({ ...base, commitment: "mK", index: 0 }),
+      JSON.stringify({ ...base, commitment: "DIFFERENT", index: 1 }),
+      "",
+    ].join("\n"));
+    const backend = new FileBackend(path, null, false);
+    await assert.rejects(() => backend.ready(), /different content/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

@@ -1241,6 +1241,15 @@ async function bootGateway({ config = buildConfig(process.env) } = {}, release) 
         const pending = challenges.take(nonce);
         if (!pending) return send(res, 410, { ok: false, reason: "unknown-or-expired-challenge" });
 
+        // HOLD THE ROOT FOR THE WHOLE VERIFY. Taking the challenge removed it from the pending map,
+        // and the pin the leaf bound consults came from that map, so the root became evictable at the
+        // exact moment the expensive work began. The proof check yields the event loop for its whole
+        // duration, which is the longest window a refresh has to evict the ground from under it, and
+        // the member would then be refused stale-or-unknown-root with the nonce already spent. That
+        // left review finding F4 half closed while reading as closed, and a reviewer reproduced it.
+        const releaseRoot = challenges.hold(pending.root);
+        try {
+
         // The submitted account must equal the account the challenge was minted for, checked here
         // before the proof verify and the nullifier spend, so a relayed proof cannot grant the relayer
         // or burn the real owner's epoch (review finding B1). With MNO_ADAPTER_SECRET set, the account
@@ -1338,6 +1347,12 @@ async function bootGateway({ config = buildConfig(process.env) } = {}, release) 
         // regranted is true when this was an idempotent re-verify of an already-spent tag by the same
         // account (its adapter recovering from a failed first grant), so an adapter can log the recovery.
         return send(res, 200, { ok: true, account: pending.account, epoch: result.epoch, expiresAt, regranted: result.regranted === true });
+        } finally {
+          // Released on every path out, including the shed-load return and any throw, because a hold
+          // that leaks would pin a root for the life of the process and turn the leaf bound into one
+          // an ordinary request can defeat.
+          releaseRoot();
+        }
       }
 
       if (twoTier && req.method === "POST" && path === "/v1/register") {

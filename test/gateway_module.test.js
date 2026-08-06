@@ -782,3 +782,47 @@ test("a minted challenge pins the root it named, so the leaf bound cannot evict 
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("the root stays pinned through the verify, not only until the challenge is taken", async () => {
+  // Review finding F4, second half. The first fix pinned roots named by PENDING challenges, and taking
+  // the challenge is the first thing the verify handler does, so the root came unpinned at the exact
+  // moment the expensive proof check began. That check yields the event loop for its whole duration,
+  // which is the longest window a refresh has to evict the root, and the member would be refused with
+  // the nonce already spent. A reviewer reproduced it. The pin now spans the whole request.
+  const { dir, env } = await envWithSnapshot();
+  const gateway = await createGateway({ config: buildConfig(env) });
+  try {
+    const port = await gateway.listen(0);
+    const base = `http://127.0.0.1:${port}`;
+    const minted = await post(base, "/v1/challenge", { platform: "p", communityId: "c", roleId: "r", account: "alice" });
+    assert.equal(minted.status, 200);
+    const root = minted.body.root;
+
+    // While the challenge is outstanding it is pinned by the pending map.
+    assert.ok(gateway.state.challenges.pinnedRoots().has(root));
+
+    // Taking it by hand, as the verify handler does, and holding it as the handler now does.
+    const taken = gateway.state.challenges.take(minted.body.nonce);
+    assert.ok(taken, "the challenge was outstanding");
+    assert.equal(gateway.state.challenges.pinnedRoots().has(root), false, "the pending map alone no longer covers it");
+
+    const release = gateway.state.challenges.hold(taken.root);
+    assert.ok(gateway.state.challenges.pinnedRoots().has(root), "the hold is what covers the verify window");
+    release();
+    assert.equal(gateway.state.challenges.pinnedRoots().has(root), false, "and the hold is released when the request ends");
+
+    // Two verifies against one root: the first to finish must not unpin it for the second.
+    const a = gateway.state.challenges.hold(root);
+    const b = gateway.state.challenges.hold(root);
+    a();
+    assert.ok(gateway.state.challenges.pinnedRoots().has(root), "still held by the second request");
+    b();
+    assert.equal(gateway.state.challenges.pinnedRoots().has(root), false);
+    // Releasing twice is harmless, which matters because the handler releases in a finally.
+    b();
+    assert.equal(gateway.state.challenges.pinnedRoots().has(root), false);
+  } finally {
+    await gateway.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});

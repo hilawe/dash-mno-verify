@@ -109,9 +109,13 @@ export class RegistrationStore {
 function declarationOfRecord(record) {
   return { engine: record.engine ?? DEFAULT_ENGINE, statement: record.statement ?? DEFAULT_STATEMENT };
 }
-// Two loaded records for one key are the same registration only if they agree on everything that
-// record carries. Comparing the fields explicitly rather than by serialization, so a difference in key
-// order or a field added later cannot read as a mismatch.
+// Two loaded records for one key are the same registration when they agree on what the registration
+// IS. The stored `index` is deliberately NOT part of that: it is a position this process assigned, not
+// something the registration means, and a retry after a reload can legitimately compute a different
+// one when another registration took the position in between. Comparing it turned an honest
+// interrupted write into a file the gateway refuses to start on, which is the opposite of what the
+// duplicate handling exists for, and a reviewer reproduced exactly that sequence. The fields compared
+// are the ones that decide whether admitting both would admit the same member twice.
 function sameRegistrationRecord(a, b) {
   return (
     String(a.season) === String(b.season) &&
@@ -119,8 +123,7 @@ function sameRegistrationRecord(a, b) {
     String(a.regNullifier) === String(b.regNullifier) &&
     String(a.commitment) === String(b.commitment) &&
     String(a.engine ?? "") === String(b.engine ?? "") &&
-    String(a.statement ?? "") === String(b.statement ?? "") &&
-    Number(a.index) === Number(b.index)
+    String(a.statement ?? "") === String(b.statement ?? "")
   );
 }
 
@@ -206,10 +209,13 @@ export class FileBackend {
   // sequence F3 describes, so a test that cannot create it can only assert the fix by reading it. The
   // default is the real thing and no production path passes anything else, the same shape the
   // verifier's injectable proof check already uses.
-  constructor(path, schedule = null, assumeSchedule = false, { open: openFile = open } = {}) {
+  constructor(path, schedule = null, assumeSchedule = false, { open: openFile = open, readFile: readFileImpl = readFile } = {}) {
     this.path = path;
     this.schedule = schedule;
     this.assumeSchedule = assumeSchedule;
+    // Injected alongside `open` for the same reason: the recovery paths here are defined by what
+    // happens when the filesystem fails, and a test cannot drive that without standing in for it.
+    this._readFile = readFileImpl;
     this.openFile = openFile;
     this.seen = new Set();
     this.byBucket = new Map(); // "season:contextHash" -> records[] in insertion order
@@ -220,17 +226,46 @@ export class FileBackend {
   // Load the file once. Memoizing the in-flight promise keeps two concurrent first-callers from
   // both reading the file and double-populating the in-memory index.
   ready() {
-    if (!this._loading) this._loading = this.#load();
+    if (!this._loading) {
+      // A FAILED LOAD IS NOT MEMOIZED. Holding the rejected promise wedged the store for the rest of
+      // the process: ready() only rebuilds when `_loading` is falsy and a rejected promise is truthy,
+      // so a transient read error meant every later call threw that same stale error forever, even
+      // once the file was readable again. Two reviewers reached this independently from the reload
+      // path; the same defect lives here, one level up, which is why it is fixed here.
+      const attempt = this.#load();
+      this._loading = attempt;
+      attempt.catch(() => {
+        if (this._loading === attempt) this._loading = null;
+      });
+    }
     return this._loading;
   }
 
   // Rebuild the in-memory index from the file. Used after an uncertain write, so a retry decides
   // against what is actually on disk rather than against what this process believes.
+  //
+  // THE INDEX IS NOT CLEARED UNTIL THE READ SUCCEEDS. The first version emptied `seen` and `byBucket`
+  // and then memoized `#load()`, so a read that failed left the store with NO index and a rejected
+  // `_loading`. `ready()` only rebuilds when `_loading` is falsy and a rejected promise is truthy, so
+  // every later call threw that same error for the rest of the process lifetime, against an empty
+  // index. Two reviewers reproduced it independently. A reload that fails must leave the store
+  // exactly as usable as it was.
   async #reload() {
+    const priorSeen = this.seen;
+    const priorBuckets = this.byBucket;
+    const priorLoading = this._loading;
     this.seen = new Set();
     this.byBucket = new Map();
-    this._loading = this.#load();
-    return this._loading;
+    const attempt = this.#load();
+    this._loading = attempt;
+    try {
+      await attempt;
+    } catch (err) {
+      this.seen = priorSeen;
+      this.byBucket = priorBuckets;
+      this._loading = priorLoading;
+      throw err;
+    }
   }
 
   async #load() {
@@ -238,7 +273,7 @@ export class FileBackend {
     let duplicatesCollapsed = 0;
     let raw = "";
     try {
-      raw = await readFile(this.path, "utf8");
+      raw = await this._readFile(this.path, "utf8");
     } catch (err) {
       if (err.code !== "ENOENT") throw err;
     }
@@ -481,13 +516,26 @@ export class FileBackend {
         await fh.close();
       }
     } catch (err) {
+      // THE REREAD DECIDES WHETHER THIS WAS A FAILURE AT ALL. If the record reached the file, the
+      // write SUCCEEDED and only its confirmation failed, so reporting failure would be wrong twice
+      // over: the member is refused although they are registered, and the caller never appends the
+      // commitment to the live members tree, so the tree serves a root missing a member it holds
+      // durably until the next restart rebuilds it. Two reviewers found that independently, one of
+      // them noting the earlier comment here claimed the retry would be treated as success when the
+      // caller in fact answers already-registered.
+      //
+      // So the reread is the arbiter. Landed means success, with the index the record actually
+      // carries. Absent means the write really did fail and the original error is what the caller
+      // needs to see.
+      let landed = null;
       try {
         await this.#reload();
+        landed = (this.byBucket.get(bucketOf(d)) ?? []).find((r) => keyOf(r) === k) ?? null;
       } catch {
-        // A reread that itself fails leaves the index as it was, which is the state that made the
-        // duplicate possible. The load path refuses or collapses a duplicate key, so the outcome is
-        // bounded either way, and hiding the original write error behind a read error would be worse.
+        // A reread that itself fails leaves the store exactly as usable as it was (see #reload), and
+        // the write remains genuinely uncertain, so the original error is still the right answer.
       }
+      if (landed) return { duplicate: false, index: landed.index };
       throw err;
     }
     this.#remember(record);

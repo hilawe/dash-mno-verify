@@ -601,14 +601,43 @@ export class ChallengeStore {
     this.ttl = ttlSeconds * 1000;
     this.maxPending = maxPending;
     this.pending = new Map();
+    this.held = new Map(); // root -> count of verifies in flight against it
   }
   // The roots live challenges were minted against, for the root window's pinning. Expired entries are
   // swept first, so a root is not held open by a challenge that can no longer be used.
+  // The roots that must not be evicted: those named by challenges still outstanding, AND those named
+  // by verifies currently in flight.
+  //
+  // THE SECOND SET IS THE ONE THAT MATTERS MOST, and the first version of this left it out. Taking a
+  // challenge removes it from `pending`, so the root became unpinned at the instant the verify began,
+  // and the expensive proof check that follows yields the event loop for its whole duration. That is
+  // the longest and likeliest window for a refresh to evict the root underneath it, so the pin
+  // covered challenge-to-submit and left submit-to-verdict exactly as exposed as before. A reviewer
+  // reproduced the sequence. `hold()` is what keeps the root through the verify, and the handler
+  // releases it in a finally.
   pinnedRoots() {
     this.sweep();
     const roots = new Set();
     for (const v of this.pending.values()) if (v.root != null) roots.add(v.root);
+    for (const root of this.held.keys()) roots.add(root);
     return roots;
+  }
+
+  // Hold a root for the duration of one in-flight verify. Returns the release function, so the caller
+  // cannot hold it without also having the means to let it go. Counted rather than a plain set,
+  // because two verifies can legitimately be in flight against one root and the first to finish must
+  // not release it for the second.
+  hold(root) {
+    if (root == null) return () => {};
+    this.held.set(root, (this.held.get(root) ?? 0) + 1);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const n = (this.held.get(root) ?? 1) - 1;
+      if (n > 0) this.held.set(root, n);
+      else this.held.delete(root);
+    };
   }
   // Returns false when the store is full, so the gateway can shed load rather than let the map grow
   // without bound. A full sweep of expired entries is tried first, so the cap only bites under a
