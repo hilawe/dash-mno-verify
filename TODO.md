@@ -887,3 +887,13 @@ against live Platform.
   covered only by property tests, and the two-block padding branches of BMW and Grostl (reached by a
   final partial block with a tail of 120 to 127 bytes) are not exercised at all.
   (`test/vectors/x11_round_vectors.json`, `test/x11_rounds.test.js`)
+
+- [ ] `chainlocked: true` in the node-read snapshot asserts more than anything verifies (2026-08-05,
+  external review P2). The field says the read was ChainLock-gated, and what actually happened is
+  that the same node was asked for a ChainLock and answered. No ChainLock signature is checked
+  against the signing quorum, so the field records the node's claim rather than a verified fact, and
+  a consumer reading the JSON cannot tell the difference. Either verify the signature, or rename the
+  field to say what it is. Related: a real stale or orphaned block at the claimed current height
+  passes every check today, since it carries real work, a valid coinbase commitment, and the expected
+  height, and it could admit a masternode valid on the orphaned branch but not on the ChainLocked
+  chain. (`oracle/diff_snapshot.js`)

@@ -267,12 +267,23 @@ function compress(state, x, q, w, saved, last) {
 // that shift off the low word carry into the high word.
 function encodeCount(dst, countLow, countHigh, ptr) {
   const low = (countLow << 10) >>> 0;
-  // THE CARRY COMES FROM countLow, NOT FROM low. `low` has already been truncated to 32 bits, so
-  // `low >>> 22` reads bits 12 to 21 of the count rather than the bits that shifted off the top. The
-  // encoding was then both wrong and non-injective, which is wrong under any convention: a 512 MiB
-  // message encoded its length identically to an empty one. It bites from 512 KiB of input upward, so
-  // no vector here reaches it and X11 never does either, since it hands this function 64 bytes.
-  const high = (((countHigh << 10) >>> 0) + (countLow >>> 22)) >>> 0;
+  // THE SHIFT IS ON THE TRUNCATED `low`, AND THAT IS DELIBERATE. It reads like a carry that should
+  // come from `countLow`, and mathematically it would: `low` is already reduced to 32 bits, so
+  // `low >>> 22` takes bits 12 to 21 of the count rather than the bits that shifted off the top, and
+  // the resulting length encoding is not injective. A 512 MiB message encodes its length exactly like
+  // an empty one.
+  //
+  // THE REFERENCE DOES THIS, so the port does too. Dash's own simd.c reassigns low before the shift:
+  //
+  //     low = T32(low << 10);
+  //     high = T32(high << 10) + (low >> 22);
+  //
+  // This was "fixed" once to take the carry from countLow, on a review finding that reasoned from the
+  // non-injectivity rather than from the source. An external pass compiled the reference and measured
+  // the divergence at 524,288 bytes. A consensus hash is defined by what the network computes, not by
+  // what is mathematically tidier, so matching the quirk IS correctness here. Do not change it without
+  // a reference run that says the reference changed.
+  const high = (((countHigh << 10) >>> 0) + (low >>> 22)) >>> 0;
   const lowWithPtr = (low + (ptr << 3)) >>> 0;
   for (let i = 0; i < 4; i++) {
     dst[i] = (lowWithPtr >>> (8 * i)) & 0xff;

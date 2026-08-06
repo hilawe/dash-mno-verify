@@ -55,10 +55,18 @@ The author-side three-agent stage ran on 2026-08-05 and caught first, again. Wha
   `c5076f6`. Dash's own CheckProofOfWork refuses a target above consensus.powLimit for exactly this
   reason, and powLimit is a CONSENSUS CONSTANT, not the operator judgement the code called it. Fixed,
   with the floor at mainnet's powLimit, and all eleven real headers still pass.
-- **A real bug in SIMD's length encoding.** The carry into the high word was taken from an
-  already-truncated value, so the encoding was non-injective: a 512 MiB message encoded its length
-  identically to an empty one. Not reachable through block hashing, which hands SIMD 64 bytes, but
-  `simd512` is exported. Fixed.
+- **A SIMD "bug" that was not one, and the fix had to be reverted.** The stage reported that the
+  carry into the length's high word came from an already-truncated value, making the encoding
+  non-injective, and it was right about the mathematics: a 512 MiB message encodes its length exactly
+  like an empty one. It was changed on that reasoning WITHOUT checking the reference, and the external
+  pass then compiled Dash's own simd.c and measured the divergence at 524,288 bytes. The reference
+  reassigns `low` before the shift and has the same quirk, so the "fix" made the port disagree with
+  consensus. Reverted, with the reference quoted in the file so it is not fixed again.
+
+  THE LESSON, which cost a commit. A finding about ported consensus code is a claim about the
+  REFERENCE, not about what is mathematically tidy, and it has to be checked against the reference
+  before it is acted on. The reference was two directories away the whole time. Verify against the
+  authority, not the argument.
 - **A surviving mutation in Grostl.** Replacing its multi-block absorb loop with a single-block branch
   left the entire suite green while the function returned one constant digest for every input from
   384 bytes up. No committed vector exceeds 128 bytes. Covered now by a property test that needs no
@@ -68,9 +76,18 @@ The author-side three-agent stage ran on 2026-08-05 and caught first, again. Wha
   and committing the generator is an open item.
 - **Stale and overstated claims**, in `dml_commitment.js`, its test file, `CLAUDE.md`, and this file.
 
-WHAT THE ROUND DID NOT COVER. The external pass with repository access was still running when the
-session ended. The three-agent stage is a screen and not a substitute for it, so the next session
-should read that result before treating this as reviewed.
+THE EXTERNAL PASS WITH REPOSITORY ACCESS THEN RAN, and it did two things worth separating. It
+confirmed the powLimit blocker independently, and it caught the SIMD revert above. It also validated
+the X11 port far more strongly than anything here had: all 110 committed per-round vectors matched
+the compiled Dash Core reference, a fresh deterministic differential run made 1,694 comparisons across
+all eleven rounds from 0 to 300 bytes with every one matching, all eleven stored block headers matched
+an INDEPENDENT WebAssembly X11 implementation, and 500 interleaved calls found no shared state or
+input mutation. It found no defect in the eleven-round path.
+
+Its remaining open point is P2, that `chainlocked: true` is asserted in the snapshot while nothing
+verifies a ChainLock signature, and that a real orphan at the current height is a third residual
+distinct from the two the code names. The orphan residual is now written into the code. The
+`chainlocked` field is NOT yet addressed and is the first thing to pick up.
 
 ### ORIGINALLY RECORDED AS NOT YET REVIEWED
 
