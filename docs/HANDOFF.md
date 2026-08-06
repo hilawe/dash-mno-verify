@@ -20,9 +20,11 @@ reference that ships with Dash Core.
 Verified three ways, which matters because this is new cryptographic code:
 
 1. Every round against vectors generated from that reference compiled unmodified in a container.
-2. A differential run of 134 random inputs from 0 to 300 bytes across all eleven rounds, 1,474
-   comparisons against the reference, no mismatch. The fixed vectors stop at 128 bytes, so the random
-   set is what covers multi-block inputs and block-count carries.
+2. A differential run of 134 random inputs against the reference was performed during development
+   and reported no mismatch, but ITS HARNESS WAS NEVER COMMITTED, so nothing in the repository can
+   re-run or falsify it. Treat it as an unverified claim rather than as evidence, and commit the
+   generator if it is to count. The committed vectors stop at 128 bytes, which leaves the multi-block
+   paths of several rounds covered only by property tests.
 3. The composed chain reproducing the block hash of eleven real mainnet headers, block 1 to the tip.
    That third one is separate on purpose: eleven correct rounds assembled in the wrong order satisfy
    every per-round vector and still name no block correctly.
@@ -42,7 +44,35 @@ the hash to meet the proof of work the header's own target declares. Live read a
   compared against the ChainLock height, but both come from the same node in one read, so that catches
   an inconsistent replay and not a consistent one.
 
-### NOT YET REVIEWED
+### THE REVIEW ROUND RAN, AND IT FOUND A BLOCKER IN THE HEADLINE CLAIM
+
+The author-side three-agent stage ran on 2026-08-05 and caught first, again. What it found:
+
+- **BLOCKER, the proof of work was free to pass.** `meetsProofOfWork` checked the hash against the
+  target the header declares and applied no floor, so the node chose the target as well as the
+  header. Reproduced: an all-zero 80-byte header declaring nBits 0x220000ff passed, at a cost of one
+  hash. The whole claim that this change made forging a block cost mining was FALSE as shipped in
+  `c5076f6`. Dash's own CheckProofOfWork refuses a target above consensus.powLimit for exactly this
+  reason, and powLimit is a CONSENSUS CONSTANT, not the operator judgement the code called it. Fixed,
+  with the floor at mainnet's powLimit, and all eleven real headers still pass.
+- **A real bug in SIMD's length encoding.** The carry into the high word was taken from an
+  already-truncated value, so the encoding was non-injective: a 512 MiB message encoded its length
+  identically to an empty one. Not reachable through block hashing, which hands SIMD 64 bytes, but
+  `simd512` is exported. Fixed.
+- **A surviving mutation in Grostl.** Replacing its multi-block absorb loop with a single-block branch
+  left the entire suite green while the function returned one constant digest for every input from
+  384 bytes up. No committed vector exceeds 128 bytes. Covered now by a property test that needs no
+  reference, since a hash mapping every long input to one value is wrong under any convention.
+- **The differential fuzz was prose, not evidence.** Claimed in three files, harness never committed,
+  so nothing could re-run or falsify it. The claims now say what the repository can actually support,
+  and committing the generator is an open item.
+- **Stale and overstated claims**, in `dml_commitment.js`, its test file, `CLAUDE.md`, and this file.
+
+WHAT THE ROUND DID NOT COVER. The external pass with repository access was still running when the
+session ended. The three-agent stage is a screen and not a substitute for it, so the next session
+should read that result before treating this as reviewed.
+
+### ORIGINALLY RECORDED AS NOT YET REVIEWED
 
 This landed at the end of a session and has had NO review round. Two thousand lines of new
 cryptographic code, eight files of it written by parallel agents against the reference, plus the

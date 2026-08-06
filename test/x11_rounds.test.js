@@ -13,6 +13,7 @@
 // rounds are right from one whose composition is right; passing the rounds and failing the blocks
 // means the chain is assembled wrongly, which no single end-to-end test could tell apart.
 import { test } from "node:test";
+import { meetsProofOfWork, targetFromBits, MAINNET_POW_LIMIT } from "../oracle/proof_of_work.js";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -127,4 +128,49 @@ test("x11 returns the internal byte order, and the block hash is its reverse", (
   const internal = Buffer.from(x11(Buffer.from(c.header, "hex")));
   assert.equal(internal.length, 32);
   assert.equal(Buffer.from(internal).reverse().toString("hex"), c.hash);
+});
+
+test("the proof of work floor is the network's, not the header's, so a self-chosen target is refused", () => {
+  // THE BLOCKER AN AUTHOR-SIDE REVIEW FOUND, reproduced here. Checking the hash against the target the
+  // header declares, with no floor, lets the node choose the target as well as the header. It declares
+  // an almost-maximal target and any header at all satisfies it, for the cost of one hash. The check
+  // read as "real work went into this block" and meant nothing of the kind.
+  //
+  // Dash's own CheckProofOfWork refuses a target above consensus.powLimit for this reason, and
+  // powLimit is a consensus constant rather than a number an operator picks.
+  const free = Buffer.alloc(80);
+  free.writeUInt32LE(0x220000ff, 72); // a target the node chose for itself, near the whole range
+  assert.equal(meetsProofOfWork(free), false, "an all-zero header with a self-chosen target is refused");
+
+  // The floor is where the network puts it. A target exactly at powLimit is allowed, one past it is
+  // not, so the guard has an exit rather than being a wall.
+  assert.equal(targetFromBits(0x1e0ffff0) <= MAINNET_POW_LIMIT, true, "powLimit's own compact form sits at the floor");
+  // A bigger EXPONENT is what makes a target easier here. Raising the mantissa's low nibble makes it
+  // smaller, which the first version of this assertion had backwards.
+  assert.equal(targetFromBits(0x1f0ffff0) > MAINNET_POW_LIMIT, true, "and one exponent easier is over the floor");
+
+  // And every real header still passes, which is the half that matters more: a floor set wrong in the
+  // other direction refuses the entire chain.
+  for (const c of VECTORS.blockHashes.cases) {
+    assert.equal(meetsProofOfWork(c.header), true, `real header at height ${c.height}`);
+  }
+});
+
+test("groestl absorbs every block of a long input, not just the first", () => {
+  // A mutation an author-side review found surviving: replacing the multi-block absorb loop with a
+  // single-block branch left the whole suite green, while groestl512 returned ONE CONSTANT digest for
+  // every input from 384 bytes upward. No committed vector exceeds 128 bytes and X11 hands each round
+  // at most 80, so nothing reached it.
+  //
+  // This needs no reference to state, because a hash that maps every long input to the same value is
+  // wrong under any convention. Distinct inputs must produce distinct digests.
+  const sizes = [384, 400, 500, 1024];
+  const digests = sizes.map((n) => Buffer.from(groestl512(Buffer.alloc(n, 0xab))).toString("hex"));
+  assert.equal(new Set(digests).size, sizes.length, `long inputs must not collide, got ${new Set(digests).size} distinct of ${sizes.length}`);
+
+  // And content matters at those sizes too, not only length.
+  const a = Buffer.alloc(512, 1);
+  const b = Buffer.alloc(512, 1);
+  b[500] ^= 0xff;
+  assert.notEqual(Buffer.from(groestl512(a)).toString("hex"), Buffer.from(groestl512(b)).toString("hex"));
 });

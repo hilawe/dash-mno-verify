@@ -338,9 +338,10 @@ follow-up below.
 
   DONE by implementing X11. `common/x11/` holds the eleven rounds, ported from the reference that
   ships with Dash Core and verified three ways: every round against vectors generated from that
-  reference compiled unmodified, a differential run of 134 random inputs across all eleven with no
-  mismatch, and the composed chain reproducing the block hash of real mainnet headers from block 1 to
-  the current tip. The read now hashes the header, requires it to equal the block hash the ChainLock
+  reference compiled unmodified, and the composed chain reproducing the block hash of real mainnet
+  headers from block 1 to the current tip. A differential run of 134 random inputs was performed
+  during development and reported no mismatch, but its harness was not committed, so it is a claim
+  rather than evidence until it is. The read now hashes the header, requires it to equal the block hash the ChainLock
   named, and requires that hash to meet the proof of work the header's own target declares.
 
   TWO RESIDUALS REMAIN, and neither is closed by this. The target is read from the header, so the work
@@ -874,3 +875,15 @@ configuration (DAPI is the decentralized API that fronts Platform). Once those e
 `scripts/register_contract.mjs` deploys the contract and the gateway runs with
 `MNO_STORE=platform`. Until then the Platform backend is wired and logic-tested but unproven
 against live Platform.
+
+- [ ] Commit the X11 vector generator and the differential fuzz harness (2026-08-05). The round
+  vectors were produced by compiling the reference that ships with Dash Core in a container, and a
+  differential run of 134 random inputs was performed against it, but neither the harness nor the
+  pinned Dash Core revision was committed. So the vectors cannot be re-derived by anyone, and the
+  fuzz cannot be re-run or falsified at all. An external reviewer reached both points independently.
+  Commit the generator, the container recipe, and the revision, and either commit the fuzz or stop
+  claiming it. Related coverage gaps found by the same round, all cheap once the generator is in:
+  no committed vector exceeds 128 bytes, so the multi-block absorb paths of several rounds are
+  covered only by property tests, and the two-block padding branches of BMW and Grostl (reached by a
+  final partial block with a tail of 120 to 127 bytes) are not exercised at all.
+  (`test/vectors/x11_round_vectors.json`, `test/x11_rounds.test.js`)

@@ -8,10 +8,11 @@
 // part in the root that build reproduced, which is what makes their expected bytes authoritative
 // rather than a restatement of this implementation.
 //
-// WHAT THESE TESTS DO NOT ESTABLISH, said here so a reader of the suite is not misled: nothing here
-// proves a header belongs to the chain. A Dash block is identified by its X11 hash and this build
-// implements no X11, so a fabricated header, coinbase, and list that agree with each other satisfy
-// every assertion below. The module says the same in its own header comment.
+// WHAT THESE TESTS DO NOT ESTABLISH, said here so a reader of the suite is not misled. Nothing in
+// this file proves a header belongs to the chain, so a fabricated header, coinbase, and list that
+// agree with each other satisfy every assertion below. That is a property of the module under test
+// rather than a gap in the system: the read path names the header with X11 and checks its proof of
+// work, and test/diff_snapshot.test.js covers that.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";

@@ -26,17 +26,18 @@
 //
 // Against a DISHONEST node, most of it is now closed too. The header is hashed with X11 and must equal
 // the block hash the ChainLock named, so the header is the block the node claimed rather than one it
-// assembled, and the hash must meet the proof of work the header's own target declares, so inventing a
-// block costs mining rather than nothing.
+// assembled, and the hash must meet a proof of work no easier than the network's own powLimit, so
+// inventing a block costs real mining rather than nothing.
 //
-// TWO RESIDUALS REMAIN, both narrow and both stated where they are relied on. The target is read from
-// the header, so the work proven is work against the difficulty that header claims, not against the
-// difficulty the network was at, and a node willing to mine could offer a low-difficulty header.
-// Ruling that out means following the header chain to judge the difficulty, which is a light client,
-// or verifying the ChainLock signature against the signing quorum. And a node can REPLAY a real old
-// block, which passes every check here because it is real; the coinbase height is compared against the
-// ChainLock height, but both come from the same node in one read, so that catches an inconsistent
-// replay rather than a consistent one.
+// THREE RESIDUALS REMAIN, all stated where they are relied on. The target is floored at the network's
+// powLimit but is otherwise the header's own, and mainnet difficulty is many orders of magnitude
+// beyond that floor, so a block mined at powLimit costs real but comparatively modest work and would
+// pass. A node can REPLAY a real old block, which passes every check because it is real; the coinbase
+// height is compared against the ChainLock height, but both come from the same node in one read, so
+// that catches an inconsistent replay rather than a consistent one. And a stale or orphaned block at
+// the current height passes too, since it carries real work at a real difficulty and a plausible
+// height. All three close the same way, by following the header chain to judge the difficulty, which
+// is a light client, or by verifying the ChainLock signature against the signing quorum.
 //
 // CHAINLOCK IS THE GATE, and it is doing real work rather than being belt-and-braces. A ChainLocked
 // block cannot be reorged away, so pinning the read to one removes the reorg question entirely rather
@@ -240,15 +241,12 @@ export async function buildDiffSnapshot({
     //     work is what makes inventing one expensive: the hash has to fall below the target the
     //     header itself declares.
     //
-    //     WHAT THIS DOES NOT ESTABLISH, and it is the residual that remains after all of the above.
-    //     The target is read from the header, so the work proven is work against the difficulty THIS
-    //     header claims, not against the difficulty the network was actually at. A node willing to
-    //     mine could produce a low-difficulty header that passes. Ruling that out means either
-    //     following the header chain to judge the difficulty (a light client, and a much larger
-    //     piece of work) or verifying the ChainLock signature against the signing quorum. Neither is
-    //     started, and a difficulty floor is a configuration decision rather than something to invent
-    //     a default for here, since Dash retargets every block and a floor set too high refuses
-    //     legitimate blocks.
+    //     THE TARGET IS FLOORED AT THE NETWORK'S powLimit, which is a consensus constant rather than
+    //     an operator's judgement, and without it this check was worthless: the node would choose the
+    //     target as well as the header, so any header at all would pass for the cost of one hash.
+    //     Reproduced before it was fixed. What remains is that powLimit is the EASIEST target the
+    //     network ever allows, not the difficulty in force when the block was mined, so a header mined
+    //     at that floor costs real but modest work and passes.
     //
     //     A node can also REPLAY a real old block, which passes every check here because it is real.
     //     The height the coinbase names is compared against the ChainLock's height below, and both

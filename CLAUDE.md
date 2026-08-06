@@ -25,7 +25,8 @@ until the blockers in REVIEW_FINDINGS_dash-mno-verify_2026-06-26.md are closed.
     merkle root. The entry serialization was derived by reproducing the live mainnet commitment, not
     from the specification, and the file records the two heights it was confirmed at.
   - `proof_of_work.js` decodes the compact target in a header and checks the header's X11 hash against
-    it, which is what makes inventing a block cost mining.
+    it, refusing any target easier than the network's powLimit. The floor is what makes the check
+    worth anything: without it the node picks the target too and any header passes for one hash.
 - `circuits/` the five circom circuits. hash160, Merkle inclusion, the Semaphore-style signal binding,
   the single-tier membership circuit, and the two-tier registration and members circuits.
 - `prover/` the proving CLIs, single-tier (`prover.js`) and two-tier (`two_tier.js`).
@@ -50,9 +51,11 @@ until the blockers in REVIEW_FINDINGS_dash-mno-verify_2026-06-26.md are closed.
 - `contract/` the Dash Platform data contract (nullifier and registration document types).
 - `common/` shared encoding (context hash, signal hash, epoch and season math, DML leaf).
   - `common/x11/` the eleven rounds Dash chains to name a block, ported from the reference that ships
-    with Dash Core and verified against vectors generated from it, plus a differential run of 134
-    random inputs. The chain reproduces the block hash of real mainnet headers from block 1 to the
-    tip. Used by the direct-node read to prove a header IS the ChainLocked block.
+    with Dash Core and checked against vectors generated from it. The chain reproduces the block hash
+    of real mainnet headers from block 1 to the tip, which is the evidence that also covers the
+    composition order. Used by the direct-node read to prove a header IS the ChainLocked block. The
+    committed vectors stop at 128 bytes, so the multi-block paths of several rounds rest on property
+    tests rather than on vectors.
 
 ## Two proving designs
 

@@ -267,7 +267,12 @@ function compress(state, x, q, w, saved, last) {
 // that shift off the low word carry into the high word.
 function encodeCount(dst, countLow, countHigh, ptr) {
   const low = (countLow << 10) >>> 0;
-  const high = (((countHigh << 10) >>> 0) + (low >>> 22)) >>> 0;
+  // THE CARRY COMES FROM countLow, NOT FROM low. `low` has already been truncated to 32 bits, so
+  // `low >>> 22` reads bits 12 to 21 of the count rather than the bits that shifted off the top. The
+  // encoding was then both wrong and non-injective, which is wrong under any convention: a 512 MiB
+  // message encoded its length identically to an empty one. It bites from 512 KiB of input upward, so
+  // no vector here reaches it and X11 never does either, since it hands this function 64 bytes.
+  const high = (((countHigh << 10) >>> 0) + (countLow >>> 22)) >>> 0;
   const lowWithPtr = (low + (ptr << 3)) >>> 0;
   for (let i = 0; i < 4; i++) {
     dst[i] = (lowWithPtr >>> (8 * i)) & 0xff;

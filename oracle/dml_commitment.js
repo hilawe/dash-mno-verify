@@ -16,14 +16,16 @@
 //      block's coinbase rather than some other transaction the branch happens to carry.
 //   3. The branch reproduces the merkle root written in the block header supplied.
 //
-// WHAT IT DOES NOT PROVE. That the header is the block the node called ChainLocked. A Dash block is
-// identified by its X11 hash (`CBlockHeader::GetHash` calls `HashX11`), and this module implements
-// no X11, so a header cannot be checked against a block hash here. A node that fabricates a header,
-// a coinbase, and a list that agree with each other passes all three checks above. So this closes
-// the INCONSISTENT or BUGGY node, and it does not close the malicious one. Direct node mode remains
-// a trusted-node read until either the header is verified by X11 with its proof of work, or the
-// ChainLock signature is verified against the signing quorum, both of which are larger pieces of
-// work than this one and neither of which is started.
+// WHAT THIS MODULE DOES NOT PROVE, ON ITS OWN. That the header is the block the node called
+// ChainLocked. A Dash block is identified by its X11 hash (`CBlockHeader::GetHash` calls `HashX11`),
+// and nothing in THIS file hashes a header, so the three checks above are satisfied by a fabricated
+// header, coinbase, and list that agree with each other.
+//
+// THE CALLER CLOSES THAT. `oracle/diff_snapshot.js` names the header with `common/x11/` and requires
+// it to equal the ChainLocked block hash, and requires that hash to meet a proof of work no easier
+// than the network's limit. The residuals that remain after both are listed there. This file keeps
+// its own boundary narrow on purpose, since it is reachable from anywhere and a caller that skipped
+// the header check would be relying on less than it might assume.
 //
 // The DIP4 entry serialization below was not written from the specification. It was derived by
 // reproducing the live mainnet commitment, because a serialization that is subtly wrong produces a
