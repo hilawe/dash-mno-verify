@@ -49,3 +49,19 @@ every round only at those two lengths. The fuzz runs 0 to 300 bytes, which reach
 padding paths in Grøstl and BMW that no committed vector touches. Those paths are unreachable from
 X11 itself, so this is about the exported modules being correct for a caller that uses them for
 something else.
+
+## Where the anchor lives, and what runs without one
+
+`regenerate.sh` checks the reference's own composed chain against 11 real mainnet headers, block 1 of
+which points at the public Dash genesis hash. That is the anchor, and it is what catches the one
+failure this directory cannot catch by construction: `harness.cpp` and `common/x11/index.js` were
+written by the same author, so a CONSISTENT mistake in the round order would agree with itself and
+every per-round vector would still pass.
+
+`fuzz.sh` carries no such anchor. It compares round against round, and its handful of whole-chain
+comparisons are one author's ordering against the same author's ordering. It is the right tool for
+what it does, which is covering input lengths the vectors never reach, and it is not a check on the
+composition. Run `regenerate.sh` for that.
+
+Stated because a reviewer asked the question directly, and the honest answer is that the two scripts
+establish different things.

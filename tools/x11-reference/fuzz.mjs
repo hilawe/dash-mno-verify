@@ -13,9 +13,25 @@
 // The seed is printed on every run and accepted as an argument, so a failure is reproducible rather
 // than a story about something that happened once.
 import { spawn, spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { join } from "node:path";
+import { createHash } from "node:crypto";
 import { ROUNDS, x11 } from "../../common/x11/index.js";
 
-const IMAGE = process.env.X11REF_IMAGE ?? "x11ref:v23.1.3";
+// THE PIN AND THE IMAGE NAME COME FROM ONE PLACE. They were written out in four files, and the two
+// scripts disagreed: generate.mjs honoured DASH_TAG while fuzz.mjs hard-coded a tag, so
+// `DASH_TAG=vX ./fuzz.sh` built vX and then fuzzed the stale image. The name folds a hash of the
+// build inputs for the same reason build.sh does, so a changed harness or Dockerfile can never
+// resolve to an image built from the old ones.
+function resolveImage() {
+  const here = fileURLToPath(new URL(".", import.meta.url));
+  const tag = process.env.DASH_TAG ?? readFileSync(join(here, "PIN"), "utf8").trim();
+  const inputs = ["Dockerfile", "harness.cpp", "PIN"].map((f) => readFileSync(join(here, f))).join("");
+  const hash = createHash("sha256").update(inputs).digest("hex").slice(0, 12);
+  return `x11ref:${tag}-${hash}`;
+}
+const IMAGE = process.env.X11REF_IMAGE ?? resolveImage();
 // `docker` from PATH when it is there, falling back to the Homebrew location this project's Mac uses.
 // Hard-coding that path made the tooling work on exactly one machine, which for a harness whose whole
 // purpose is that someone else can re-derive the vectors is the wrong end to optimise.
@@ -28,9 +44,12 @@ function findDocker() {
 const DOCKER = findDocker();
 
 const args = process.argv.slice(2);
-const count = Number(args.find((a) => /^\d+$/.test(a)) ?? 128);
 const seedArg = args.indexOf("--seed");
 const seed = seedArg >= 0 ? Number(args[seedArg + 1]) : Math.floor(Math.random() * 2 ** 31);
+// The count is the first bare number that is NOT the seed's value. Scanning for any digit string
+// matched the seed first, so `--seed 200` silently ran 200 inputs and reported a seed nobody chose.
+const positional = args.filter((a, i) => /^\d+$/.test(a) && i !== seedArg + 1);
+const count = Number(positional[0] ?? 128);
 
 // A small deterministic generator, so a seed reproduces a run exactly. Math.random cannot be seeded,
 // and a fuzz failure nobody can reproduce is an anecdote.

@@ -9,8 +9,22 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { join } from "node:path";
+import { createHash } from "node:crypto";
 
-const IMAGE = process.env.X11REF_IMAGE ?? `x11ref:${process.env.DASH_TAG ?? "v23.1.3"}`;
+// THE PIN AND THE IMAGE NAME COME FROM ONE PLACE. They were written out in four files, and the two
+// scripts disagreed: generate.mjs honoured DASH_TAG while fuzz.mjs hard-coded a tag, so
+// `DASH_TAG=vX ./fuzz.sh` built vX and then fuzzed the stale image. The name folds a hash of the
+// build inputs for the same reason build.sh does, so a changed harness or Dockerfile can never
+// resolve to an image built from the old ones.
+function resolveImage() {
+  const here = fileURLToPath(new URL(".", import.meta.url));
+  const tag = process.env.DASH_TAG ?? readFileSync(join(here, "PIN"), "utf8").trim();
+  const inputs = ["Dockerfile", "harness.cpp", "PIN"].map((f) => readFileSync(join(here, f))).join("");
+  const hash = createHash("sha256").update(inputs).digest("hex").slice(0, 12);
+  return `x11ref:${tag}-${hash}`;
+}
+const IMAGE = process.env.X11REF_IMAGE ?? resolveImage();
 // `docker` from PATH when it is there, falling back to the Homebrew location this project's Mac uses.
 // Hard-coding that path made the tooling work on exactly one machine, which for a harness whose whole
 // purpose is that someone else can re-derive the vectors is the wrong end to optimise.
@@ -62,13 +76,39 @@ for (const name of roundNames) for (const hex of inputsFor(name)) requests.push(
 const answers = await batch(requests);
 if (answers.length !== requests.length) throw new Error(`asked for ${requests.length} digests, got ${answers.length}`);
 
+// COMPARED, NOT JUST REPLACED. The first version overwrote every digest and printed "wrote 110
+// vectors" with exit 0 whether or not they reproduced, so "all 110 reproduce" was a claim established
+// by a human remembering to run git diff afterwards. A reviewer corrupted a committed digest and
+// watched the script silently replace it and report success. The failing case has to look different
+// from the passing one in the script's OWN output, or the script is not the check.
 const vectors = {};
+const changed = [];
 let at = 0;
 for (const name of roundNames) {
-  vectors[name] = inputsFor(name).map((hex) => ({ in: hex, out: answers[at++] }));
+  vectors[name] = inputsFor(name).map((hex, i) => {
+    const out = answers[at++];
+    const before = existing.vectors[name][i].out;
+    if (before !== out) changed.push({ round: name, in: hex, before, after: out });
+    return { in: hex, out };
+  });
 }
 
 // Block cases, VERIFIED rather than regenerated.
+//
+// A MINIMUM COUNT, because the guard below only fires on a case that is present and disagrees, so an
+// EMPTY set passed it and printed "verified all 0 block cases" with exit 0. The one check protecting
+// the only external evidence here was disabled by deleting that evidence, which a reviewer
+// demonstrated. The number is the count committed when this was written; adding cases is fine and
+// losing them is not.
+const MIN_BLOCK_CASES = 11;
+if (!Array.isArray(existing.blockHashes?.cases) || existing.blockHashes.cases.length < MIN_BLOCK_CASES) {
+  console.error(
+    `the vectors file carries ${existing.blockHashes?.cases?.length ?? 0} block cases, fewer than the ` +
+      `${MIN_BLOCK_CASES} expected. They are the only evidence here that this repository did not ` +
+      `produce, and the round ORDER rests on them. Refusing rather than regenerating against nothing.`,
+  );
+  process.exit(1);
+}
 const blockRequests = existing.blockHashes.cases.map((c) => `x11 ${c.header}`);
 const blockAnswers = await batch(blockRequests);
 const reverseHex = (h) => Buffer.from(h, "hex").reverse().toString("hex");
@@ -103,5 +143,20 @@ const out = {
 };
 
 writeFileSync(VECTORS, JSON.stringify(out, null, 1) + "\n");
-console.log(`wrote ${roundNames.length} rounds, ${requests.length} vectors, from ${referenceTag} (${referenceCommit})`);
-console.log(`and verified all ${existing.blockHashes.cases.length} block cases against the same reference`);
+console.log(`${requests.length} vectors across ${roundNames.length} rounds, from ${referenceTag} (${referenceCommit})`);
+console.log(`${existing.blockHashes.cases.length} block cases verified against the same reference`);
+
+if (changed.length === 0) {
+  console.log("every committed digest reproduced. Nothing changed, which is the result worth having.");
+} else {
+  console.error(`\n${changed.length} DIGEST(S) CHANGED against what was committed:`);
+  for (const c of changed.slice(0, 10)) {
+    console.error(`  ${c.round} in=${c.in.slice(0, 32)}${c.in.length > 32 ? "..." : ""}`);
+    console.error(`    was ${c.before}`);
+    console.error(`    now ${c.after}`);
+  }
+  console.error("\nThe file has been written, so `git diff` shows exactly what moved. This is either a");
+  console.error("deliberate pin change, in which case commit the new digests alongside it, or something");
+  console.error("upstream answers differently now, which is worth understanding before anything else.");
+  process.exit(1);
+}

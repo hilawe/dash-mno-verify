@@ -147,12 +147,17 @@ int main(int argc, char **argv)
 
     /* Batch mode, one request per line, so a fuzz run of hundreds of inputs costs one process
      * rather than hundreds. Lines are "round <name> <hex>" or "x11 <hex>". */
+    /* ONE LINE OUT FOR EVERY LINE IN, without exception. An unrecognised verb used to emit nothing at
+     * all, so a single bad request shifted every later answer by one and the caller compared digests
+     * against the wrong inputs while everything looked fine. A reviewer reproduced it with seven
+     * requests and six answers. Unreachable from the current callers, and that is not a reason to
+     * leave a protocol that cannot be resynchronised. */
     if (argc == 2 && strcmp(argv[1], "batch") == 0) {
         char *line = NULL;
         size_t cap = 0;
         while (getline(&line, &cap, stdin) > 0) {
             char verb[16], name[16], *hex = NULL;
-            if (sscanf(line, "%15s", verb) != 1) continue;
+            if (sscanf(line, "%15s", verb) != 1) { printf("ERR empty\n"); fflush(stdout); continue; }
             if (strcmp(verb, "round") == 0) {
                 hex = (char *)malloc(strlen(line) + 1);
                 hex[0] = '\0';
@@ -161,7 +166,7 @@ int main(int argc, char **argv)
                  * the harness answer nothing at all for that case, so a batch came back short and the
                  * caller could only report a count mismatch. */
                 int got = sscanf(line, "%15s %15s %s", verb, name, hex);
-                if (got < 2) { free(hex); continue; }
+                if (got < 2) { free(hex); printf("ERR round\n"); fflush(stdout); continue; }
                 uint8_t *in = NULL; size_t len = 0;
                 if (!hex_to_bytes(hex, &in, &len)) { free(hex); printf("ERR\n"); continue; }
                 int done = 0;
@@ -179,13 +184,17 @@ int main(int argc, char **argv)
             } else if (strcmp(verb, "x11") == 0) {
                 hex = (char *)malloc(strlen(line) + 1);
                 hex[0] = '\0';
-                if (sscanf(line, "%15s %s", verb, hex) < 1) { free(hex); continue; }
+                if (sscanf(line, "%15s %s", verb, hex) < 1) { free(hex); printf("ERR x11\n"); fflush(stdout); continue; }
                 uint8_t *in = NULL; size_t len = 0;
                 if (!hex_to_bytes(hex, &in, &len)) { free(hex); printf("ERR\n"); continue; }
                 uint8_t out[32];
                 x11(in, len, out);
                 print_hex(out, 32);
                 free(in); free(hex);
+            } else {
+                /* An unknown verb still answers, so the caller's line count and answer count agree
+                 * and the mismatch is visible as a value rather than as silent misalignment. */
+                printf("ERR verb\n");
             }
             fflush(stdout);
         }

@@ -3,8 +3,13 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DOCKER="${DOCKER:-$(command -v docker || echo /opt/homebrew/bin/docker)}"
-TAG="${DASH_TAG:-v23.1.3}"
-IMAGE="${X11REF_IMAGE:-x11ref:${TAG}}"
+TAG="${DASH_TAG:-$(cat "$HERE/PIN")}"
+# THE TAG ALONE WAS THE CACHE KEY, so editing harness.cpp or the Dockerfile left the old image in
+# place and every later run verified against a binary that no longer matched the sources. A reviewer
+# appended "#error" to harness.cpp and watched build.sh report "already built" and exit 0. Folding a
+# hash of the build inputs into the image name makes a stale image impossible to reach by accident.
+INPUTS_HASH="$(cat "$HERE/Dockerfile" "$HERE/harness.cpp" "$HERE/PIN" | shasum -a 256 | cut -c1-12)"
+IMAGE="${X11REF_IMAGE:-x11ref:${TAG}-${INPUTS_HASH}}"
 
 if ! "$DOCKER" info >/dev/null 2>&1; then
   echo "no container runtime. On this project's Mac that is colima: run 'colima start' first." >&2
