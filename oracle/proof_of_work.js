@@ -56,7 +56,18 @@ export const MAINNET_POW_LIMIT = 0x00000ffffffffffffffffffffffffffffffffffffffff
 export function meetsProofOfWork(headerHex, { powLimit = MAINNET_POW_LIMIT } = {}) {
   const header = typeof headerHex === "string" ? Buffer.from(headerHex, "hex") : Buffer.from(headerHex);
   if (header.length !== 80) throw new Error(`a block header is 80 bytes, got ${header.length}`);
-  const target = targetFromBits(header.readUInt32LE(72));
+  // A MALFORMED TARGET IS A HEADER THAT FAILS, NOT AN EXCEPTION. `targetFromBits` throws on a negative
+  // mantissa or an overflowing exponent, and letting that escape meant a hostile nBits raised out of a
+  // predicate whose whole job is to answer yes or no. It still failed closed at the call site, but the
+  // error blamed the encoding rather than saying the node served a header that is not valid work, and
+  // any caller using this as the boolean it looks like would have crashed. Dash's own CheckProofOfWork
+  // returns false for exactly these cases. Found by review.
+  let target;
+  try {
+    target = targetFromBits(header.readUInt32LE(72));
+  } catch {
+    return false;
+  }
   if (target === 0n) return false;
   // The order matters only for clarity, since both must hold, but refusing the target first says which
   // of the two failed when a header is rejected.

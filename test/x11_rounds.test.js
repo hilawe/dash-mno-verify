@@ -1,3 +1,23 @@
+// WHAT THIS FILE PROVES, AND WHAT IT ONLY APPEARS TO PROVE. Reviewed 2026-08-05, and the distinction
+// is worth stating because the two kinds of evidence here are not equal.
+//
+// THE BLOCK CASES ARE SELF-ANCHORING. They reproduce the names of real mainnet blocks, block 1 points
+// at the public Dash genesis hash, and block 2 points at block 1, so they are tied to something no
+// part of this project produced. They exercise every round at the only two lengths X11 ever uses (80
+// bytes into the first round, 64 into the other ten), and they are the only thing pinning the ORDER
+// of the chain: eleven individually correct rounds composed wrongly would satisfy every per-round
+// vector and still name no block. A reviewer confirmed that swapping two rounds fails these.
+//
+// THE PER-ROUND VECTORS AT OTHER LENGTHS ARE NOT. They came from a generator that is NOT in this
+// repository, so nobody can re-derive them, and a port built wrong against a generator built wrong
+// would agree with itself. They are regression locks. Committing that generator is tracked in TODO.md
+// and is the single thing that would most improve the evidence here.
+//
+// AND TWO BRANCHES ARE UNEVIDENCED. groestl and bmw contain multi-block padding paths that no input
+// in this file reaches, which a reviewer demonstrated by mutating them and watching every vector still
+// pass. X11 never reaches them either, so this is not a live defect, but those two modules are
+// exported and their padding is not covered for a caller using them for anything else.
+
 // The X11 rounds, each against ground truth from the reference implementation.
 //
 // X11 is the hashing method Dash uses to name a block, and it is the last thing standing between the
@@ -51,7 +71,9 @@ const IMPLEMENTED = {
 for (const [name, fn] of Object.entries(IMPLEMENTED)) {
   test(`${name}512 reproduces the reference on every vector`, () => {
     const cases = VECTORS.vectors[name];
-    assert.ok(Array.isArray(cases) && cases.length >= 10, `${name} has vectors to check against`);
+    // EXACT, not a floor. A floor set below the real count cannot notice vectors going missing, which
+    // is the failure it exists to catch, and a review pointed out this one sat one under.
+    assert.equal(cases.length, 10, `${name} has its full set of vectors`);
     for (const { in: input, out } of cases) {
       assert.equal(
         fn(Buffer.from(input, "hex")).toString("hex"),
@@ -77,7 +99,7 @@ test("the block-hash cases are real mainnet headers, kept for the composition ch
   // Not exercised until all eleven rounds exist. Asserting their shape now means the port cannot
   // reach completion against a fixture that was silently truncated or malformed.
   const cases = VECTORS.blockHashes.cases;
-  assert.ok(cases.length >= 10, "several heights, spanning the chain rather than one era");
+  assert.equal(cases.length, 11, "several heights, spanning the chain rather than one era");
   for (const c of cases) {
     assert.equal(Buffer.from(c.header, "hex").length, 80, `height ${c.height} header is a block header`);
     assert.match(c.hash, /^[0-9a-f]{64}$/, `height ${c.height} hash is a block hash`);
@@ -97,7 +119,7 @@ test("the composed chain reproduces the block hash Dash assigns real mainnet hea
   for (const c of cases) {
     assert.equal(blockHashFromHeader(c.header), c.hash, `height ${c.height}`);
   }
-  assert.ok(cases.length >= 10, "and there are enough of them for that to mean something");
+  assert.equal(cases.length, 11, "and there are enough of them for that to mean something");
 });
 
 test("the chain is the eleven rounds in the order Dash applies them", () => {
@@ -173,4 +195,44 @@ test("groestl absorbs every block of a long input, not just the first", () => {
   const b = Buffer.alloc(512, 1);
   b[500] ^= 0xff;
   assert.notEqual(Buffer.from(groestl512(a)).toString("hex"), Buffer.from(groestl512(b)).toString("hex"));
+});
+
+test("a header whose declared target is malformed fails the check rather than raising out of it", () => {
+  // Found by review. targetFromBits throws on a negative mantissa or an overflowing exponent, and
+  // meetsProofOfWork let that escape, so a hostile nBits raised out of a predicate whose whole job is
+  // to answer yes or no. It failed closed at the one call site, but the error blamed the encoding
+  // rather than saying the node served something that is not a valid block, and any caller treating
+  // this as the boolean it looks like would have crashed. Dash's own CheckProofOfWork returns false
+  // for exactly these.
+  const base = Buffer.from(VECTORS.blockHashes.cases[0].header, "hex");
+  const withBits = (nBits) => {
+    const h = Buffer.from(base);
+    h.writeUInt32LE(nBits >>> 0, 72);
+    return h;
+  };
+  assert.equal(meetsProofOfWork(withBits(0x00800000)), false, "a negative mantissa is not valid work");
+  assert.equal(meetsProofOfWork(withBits(0xff123456)), false, "an exponent that overflows 256 bits is not either");
+  assert.equal(meetsProofOfWork(withBits(0x00000000)), false, "and a zero target can never be met");
+
+  // The real header still passes, so the guard has an exit.
+  assert.equal(meetsProofOfWork(base), true);
+});
+
+test("the fixture is anchored outside this repository, by the chain's own genesis block", () => {
+  // WHY THIS MATTERS MORE THAN THE OTHER VECTORS. The per-round vectors came from a generator that is
+  // not in this repository, so they cannot be re-derived and a wrong port matched to a wrong generator
+  // would satisfy them. The block cases are different in kind: block 1 names the Dash genesis hash as
+  // its predecessor, and that value is public and fixed, so the chain of headers here is tied to
+  // something outside anything this project produced. A reviewer pointed this out, and it is the
+  // strongest evidence in the file, so it is asserted rather than left as a remark.
+  const DASH_MAINNET_GENESIS = "00000ffd590b1485b3caadc19b22e6379c733355108f107a430458cdf3407ab6";
+  const cases = VECTORS.blockHashes.cases;
+  const first = cases.find((c) => c.height === 1);
+  assert.ok(first, "the set includes block 1");
+  const prevOf = (headerHex) => Buffer.from(Buffer.from(headerHex, "hex").subarray(4, 36)).reverse().toString("hex");
+  assert.equal(prevOf(first.header), DASH_MAINNET_GENESIS, "block 1 points at the known genesis hash");
+
+  // And block 2 points at block 1, so the cases form a chain rather than a bag of headers.
+  const second = cases.find((c) => c.height === 2);
+  if (second) assert.equal(prevOf(second.header), first.hash, "block 2 points at block 1");
 });

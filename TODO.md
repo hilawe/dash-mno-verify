@@ -327,6 +327,25 @@ follow-up below.
 
 ## P1, before any non-local or public deployment
 
+- [ ] Commit the X11 vector generator and the differential fuzz harness (2026-08-05). The per-round
+  vectors in `test/vectors/x11_round_vectors.json` were produced by a generator built against the
+  reference implementation in a container, and that generator is not in this repository. Nobody can
+  re-derive the vectors and the fuzz run cannot be repeated, so for every length other than the two
+  X11 actually uses those vectors are regression locks rather than evidence: a port built wrong
+  against a generator built wrong would agree with itself. A review made this the headline finding on
+  the X11 work and it is the single change that would most improve the evidence.
+
+  What IS independently anchored, and should stay that way: the block cases reproduce real mainnet
+  block names, block 1 points at the public Dash genesis hash, and block 2 points at block 1, so the
+  chain of headers is tied to something no part of this project produced. Those cases also pin the
+  ORDER of the eleven rounds, which no per-round vector can.
+
+  While doing this, cover the multi-block padding in `common/x11/groestl.js` and `common/x11/bmw.js`.
+  A reviewer mutated both and every committed vector still passed, because X11 feeds those rounds 64
+  bytes and nothing else here reaches the branch. Not a live defect, since the read path cannot reach
+  it, but both modules are exported. (`common/x11/`, `test/vectors/x11_round_vectors.json`)
+
+
 - [x] Tie the block header to the chain, the last link direct node mode needed (done 2026-08-05).
   The commitment check below now rebuilds the DIP4 simplified-list root from the entries and compares
   it against the `merkleRootMNList` the block's own coinbase carries, checks the merkle branch marks
