@@ -1,6 +1,7 @@
 {
- "_source": "generated from the sph reference implementations shipped in Dash Core, compiled unmodified in a Linux container on 2026-08-05. The composed chain built from those same sources reproduces the block hash of every header in blockHashes below, which is what establishes that the round order and the output convention are right before any of this is ported.",
+ "_source": "per-round digests from the sph reference implementations in Dash Core v23.1.3 (8f06d39897babc4c4d28598af9426f483e3c5596), compiled unmodified in a Linux container. Regenerate with tools/x11-reference/regenerate.sh, which reuses these inputs so an unchanged pin produces no diff.",
  "_why": "per-round ground truth, so a JavaScript port can be verified one algorithm at a time instead of only end to end",
+ "_blockCases": "the block cases below are real mainnet headers and the names the chain gave them, gathered from a synced node. They are VERIFIED against the reference by tools/x11-reference/generate.mjs and never rewritten by it, because they are the only evidence here that does not come from something this repository built.",
  "vectors": {
   "blake": [
    {

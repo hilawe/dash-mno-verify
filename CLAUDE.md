@@ -50,12 +50,18 @@ until the blockers in REVIEW_FINDINGS_dash-mno-verify_2026-06-26.md are closed.
 - `adapters/` the four platform front ends.
 - `contract/` the Dash Platform data contract (nullifier and registration document types).
 - `common/` shared encoding (context hash, signal hash, epoch and season math, DML leaf).
-  - `common/x11/` the eleven rounds Dash chains to name a block, ported from the reference that ships
-    with Dash Core and checked against vectors generated from it. The chain reproduces the block hash
-    of real mainnet headers from block 1 to the tip, which is the evidence that also covers the
-    composition order. Used by the direct-node read to prove a header IS the ChainLocked block. The
-    committed vectors stop at 128 bytes, so the multi-block paths of several rounds rest on property
-    tests rather than on vectors.
+  - `x11/` the eleven rounds Dash chains to name a block, ported from the reference that ships
+    with Dash Core. The chain reproduces the block hash of real mainnet headers from block 1 to the
+    tip, which is the evidence that also covers the composition order, since eleven correct rounds in
+    the wrong order satisfy every per-round vector and name no block. Used by the direct-node read to
+    prove a header IS the ChainLocked block.
+- `tools/x11-reference/` is how the X11 port is checked, and it answers a review finding that its
+  vectors came from a generator nobody had. A container clones Dash Core at a pinned tag and compiles
+  a harness against its own `src/crypto/x11/`, so the vectors can be re-derived (`regenerate.sh`,
+  idempotent against an unchanged pin, and it VERIFIES the block cases rather than rewriting them) and
+  the differential fuzz re-run (`fuzz.sh`, which covers the multi-block padding X11 itself never
+  reaches). Needs a container and fetches upstream source, so it is a deliberate run rather than part
+  of `npm test`.
 
 ## Two proving designs
 

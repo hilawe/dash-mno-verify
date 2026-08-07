@@ -8,15 +8,19 @@
 // of the chain: eleven individually correct rounds composed wrongly would satisfy every per-round
 // vector and still name no block. A reviewer confirmed that swapping two rounds fails these.
 //
-// THE PER-ROUND VECTORS AT OTHER LENGTHS ARE NOT. They came from a generator that is NOT in this
-// repository, so nobody can re-derive them, and a port built wrong against a generator built wrong
-// would agree with itself. They are regression locks. Committing that generator is tracked in TODO.md
-// and is the single thing that would most improve the evidence here.
+// THE PER-ROUND VECTORS ARE NOW RE-DERIVABLE, which they were not when this note was first written.
+// `tools/x11-reference/` builds Dash Core's own X11 sources from a pinned upstream tag in a container
+// and regenerates these digests from it, reusing the committed inputs so an unchanged pin produces no
+// diff. Every one of the 110 vectors here was reproduced that way. They are still not INDEPENDENT of
+// the reference, which is the point of them, but they are no longer unfalsifiable claims about a
+// harness nobody has.
 //
-// AND TWO BRANCHES ARE UNEVIDENCED. groestl and bmw contain multi-block padding paths that no input
-// in this file reaches, which a reviewer demonstrated by mutating them and watching every vector still
-// pass. X11 never reaches them either, so this is not a live defect, but those two modules are
-// exported and their padding is not covered for a caller using them for anything else.
+// THE PADDING PATHS THE VECTORS CANNOT REACH ARE COVERED BY THE FUZZ, not by this file. X11 feeds
+// these rounds 64 and 80 bytes and nothing else, so the multi-block padding in groestl and bmw is
+// unreachable from here, and a reviewer proved the gap by mutating it and watching every vector still
+// pass. `tools/x11-reference/fuzz.sh` runs 0 to 300 bytes against the reference and does catch it,
+// verified by repeating that same mutation. It is not part of `npm test` because it needs a container
+// and a network fetch of upstream source, so it is a deliberate run rather than a gate.
 
 // The X11 rounds, each against ground truth from the reference implementation.
 //

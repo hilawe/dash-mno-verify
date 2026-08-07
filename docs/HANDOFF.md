@@ -5,6 +5,42 @@ counts and supersedes everything below it. Historical sections are append-only a
 only marked superseded. Read this first when picking the project back up, then `TODO.md` for the full
 prioritized punch list.
 
+## X11 EVIDENCE CLOSED, 2026-08-07. THE HARNESS IS IN THE REPOSITORY
+
+The review's headline finding on the X11 work was that its vectors came from a generator nobody had,
+which makes them regression locks rather than evidence: a port built wrong against a generator built
+wrong agrees with itself and nothing can tell. That is closed.
+
+`tools/x11-reference/` holds a Dockerfile that clones Dash Core at a PINNED TAG (v23.1.3) and compiles
+`harness.cpp` against its own `src/crypto/x11/` sources, plus `build.sh`, `regenerate.sh` and
+`fuzz.sh`. Upstream is fetched, never vendored, so provenance is a fact about the pin.
+
+WHAT IT ESTABLISHED, rather than what it makes possible:
+
+- All 110 committed per-round vectors were reproduced from a reference built fresh from upstream.
+- Regeneration is IDEMPOTENT. It reuses the inputs already in the file, so an unchanged pin produces
+  no diff and any diff is a fact about upstream rather than about who ran it last. The first version
+  invented its own inputs and rewrote the committed set, which buried that signal in noise.
+- The block cases are VERIFIED, never regenerated. They are real mainnet headers and the names the
+  chain gave them, and they are the only evidence here not produced by something this repository
+  built, so a locally compiled binary must not overwrite them. generate.mjs refuses to write anything
+  if a block case disagrees.
+- The fuzz covers what vectors cannot. 1,655 comparisons over 150 inputs from 0 to 300 bytes, no
+  mismatch. Confirmed it can fail by repeating the reviewer's own mutation of groestl's multi-block
+  padding: the committed vectors still pass (21 of 21) and the fuzz catches it (4 mismatches).
+
+TWO THINGS THAT COST TIME, worth knowing before touching this again:
+
+- The harness must be compiled as C++. Nine of the sph headers carry extern "C" guards and resolve
+  either way, but echo, shavite and dispatch define their symbols from .cpp files with no guards, so a
+  C harness cannot link against them. Also `-std=c++20`, because the AES tables use `std::rotl`.
+- Do NOT drive the reference one request at a time. Interactive request-and-await through the
+  container runtime's stdin deadlocks, and a container sat idle for fifty minutes proving it. Write every
+  request, close stdin, read the answers. Both scripts do that now.
+
+Still open on X11: nothing about the evidence. The remaining residuals are the ones already recorded,
+the unverified ChainLock signature and a block mined at the network's easiest permitted difficulty.
+
 ## SESSION IN PROGRESS, 2026-08-05. F2, F3, F4 AND THE CHAINLOCK FIELD
 
 Committed and safe to leave. What landed after F1 closed:

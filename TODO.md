@@ -327,7 +327,7 @@ follow-up below.
 
 ## P1, before any non-local or public deployment
 
-- [ ] Commit the X11 vector generator and the differential fuzz harness (2026-08-05). The per-round
+- [x] Commit the X11 vector generator and the differential fuzz harness (done 2026-08-07). The per-round
   vectors in `test/vectors/x11_round_vectors.json` were produced by a generator built against the
   reference implementation in a container, and that generator is not in this repository. Nobody can
   re-derive the vectors and the fuzz run cannot be repeated, so for every length other than the two
@@ -340,10 +340,21 @@ follow-up below.
   chain of headers is tied to something no part of this project produced. Those cases also pin the
   ORDER of the eleven rounds, which no per-round vector can.
 
-  While doing this, cover the multi-block padding in `common/x11/groestl.js` and `common/x11/bmw.js`.
-  A reviewer mutated both and every committed vector still passed, because X11 feeds those rounds 64
-  bytes and nothing else here reaches the branch. Not a live defect, since the read path cannot reach
-  it, but both modules are exported. (`common/x11/`, `test/vectors/x11_round_vectors.json`)
+  DONE. `tools/x11-reference/` holds a container recipe that clones Dash Core at a pinned tag
+  (v23.1.3) and compiles a harness against its own `src/crypto/x11/` sources, plus `regenerate.sh`
+  and `fuzz.sh`. All 110 committed vectors were reproduced from a reference built fresh from upstream,
+  which is what turns them from regression locks into evidence. Regeneration reuses the committed
+  inputs, so an unchanged pin produces no diff and any diff is a fact about upstream.
+
+  The block cases are VERIFIED rather than regenerated, deliberately: they are real mainnet headers and
+  the names the chain gave them, and they are the only evidence here that does not come from something
+  this repository built, so a locally compiled binary must never overwrite them.
+
+  The multi-block padding in groestl and bmw is covered by the fuzz rather than by vectors, since X11
+  cannot reach it. Confirmed by repeating the reviewer's mutation: the committed vectors still pass
+  and the fuzz catches it. Measured, 1,655 comparisons across 150 inputs from 0 to 300 bytes, no
+  mismatch. Not in `npm test`, because it needs a container and fetches upstream source, so it is a
+  deliberate run. (`tools/x11-reference/`, `test/vectors/x11_round_vectors.json`)
 
 
 - [x] Tie the block header to the chain, the last link direct node mode needed (done 2026-08-05).
