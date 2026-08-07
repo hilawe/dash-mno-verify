@@ -1320,12 +1320,24 @@ test("an expired record cannot split the served snapshot from the window", async
       ch = await mint();
       served = await dml();
       if (ch.status === 200) {
-        assert.equal(
-          served.root,
-          ch.body.root,
-          "a challenge is never minted against a root whose leaves /v1/dml will not serve",
-        );
-        assert.deepEqual(served.leaves.length > 0, true, "and the served snapshot always carries its leaves");
+        // WHAT THIS LOOP CAN AND CANNOT ASSERT, because two attempts got it wrong in opposite ways.
+        //
+        // It used to compare the challenge's root against the leaves from a LATER /v1/dml request.
+        // That is a guarantee the design explicitly disclaims (see latestSnapshot in
+        // core/gateway.js): they are separate requests and a refresh can land between them, so a
+        // prover that straddles a changeover must re-challenge. It passed locally on timing luck and
+        // failed in CI, which is the right way round for an assertion of a non-guarantee.
+        //
+        // Replacing it with "the root and leaves in one response agree" was worse, because the
+        // handler builds both from one object, so that cannot fail however the record is chosen. A
+        // mutation serving the OLDEST record instead of the current one left it passing. A flaky
+        // assertion swapped for a vacuous one is not progress.
+        //
+        // What is real here is below: the different-member-set snapshot must never become the served
+        // root, and a served snapshot must always carry leaves. The same-record property is
+        // structural now (one record holds both) and is enforced at the store, where
+        // test/root_windows.test.js can drive it without a race.
+        assert.deepEqual(served.leaves.length > 0, true, "a served snapshot always carries its leaves");
       }
       assert.notEqual(ch.body.root, BAD_ROOT, "the different-set snapshot never becomes the served root");
     }
