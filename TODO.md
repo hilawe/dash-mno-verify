@@ -252,7 +252,7 @@ again.
   exception the supplied config could not control was this change failing quietly. (`core/gateway.js`, `core/config.js`, `core/stores.js`, `core/nullifier_sqlite.js`,
   `core/platform_store.js`, `test/gateway_module.test.js`)
 
-- [ ] The in-memory nullifier store grows across epochs on a long-lived gateway, found by the rule 6
+- [x] The in-memory nullifier store grew across epochs on a long-lived gateway (fixed 2026-08-07), found by the rule 6
   shape search behind the retained-leaves bound (2026-08-04). The gateway prunes spent tags only when
   the store implements `prune`, and `NullifierStore` (the `MNO_STORE=memory` backend) does not, so a
   gateway left running in memory mode keeps every tag it has ever seen rather than the retained-epoch
@@ -261,7 +261,13 @@ again.
   ephemeral. That is why this is recorded rather than folded into the window bound: it is a different
   quantity, bounded by a different thing, and the fix (a `prune` on the in-memory store, or making
   the gateway sweep any store it can) is a decision about what "ephemeral" is meant to promise.
-  (`NullifierStore` in `core/stores.js`, the prune wiring in `core/gateway.js`)
+
+  DONE by giving `NullifierStore` the same `prune(minEpoch)` the SQLite store already had, so the
+  gateway's existing sweep picks it up with no wiring change. "Ephemeral" describes what a RESTART
+  does, not what happens while the process runs, and a long-lived gateway is exactly where the two
+  differ. The epoch is the key's first field and neither of the other two can contain a colon, so
+  splitting on the first one is exact rather than a guess about format.
+  (`NullifierStore` in `core/stores.js`, `test/nullifier_store_contract.test.js`)
 
 ## P0, the two-tier state model (one redesign, three symptoms)
 

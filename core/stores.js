@@ -592,6 +592,37 @@ export class NullifierStore {
     this.claims.set(key, { account: record.account });
     return { duplicate: false };
   }
+  // Drop spent tags from epochs that can no longer be verified against.
+  //
+  // WHY THIS EXISTS ON THE EPHEMERAL STORE AT ALL. The gateway prunes only stores that implement
+  // this, and this one did not, so a memory-mode gateway kept every tag it had ever seen for as long
+  // as the process lived. "Ephemeral" describes what a RESTART does, not what happens while it runs,
+  // and a long-lived gateway is exactly the case where the difference shows. The exposure was small,
+  // since each entry costs a valid membership proof, but the sqlite store has been pruning the same
+  // set on the same schedule all along and there is no reason for the two to differ.
+  //
+  // The epoch is the key's first field, and neither of the other two can contain a colon (both are
+  // decimal field elements), so splitting on the first one is exact rather than a guess about format.
+  // An unusable cutoff removes nothing, and that falls out of the comparison rather than needing a
+  // guard in front of it: `epoch < NaN` is false for every epoch. A guard was written here first and
+  // removed after a mutation showed no test could fail with it gone, which is the definition of
+  // decoration. The property still matters, so it is asserted in the tests against the behaviour
+  // rather than against the guard.
+  prune(minEpoch) {
+    const cutoff = Number(minEpoch);
+    let removed = 0;
+    for (const key of this.claims.keys()) {
+      const epoch = Number(key.slice(0, key.indexOf(":")));
+      if (Number.isFinite(epoch) && epoch < cutoff) {
+        this.claims.delete(key);
+        removed++;
+      }
+    }
+    return { removed };
+  }
+  size() {
+    return this.claims.size;
+  }
 }
 
 // Pending challenges, keyed by the one-time nonce. A challenge ties a nonce to the

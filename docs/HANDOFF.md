@@ -81,13 +81,10 @@ yet ruled out.
    harness commit has since answered, so their verdict on that is worth reading against what landed.
    The Codex CLI was unavailable this session (usage limit, until 2026-08-07 evening).
 2. **A review round on the harness commit `1b1eb1d`**, which is unreviewed.
-3. **The in-memory nullifier store grows across epochs** on a long-lived gateway, since only stores
-   implementing `prune` are swept. Bounded by real proof work and memory mode is an explicit opt-in,
-   so it is recorded rather than urgent. Detail in TODO.md.
-4. **Keep the proof and the challenge off the chat platform.** Recorded in TODO.md with the design
-   note: the gateway already stores the account with the challenge, so a direct submission needs no
-   new trust.
-5. **The audit.** Still none. `circom-ecdsa` remains unaudited demonstration code by its own README.
+3. **Keep the proof and the challenge off the chat platform.** Recorded in TODO.md with the design
+   note that the gateway already stores the account with the challenge, so a direct submission needs
+   no new trust.
+4. **The audit.** Still none. `circom-ecdsa` remains unaudited demonstration code by its own README.
 
 ### 6. WHAT FORCED REWORK THIS SESSION
 

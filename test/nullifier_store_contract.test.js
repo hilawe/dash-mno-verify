@@ -37,3 +37,44 @@ for (const [name, make, { persistsAccount }] of stores) {
     else assert.equal(claim, null);
   });
 }
+
+test("the in-memory store prunes old epochs, like the durable one has all along", () => {
+  // The gateway prunes only stores that implement prune(), and this one did not, so a memory-mode
+  // gateway kept every tag it had ever seen for the life of the process. "Ephemeral" describes what a
+  // restart does, not what happens while it runs. Small exposure, since every entry costs a valid
+  // membership proof, but the two stores had no reason to differ on the same schedule.
+  const store = new NullifierStore();
+  store.add(10, "ctx", "tagA", { account: "alice" });
+  store.add(11, "ctx", "tagB", { account: "bob" });
+  store.add(12, "ctx", "tagC", { account: "carol" });
+  assert.equal(store.size(), 3);
+
+  // Keeping the current epoch and one past epoch is the gateway's window, so pruning below 11 must
+  // take epoch 10 and nothing else.
+  const { removed } = store.prune(11);
+  assert.equal(removed, 1);
+  assert.equal(store.size(), 2);
+  assert.equal(store.has(10, "ctx", "tagA"), false, "the aged-out epoch is gone");
+  assert.equal(store.has(11, "ctx", "tagB"), true, "the retained past epoch is not");
+  assert.equal(store.has(12, "ctx", "tagC"), true, "and neither is the current one");
+
+  // A malformed cutoff must not silently empty the store. This holds because every comparison
+  // against NaN is false, not because of a guard: one was written, and a mutation showed no test
+  // could fail with it removed, so it went. The behaviour is what is asserted.
+  for (const bad of [undefined, null, "not-a-number", NaN]) {
+    assert.deepEqual(store.prune(bad), { removed: 0 }, `cutoff ${JSON.stringify(bad)}`);
+  }
+  assert.equal(store.size(), 2, "an unusable cutoff removes nothing rather than everything");
+});
+
+test("pruning the in-memory store keeps the claim record of what survives", () => {
+  // The record carries the account that first spent the tag, which is what makes an idempotent
+  // re-grant possible. A prune that dropped the account while keeping the key would turn a re-grant
+  // into a refusal for the member whose adapter failed.
+  const store = new NullifierStore();
+  store.add(5, "ctx", "old", { account: "alice" });
+  store.add(6, "ctx", "live", { account: "bob" });
+  store.prune(6);
+  assert.deepEqual(store.get(6, "ctx", "live"), { account: "bob" });
+  assert.equal(store.get(5, "ctx", "old"), null);
+});
