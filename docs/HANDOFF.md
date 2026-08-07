@@ -5,6 +5,101 @@ counts and supersedes everything below it. Historical sections are append-only a
 only marked superseded. Read this first when picking the project back up, then `TODO.md` for the full
 prioritized punch list.
 
+## CURRENT STATE, 2026-08-07. THIS SUPERSEDES EVERY SECTION BELOW IT
+
+`main` at `1b1eb1d`, pushed, clean tree. Suite 589, all three CI jobs green. The six dated sections
+that follow are the running record of 2026-08-04 to 08-07 and are kept append-only. Read them only
+when you need the reasoning behind something here.
+
+### 1. WHERE TO START
+
+Nothing is half-done. Take punch-list item 1. Read section 4 before writing code, because those are
+the things that cost time rather than facts about any one defect.
+
+### 2. WHAT THE SYSTEM NOW DOES THAT IT DID NOT
+
+**Direct node mode is chain-authenticated for everything except two named residuals.** The read gets
+the list from the operator's own node and then proves it belongs to the chain:
+
+1. The list is rebuilt into the DIP4 simplified-list commitment and compared against the
+   `merkleRootMNList` PARSED OUT OF THE COINBASE, not the copy the node also reports.
+2. The merkle branch must mark that coinbase at index 0.
+3. The branch must reproduce the merkle root in the header.
+4. The header, hashed with X11, must equal the block hash the ChainLock named.
+5. That hash must meet the target the header declares, and the target must be no easier than
+   consensus powLimit.
+
+Measured against live mainnet: 2,971 entries, whole read in about 3.6 seconds.
+
+**X11 exists here, and its evidence is re-derivable.** `common/x11/` is the eleven rounds.
+`tools/x11-reference/` builds Dash Core's own sources from a pinned tag in a container and can
+regenerate the vectors and re-run the differential fuzz. All 110 vectors reproduce from a fresh
+build. The fuzz is 1,655 comparisons over 0 to 300 bytes and was confirmed able to fail.
+
+**Six review findings are closed** (F1, F3, F4, F5, F6, and the binding proxy), and **F2 is enforced
+rather than fixed**: Platform nullifier mode refuses to boot without
+`MNO_PLATFORM_ACCEPT_UNCERTAIN_BROADCAST=1`, because an uncertain broadcast can cost a member their
+epoch and that needs a contract change.
+
+### 3. THE TWO RESIDUALS, which no amount of testing removes
+
+Both are written into the code where they are relied on. Neither is a defect to fix, both are work
+not yet started.
+
+- **The ChainLock signature is not verified.** The node is believed when it says a block is
+  ChainLocked. Verifying it needs the signing quorum's keys, which is quorum tracking from a trusted
+  starting point.
+- **The proof of work is floored at powLimit, not at the real difficulty.** powLimit is the easiest
+  target the network ever allows, so a header mined at it would pass while costing far less than the
+  live chain. Ruling that out means following the header chain, which is a light client.
+
+Together: a node can no longer make things up for free. A determined node with real resources is not
+yet ruled out.
+
+### 4. WHAT COST TIME, so it is not paid twice
+
+- **The author-side three-agent stage has now caught first FOUR times running**, including a blocker
+  (a 39-byte response that hung the event loop permanently) and, on the F3 and F4 fixes, four defects
+  IN THE FIXES THEMSELVES. Run it on qualifying commits. It is the most reliable check here.
+- **Most of what each round finds is in the PREVIOUS round's fixes.** Held again this session: five
+  of eight findings in one round were in fixes written the day before.
+- **A mutant must PARSE before its result means anything.** One reported catch was a syntax error.
+  `node --check` the mutated file first.
+- **A test that asserts on heap growth is flaky by construction.** One of mine failed one run in
+  three. Assert the deterministic property instead.
+- **The X11 harness must be C++ and `-std=c++20`.** Nine sph headers have extern "C" guards, echo,
+  shavite and dispatch do not, and the AES tables use `std::rotl`.
+- **Do not drive the reference container one request at a time.** Interactive stdin deadlocks through
+  the runtime, and a container sat idle fifty minutes proving it. Batch, close stdin, read.
+- **The mainnet node container needs RPC credentials from its command line.** Read them with
+  `docker inspect dash-mno-node`. A bare `dash-cli` fails with an error that reads like a broken node.
+
+### 5. PUNCH LIST, in the order recommended
+
+1. **The packet reviews are out and unreturned.** Three identical packets in `~/Downloads/` dated
+   2026-08-05, for the other model families. They lead with the X11 evidence question, which the
+   harness commit has since answered, so their verdict on that is worth reading against what landed.
+   The Codex CLI was unavailable this session (usage limit, until 2026-08-07 evening).
+2. **A review round on the harness commit `1b1eb1d`**, which is unreviewed.
+3. **The in-memory nullifier store grows across epochs** on a long-lived gateway, since only stores
+   implementing `prune` are swept. Bounded by real proof work and memory mode is an explicit opt-in,
+   so it is recorded rather than urgent. Detail in TODO.md.
+4. **Keep the proof and the challenge off the chat platform.** Recorded in TODO.md with the design
+   note: the gateway already stores the account with the challenge, so a direct submission needs no
+   new trust.
+5. **The audit.** Still none. `circom-ecdsa` remains unaudited demonstration code by its own README.
+
+### 6. WHAT FORCED REWORK THIS SESSION
+
+- The F3 and F4 fixes shipped with four defects that two charters found the next day, three of them
+  introduced BY those fixes. Feeds the existing rule that the newest code is the riskiest surface.
+- A claim in `oracle/diff_snapshot.js` said the height check caught a consistent replay when it
+  catches only an inconsistent one. Feeds the rule about claims wider than the code.
+- The first `generate.mjs` invented its own vector inputs and rewrote the committed set, destroying
+  the no-diff signal the script exists to give. Feeds nothing yet, and if a second regeneration
+  script does the same it becomes a rule.
+
+<!-- superseded by the CURRENT STATE above; kept append-only -->
 ## X11 EVIDENCE CLOSED, 2026-08-07. THE HARNESS IS IN THE REPOSITORY
 
 The review's headline finding on the X11 work was that its vectors came from a generator nobody had,
@@ -41,6 +136,7 @@ TWO THINGS THAT COST TIME, worth knowing before touching this again:
 Still open on X11: nothing about the evidence. The remaining residuals are the ones already recorded,
 the unverified ChainLock signature and a block mined at the network's easiest permitted difficulty.
 
+<!-- superseded by the CURRENT STATE at the top; kept append-only -->
 ## SESSION IN PROGRESS, 2026-08-05. F2, F3, F4 AND THE CHAINLOCK FIELD
 
 Committed and safe to leave. What landed after F1 closed:
@@ -79,6 +175,7 @@ STILL OPEN, and the next session should start here:
    genuinely is not verified, but it is out of date in the direction of understating.
 3. No review round has covered F2, F3, F4, or the X11 work. That is the largest outstanding risk.
 
+<!-- superseded by the CURRENT STATE at the top; kept append-only -->
 ## F1 CLOSED, 2026-08-05. THE HEADER IS NAMED AND ITS WORK IS CHECKED
 
 X11 is implemented and wired in. The read now proves the header IS the block the ChainLock named, and
@@ -171,6 +268,7 @@ wiring. It is verified against the reference far more thoroughly than most code 
 against a reference is not the same as a review looking for what the reference cannot tell you.
 Take a full review round before this is relied on. Nothing else waits on it.
 
+<!-- superseded by the CURRENT STATE at the top; kept append-only -->
 ## F1 IN PROGRESS, 2026-08-04. THE COMMITMENT IS VERIFIED, THE HEADER IS NOT
 
 Three of the four links F1 asked for are implemented and verified against live mainnet. The fourth
@@ -228,6 +326,7 @@ error that reads like a broken node when it is nothing of the kind. Read the fla
 with from `docker inspect dash-mno-node --format '{{join .Config.Cmd " "}}'` and pass the same user
 and password to `dash-cli`. The values are not repeated here, because this file is published.
 
+<!-- superseded by the CURRENT STATE at the top; kept append-only -->
 ## ADDENDUM FOLLOW-UP, 2026-08-04. F5, F6 AND THE BINDING PROXY ARE CLOSED
 
 Three of the six findings are fixed. F1 to F4 are untouched, deliberately, because two of them are
@@ -259,6 +358,7 @@ for the first one had two defects of its own that a further pass reproduced. Bot
 same shape the session had already met twice: a flag set before the work it stands for, and a test
 that observes a consequence something else also produces.
 
+<!-- superseded by the CURRENT STATE at the top; kept append-only -->
 ## CURRENT STATE ADDENDUM, 2026-08-04 (orchestrated freeze). AN INDEPENDENT PASS RETURNED REVISE
 
 Run differently from the earlier passes: the candidate was frozen first from a CLEAN CHECKOUT,
