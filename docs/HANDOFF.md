@@ -80,7 +80,10 @@ yet ruled out.
    2026-08-05, for the other model families. They lead with the X11 evidence question, which the
    harness commit has since answered, so their verdict on that is worth reading against what landed.
    The Codex CLI was unavailable this session (usage limit, until 2026-08-07 evening).
-2. **A review round on the harness commit `1b1eb1d`**, which is unreviewed.
+2. **A DIFFERENT-FAMILY review round.** Everything since `8d71fe0` has been reviewed only by the
+   author-side stage, which shares this author's blind spots by construction. The Codex CLI was out
+   of usage until 2026-08-07 evening, so that round never ran. The harness commits `1b1eb1d` and
+   `3681c00` in particular have had one author-side pass and nothing else.
 3. **Keep the proof and the challenge off the chat platform.** Recorded in TODO.md with the design
    note that the gateway already stores the account with the challenge, so a direct submission needs
    no new trust.
@@ -95,6 +98,11 @@ yet ruled out.
 - The first `generate.mjs` invented its own vector inputs and rewrote the committed set, destroying
   the no-diff signal the script exists to give. Feeds nothing yet, and if a second regeneration
   script does the same it becomes a rule.
+- The harness shipped reporting success whether or not anything verified, and its one guard over the
+  external evidence was disabled by deleting that evidence. Both found by the author-side stage the
+  day after. Feeds the existing rule that a check whose failing case looks like its passing case is
+  not a check, which this repository has now met three times: a flag no caller reads, a validator
+  that could not refuse a false claim, and now a generator that always says it wrote something.
 
 <!-- superseded by the CURRENT STATE above; kept append-only -->
 ## X11 EVIDENCE CLOSED, 2026-08-07. THE HARNESS IS IN THE REPOSITORY
