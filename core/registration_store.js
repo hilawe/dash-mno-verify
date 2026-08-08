@@ -233,6 +233,10 @@ export class FileBackend {
   // nothing outside should be able to clear it without doing the reconciliation it stands for.
   #stale = false;
 
+  // The in-flight reconciliation, shared by every caller that finds the store stale. Null when none
+  // is running. See #reconcile() for why sharing one is what makes the flag mean anything.
+  #reconciling = null;
+
   // `open` is injectable for ONE reason: the uncertain write, where the bytes reach the file and the
   // sync or close still reports an error, cannot be produced from outside this class. It is the exact
   // sequence F3 describes, so a test that cannot create it can only assert the fix by reading it. The
@@ -280,32 +284,61 @@ export class FileBackend {
   // every later call threw that same error for the rest of the process lifetime, against an empty
   // index. Two reviewers reproduced it independently. A reload that fails must leave the store
   // exactly as usable as it was.
-  async #reload() {
-    const priorSeen = this.seen;
-    const priorBuckets = this.byBucket;
-    const priorLoading = this._loading;
-    this.seen = new Set();
-    this.byBucket = new Map();
-    const attempt = this.#load();
-    this._loading = attempt;
-    try {
-      await attempt;
-    } catch (err) {
-      this.seen = priorSeen;
-      this.byBucket = priorBuckets;
-      this._loading = priorLoading;
-      // THE STORE IS NOW KNOWN TO BE BEHIND THE FILE. Restoring the old maps keeps it usable, and a
-      // reviewer showed that is not enough on its own: the uncertain record may already be in the
-      // file, so a later append that proceeds against this stale view assigns an index the rebuilt
-      // tree will not agree with, and the live members order diverges from the order a restart
-      // produces. Marking it means the next operation reconciles before it decides anything.
-      this.#stale = true;
-      throw err;
+  //
+  // RECONCILIATION IS SINGLE-FLIGHT, and that is the whole of this method now. The version this
+  // replaces did the rollback by hand: it emptied the shared maps, remembered a `prior` pair to put
+  // back, and restored them if the read failed. That is correct for one caller at a time and this
+  // store never had one. A fresh full review showed what two concurrent callers did to it. Both
+  // found the store behind the file, both reloaded, and each captured its own `prior` from whatever
+  // the other had just installed. The reload that FAILED restored a snapshot taken before the one
+  // that SUCCEEDED had finished, and `#ready()` then cleared the stale flag because its own reload
+  // had returned. The store was left holding the old maps with nothing marking them old, so it
+  // answered from them for the rest of the process. `seasonHasEngine` reported no zkVM registration
+  // while the record was durably on disk, which is the downgrade signal reading backwards, and it is
+  // the exact defect the stale flag was added to close, arriving through concurrency instead.
+  //
+  // Sharing one attempt removes the class rather than the interleaving. There is no `prior` to
+  // restore because `#load()` now builds into its own maps and installs them only on success, and
+  // there is no last-one-wins because there is only one. The flag and the maps are settled together
+  // by the same outcome.
+  #reconcile() {
+    if (!this.#reconciling) {
+      const attempt = this.#load().then(
+        () => {
+          this.#stale = false;
+        },
+        (err) => {
+          // THE STORE IS KNOWN TO BE BEHIND THE FILE. `#load()` left the previous maps in place, so
+          // it stays as usable as it was, and the flag is what stops that view being taken for
+          // current: the uncertain record may already be in the file, so a later append deciding
+          // against this view assigns an index the rebuilt tree will not agree with, and the live
+          // members order diverges from the order a restart produces.
+          this.#stale = true;
+          throw err;
+        },
+      );
+      this.#reconciling = attempt;
+      // Clear the slot either way, so a failure is retried by the next caller rather than memoized.
+      // Guarded on identity so a slower failure cannot clear a newer attempt's slot.
+      const release = () => {
+        if (this.#reconciling === attempt) this.#reconciling = null;
+      };
+      attempt.then(release, release);
     }
+    return this.#reconciling;
   }
 
+  // BUILDS INTO ITS OWN MAPS AND INSTALLS THEM ONLY ON SUCCESS. This used to populate `this.seen`
+  // and `this.byBucket` as it read, which made a partly-built index observable and made a failure
+  // something the caller had to undo by hand. Two costs, both real. A reload that failed needed a
+  // rollback, and rollback across concurrent reloads is what F1 was. And interleaved reloads
+  // remembered the same file record into the same shared maps more than once, so the duplicate
+  // collapse below fired on in-memory state and warned an operator that their file held duplicate
+  // records when it held one of each. Building locally means a failed load changes nothing at all.
   async #load() {
     await mkdir(dirname(this.path), { recursive: true });
+    const seen = new Set();
+    const byBucket = new Map();
     let duplicatesCollapsed = 0;
     let raw = "";
     try {
@@ -400,8 +433,8 @@ export class FileBackend {
       // deterministic and reproduces the same tree on every load, which is the property that matters.
       // Two records sharing a key but disagreeing on what they say is corruption this cannot resolve,
       // and picking one would be inventing an answer.
-      if (rec && this.seen.has(keyOf(rec))) {
-        const first = (this.byBucket.get(bucketOf(rec)) ?? []).find((r) => keyOf(r) === keyOf(rec));
+      if (rec && seen.has(keyOf(rec))) {
+        const first = (byBucket.get(bucketOf(rec)) ?? []).find((r) => keyOf(r) === keyOf(rec));
         if (!first || !sameRegistrationRecord(first, rec)) {
           throw new Error(
             `${this.path} line ${i + 1} repeats registration key ${keyOf(rec)} with different content. ` +
@@ -426,7 +459,7 @@ export class FileBackend {
             `else entirely.`,
         );
       }
-      this.#remember(rec);
+      this.#remember(rec, seen, byBucket);
     }
     if (duplicatesCollapsed > 0) {
       console.warn(
@@ -467,7 +500,7 @@ export class FileBackend {
     // A store that predates the header cannot be checked retroactively: stamping it ASSERTS that its
     // existing records were written under the current schedule, which nobody verified. An empty store
     // is safe to stamp; one with records is not, so it needs the operator to say so.
-    if (!seenHeader && this.schedule != null && this.seen.size > 0 && !this.assumeSchedule) {
+    if (!seenHeader && this.schedule != null && seen.size > 0 && !this.assumeSchedule) {
       throw new Error(
         `${this.path} has registration records but no schedule header, so it predates this check and ` +
           `its records cannot be attributed to a schedule. If you know they were written under ` +
@@ -497,14 +530,18 @@ export class FileBackend {
         await dirHandle.close();
       }
     }
+    // INSTALLED LAST, after every step that can throw. Until this line the store is still serving
+    // whatever it had, which is what makes a failed load a no-op rather than something to undo.
+    this.seen = seen;
+    this.byBucket = byBucket;
   }
 
-  #remember(record) {
-    this.seen.add(keyOf(record));
+  #remember(record, seen = this.seen, byBucket = this.byBucket) {
+    seen.add(keyOf(record));
     const b = bucketOf(record);
-    const recs = this.byBucket.get(b) ?? [];
+    const recs = byBucket.get(b) ?? [];
     recs.push(record);
-    this.byBucket.set(b, recs);
+    byBucket.set(b, recs);
   }
 
   async has(d) {
@@ -538,8 +575,10 @@ export class FileBackend {
   async #ready() {
     await this.ready();
     if (!this.#stale) return;
-    await this.#reload(); // throws if it cannot reconcile, which is the fail-closed path
-    this.#stale = false;
+    // Throws if it cannot reconcile, which is the fail-closed path. The flag is cleared inside the
+    // shared attempt rather than here: clearing it on the strength of "my reload returned" is what
+    // let a caller mark a view fresh that a concurrent failure had already replaced with an old one.
+    await this.#reconcile();
   }
 
   async #appendOne(d) {
@@ -612,7 +651,7 @@ export class FileBackend {
         // writer's commitment as this caller's successful write while the live tree got this
         // caller's. The file backend is documented single-writer and nothing enforces it, so the
         // comparison is what makes the claim true rather than merely likely.
-        await this.#reload();
+        await this.#reconcile();
         const found = (this.byBucket.get(bucketOf(d)) ?? []).find((r) => keyOf(r) === k) ?? null;
         if (found && sameRegistrationRecord(found, record)) landed = found;
         else if (found) {

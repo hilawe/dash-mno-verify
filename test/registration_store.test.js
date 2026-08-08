@@ -712,3 +712,124 @@ test("a legacy record with no engine or statement still loads, because the forma
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// Arm the stale flag the way production does: an uncertain append whose retry barrier makes the
+// record durable, followed by a recovery read that fails. Returns the backend, the durable record,
+// and a counter of the reads the injected layer has served, so a test can reason about how many
+// reconciliations ran without reaching into private state.
+async function staleStoreWithDurableRecord(path, { onRead } = {}) {
+  const { open: realOpen, readFile: realReadFile } = await import("node:fs/promises");
+  const state = { reads: 0 };
+  let failNextSync = true;
+  const backend = new FileBackend(path, null, false, {
+    open: async (...args) => {
+      const fh = await realOpen(...args);
+      if (!failNextSync) return fh;
+      failNextSync = false;
+      return new Proxy(fh, {
+        get(target, prop) {
+          if (prop === "sync") return async () => { throw new Error("simulated sync failure"); };
+          const v = target[prop];
+          return typeof v === "function" ? v.bind(target) : v;
+        },
+      });
+    },
+    readFile: async (...args) => {
+      state.reads += 1;
+      // Read 1 is the initial load. Read 2 is the recovery read inside the append's catch, and
+      // failing it is what marks the store behind the file.
+      if (state.reads === 2) throw Object.assign(new Error("simulated recovery read failure"), { code: "EIO" });
+      const injected = onRead ? await onRead(state.reads, () => realReadFile(...args)) : undefined;
+      return injected === undefined ? realReadFile(...args) : injected;
+    },
+  });
+  await backend.ready();
+  const record = { season: 1, contextHash: "c", regNullifier: "n1", commitment: "1", engine: "zkvm", statement: "custody" };
+  await assert.rejects(() => backend.append(record), /simulated sync failure/);
+  return { backend, record, state };
+}
+
+test("concurrent callers of a stale store share ONE reconciliation", async () => {
+  // The defect a fresh full review found. Reconciliation was not single-flight, so two public calls
+  // that both found the store behind the file each ran their own reload over the SAME shared maps.
+  // Each captured its own "prior" pair to roll back to, and the one that failed restored a snapshot
+  // taken before the one that succeeded had installed anything.
+  //
+  // This asserts the mechanism rather than one interleaving, because the harm depends on which
+  // reload finishes last and that is not something a test should race for. One reconciliation for
+  // concurrent callers has no last-one-wins to lose.
+  const dir = mkdtempSync(join(tmpdir(), "mno-reg-single-flight-"));
+  const path = join(dir, "registrations.jsonl");
+  try {
+    const { backend, record, state } = await staleStoreWithDurableRecord(path);
+    const before = state.reads;
+    const answers = await Promise.all([
+      backend.has(record),
+      backend.seasonHasEngine(1, "zkvm"),
+      backend.forSeasonContext(1, "c"),
+      backend.declarationFor(1, "c"),
+    ]);
+    assert.equal(
+      state.reads - before,
+      1,
+      `four concurrent callers of a stale store must reconcile once, not ${state.reads - before} times`,
+    );
+    assert.equal(answers[0], true, "has() reflects the durable record");
+    assert.equal(answers[1], true, "and the zkVM downgrade signal is not silently false");
+    assert.equal(answers[2].length, 1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a failed reconciliation cannot leave a stale view marked fresh", async () => {
+  // The harm the single-flight defect produced. A reconciliation that failed restored the old maps
+  // AFTER a concurrent one had installed the correct ones, and the successful caller then cleared
+  // the stale flag over them. Nothing was left to say the view was behind the file, so the store
+  // answered from it for the rest of the process: seasonHasEngine reported no zkVM registration
+  // while the record was durably on disk, which is the downgrade signal reading backwards.
+  //
+  // The release below is a valve, not a timing assertion. Under the fix there is only one
+  // reconciliation, so nothing else will ever arrive to settle a read that is deliberately held.
+  const dir = mkdtempSync(join(tmpdir(), "mno-reg-race-"));
+  const path = join(dir, "registrations.jsonl");
+  try {
+    let held = null;
+    let secondReconcileRan = false;
+    const { backend, record } = await staleStoreWithDurableRecord(path, {
+      onRead: (n, real) => {
+        // Hold the first reconciliation open so the second can overtake it.
+        if (n === 3) return new Promise((resolve, reject) => { held = { resolve: () => resolve(real()), reject }; });
+        // A second reconciliation means single-flight is absent. Let it succeed and install the
+        // correct maps, then fail the one still in flight, which is the losing order.
+        if (n === 4) {
+          secondReconcileRan = true;
+          return real().then((data) => {
+            queueMicrotask(() =>
+              queueMicrotask(() => held.reject(Object.assign(new Error("racing reconcile failed"), { code: "EIO" }))),
+            );
+            return data;
+          });
+        }
+        return undefined;
+      },
+    });
+
+    const racing = Promise.allSettled([backend.has(record), backend.seasonHasEngine(1, "zkvm")]);
+    for (let i = 0; i < 20 && !secondReconcileRan; i += 1) await new Promise((r) => setImmediate(r));
+    if (!secondReconcileRan) held.resolve();
+    const settled = await racing;
+
+    // Whatever the interleaving, a confident wrong answer is the one outcome that is not allowed.
+    // Refusing is fine, because every caller here is deciding something that assumes the answer
+    // describes durable state.
+    for (const s of settled) {
+      assert.notEqual(s.value, false, "a stale store answered false for a record that is on disk");
+    }
+    // And the store must still be reconcilable afterwards rather than permanently wrong.
+    assert.equal(await backend.seasonHasEngine(1, "zkvm"), true, "the store never recovered, it is permanently stale");
+    assert.equal(await backend.has(record), true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
