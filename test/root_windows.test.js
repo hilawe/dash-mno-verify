@@ -406,12 +406,25 @@ test("the store REFUSES an un-normalized snapshot, so this is an invariant not a
 // serving, is worse than the unstated product it replaced.
 
 const leaves = (n, tag = "x") => Array.from({ length: n }, (_, i) => `${tag}${i}`);
-const withLeaves = (n, tag) => normalizeSnapshot({ height: 1, ts: 1, root: "r", leaves: leaves(n, tag) }, 16);
+// A record whose snapshot AGREES with it. The store now enforces that a record's root and height are
+// its snapshot's, which it always claimed and never checked, and these cases had quietly relied on
+// the gap: they adopted at one height and root while handing over a snapshot stamped height 1 and
+// root "r". Building both from the same values is what a real adoption does anyway.
+const withLeaves = (n, tag, { height = 1, root = "r", shaRoot = null } = {}) =>
+  normalizeSnapshot({ height, ts: 1, root, shaRoot, leaves: leaves(n, tag) }, 16);
+const rec = ({ height, root, ts = height, order = null, n = 10, tag = String(height), ...rest }) => ({
+  height,
+  root,
+  ts,
+  order,
+  snapshot: withLeaves(n, tag, { height, root }),
+  ...rest,
+});
 
 test("the bound is silent on the smallest valid window, and on a live-mainnet-sized changeover", () => {
   // Row 1: one small record.
   const small = new RootWindows(8, { maxLeaves: 1000 });
-  small.adopt({ height: 1, root: "r1", ts: 1, order: null, snapshot: withLeaves(3) });
+  small.adopt(rec({ height: 1, root: "r1", n: 3 }));
   assert.equal(small.snaps.length, 1);
   assert.equal(small.retainedLeaves(), 3);
 
@@ -423,7 +436,7 @@ test("the bound is silent on the smallest valid window, and on a live-mainnet-si
   const live = new RootWindows(8, { maxLeaves: shipped });
   for (let h = 1; h <= 8; h++) {
     for (const order of [null, "proRegTxHash"]) {
-      live.adopt({ height: h, root: `r${h}${order}`, ts: h, order, snapshot: withLeaves(2972, `${h}${order}`) });
+      live.adopt(rec({ height: h, root: `r${h}${order}`, ts: h, order, n: 2972, tag: `${h}${order}` }));
     }
   }
   assert.equal(live.snaps.length, 16, "a full changeover window at mainnet size is untouched");
@@ -433,7 +446,7 @@ test("the bound is silent on the smallest valid window, and on a live-mainnet-si
 test("with excess capacity the height window still binds, and with the bound off nothing changes", () => {
   // Row 3: a cap so large it can never fire.
   const roomy = new RootWindows(2, { maxLeaves: 10_000_000 });
-  for (let h = 1; h <= 5; h++) roomy.adopt({ height: h, root: `r${h}`, ts: h, order: null, snapshot: withLeaves(10, `h${h}`) });
+  for (let h = 1; h <= 5; h++) roomy.adopt(rec({ height: h, root: `r${h}`, ts: h, order: null, n: 10, tag: `h${h}` }));
   assert.equal(roomy.snaps.length, 2, "the height window is what evicted, not the bound");
 
   // Row 6: disabled, which must behave exactly as before the bound existed. THE ZERO COMES FROM THE
@@ -443,7 +456,7 @@ test("with excess capacity the height window still binds, and with the bound off
   // switch.
   assert.equal(buildConfig({ MNO_ROOT_WINDOW_MAX_LEAVES: "0" }).rootWindowMaxLeaves, 0, "0 is a legal setting, meaning no bound");
   const off = new RootWindows(8, { maxLeaves: buildConfig({ MNO_ROOT_WINDOW_MAX_LEAVES: "0" }).rootWindowMaxLeaves });
-  for (let h = 1; h <= 8; h++) off.adopt({ height: h, root: `r${h}`, ts: h, order: null, snapshot: withLeaves(65536, `h${h}`) });
+  for (let h = 1; h <= 8; h++) off.adopt(rec({ height: h, root: `r${h}`, ts: h, order: null, n: 65536, tag: `h${h}` }));
   assert.equal(off.snaps.length, 8);
   assert.equal(off.retainedLeaves(), 8 * 65536, "no bound means no eviction, however large the retained set");
 });
@@ -451,7 +464,7 @@ test("with excess capacity the height window still binds, and with the bound off
 test("over the bound, the OLDEST records are dropped and the newest are the ones kept", () => {
   // Rows 4 and 5: the cap admits two records while the height window would allow eight.
   const w = new RootWindows(8, { maxLeaves: 250 });
-  for (let h = 1; h <= 5; h++) w.adopt({ height: h, root: `r${h}`, ts: h, order: null, snapshot: withLeaves(100, `h${h}`) });
+  for (let h = 1; h <= 5; h++) w.adopt(rec({ height: h, root: `r${h}`, ts: h, order: null, n: 100, tag: `h${h}` }));
 
   assert.ok(w.retainedLeaves() <= 250, "the bound holds after every adoption");
   assert.equal(w.snaps.length, 2);
@@ -465,14 +478,14 @@ test("a record too large for the whole bound is still retained, because the serv
   // Row 7, the accepting row. Refusing here would leave current() advertising a root whose leaves
   // /v1/dml cannot serve, which is the same-instant split the record design exists to prevent.
   const w = new RootWindows(8, { maxLeaves: 10 });
-  w.adopt({ height: 1, root: "r1", ts: 1, order: null, snapshot: withLeaves(500, "a") });
+  w.adopt(rec({ height: 1, root: "r1", ts: 1, order: null, n: 500, tag: "a" }));
   assert.equal(w.snaps.length, 1);
   assert.equal(w.current().root, "r1");
   assert.equal(w.current().snapshot.leaves.length, 500, "the snapshot behind the served root is intact");
 
   // And a second oversized record replaces rather than accumulates, so the excess is one record, not
   // a growing pile of them.
-  w.adopt({ height: 2, root: "r2", ts: 2, order: null, snapshot: withLeaves(500, "b") });
+  w.adopt(rec({ height: 2, root: "r2", ts: 2, order: null, n: 500, tag: "b" }));
   assert.equal(w.snaps.length, 1);
   assert.equal(w.current().root, "r2");
   assert.equal(w.isRecent("r1"), false);
@@ -482,8 +495,8 @@ test("eviction under the bound takes each record's root and leaves together", ()
   // Row 8. A root surviving without the leaves behind it is the failure this whole record design
   // exists to prevent, so the bound must not become a new way to produce it.
   const w = new RootWindows(8, { maxLeaves: 150 });
-  w.adopt({ height: 1, root: "r1", ts: 1, order: null, snapshot: withLeaves(100, "a") });
-  w.adopt({ height: 2, root: "r2", ts: 2, order: null, snapshot: withLeaves(100, "b") });
+  w.adopt(rec({ height: 1, root: "r1", ts: 1, order: null, n: 100, tag: "a" }));
+  w.adopt(rec({ height: 2, root: "r2", ts: 2, order: null, n: 100, tag: "b" }));
 
   assert.equal(w.snaps.length, 1, "one record did not fit");
   for (const s of w.snaps) {
@@ -502,20 +515,21 @@ test("the bound evicts whole HEIGHTS, so a changeover pair is never split", () =
   const w = new RootWindows(8, { maxLeaves: 4 * 65536 });
   for (const h of [1, 2]) {
     for (const order of [null, "proRegTxHash"]) {
-      w.adopt({
+      w.adopt(rec({
         height: h,
         root: `H${h}-${order ? "v3" : "v2"}`,
         ts: h,
         order,
+        n: 65536,
+        tag: `${h}${order}`,
         blockHash: "ab".repeat(32),
         setCommitment: "same",
-        snapshot: withLeaves(65536, `${h}${order}`),
-      });
+      }));
     }
   }
   assert.equal(w.snaps.length, 4, "two heights, each carrying a changeover pair, exactly at the bound");
 
-  w.adopt({ height: 3, root: "H3-v3", ts: 3, order: "proRegTxHash", snapshot: withLeaves(65536, "3") });
+  w.adopt(rec({ height: 3, root: "H3-v3", ts: 3, order: "proRegTxHash", n: 65536, tag: "3" }));
 
   assert.equal(
     w.isRecent("H1-v2"),
@@ -533,11 +547,11 @@ test("one adoption can put the window several heights over, and the bound clears
   // snapshot larger than the ones already held is ordinary (the masternode list grows), and it can
   // put the window over by more than one height at once.
   const w = new RootWindows(8, { maxLeaves: 250 });
-  w.adopt({ height: 1, root: "r1", ts: 1, order: null, snapshot: withLeaves(100, "a") });
-  w.adopt({ height: 2, root: "r2", ts: 2, order: null, snapshot: withLeaves(100, "b") });
+  w.adopt(rec({ height: 1, root: "r1", ts: 1, order: null, n: 100, tag: "a" }));
+  w.adopt(rec({ height: 2, root: "r2", ts: 2, order: null, n: 100, tag: "b" }));
   assert.equal(w.retainedLeaves(), 200);
 
-  w.adopt({ height: 3, root: "r3", ts: 3, order: null, snapshot: withLeaves(200, "c") });
+  w.adopt(rec({ height: 3, root: "r3", ts: 3, order: null, n: 200, tag: "c" }));
 
   assert.ok(w.retainedLeaves() <= 250, `the bound holds after an adoption that overshot it (${w.retainedLeaves()})`);
   assert.deepEqual(w.snaps.map((s) => s.height), [3], "both earlier heights went, not just the oldest one");
@@ -548,8 +562,8 @@ test("a window exactly at the bound keeps everything, so the limit is inclusive"
   // comparison is > or >= was unpinned, and the stricter one silently drops a height of history at
   // precisely the configured size.
   const w = new RootWindows(8, { maxLeaves: 200 });
-  w.adopt({ height: 1, root: "r1", ts: 1, order: null, snapshot: withLeaves(100, "a") });
-  w.adopt({ height: 2, root: "r2", ts: 2, order: null, snapshot: withLeaves(100, "b") });
+  w.adopt(rec({ height: 1, root: "r1", ts: 1, order: null, n: 100, tag: "a" }));
+  w.adopt(rec({ height: 2, root: "r2", ts: 2, order: null, n: 100, tag: "b" }));
 
   assert.equal(w.retainedLeaves(), 200, "exactly at the bound");
   assert.equal(w.snaps.length, 2, "which is within it, not over it");
@@ -562,12 +576,12 @@ test("re-adopting at an existing key re-checks the bound, since a replacement ca
   // at an existing (height, ordering) is ordinary, and the replacement can carry more leaves than
   // what it replaces, which puts the window over without any new height arriving.
   const w = new RootWindows(8, { maxLeaves: 250 });
-  w.adopt({ height: 1, root: "r1", ts: 1, order: null, snapshot: withLeaves(100, "a") });
-  w.adopt({ height: 2, root: "r2", ts: 2, order: null, snapshot: withLeaves(100, "b") });
+  w.adopt(rec({ height: 1, root: "r1", ts: 1, order: null, n: 100, tag: "a" }));
+  w.adopt(rec({ height: 2, root: "r2", ts: 2, order: null, n: 100, tag: "b" }));
   assert.equal(w.retainedLeaves(), 200);
 
   // Same key, a bigger snapshot.
-  w.adopt({ height: 2, root: "r2b", ts: 3, order: null, snapshot: withLeaves(240, "c") });
+  w.adopt(rec({ height: 2, root: "r2b", ts: 3, order: null, n: 240, tag: "c" }));
 
   assert.ok(w.retainedLeaves() <= 250, `the bound holds after a replacement grew (${w.retainedLeaves()})`);
   assert.deepEqual(w.snaps.map((s) => s.height), [2], "the older height went, and the replacement stayed");
@@ -575,9 +589,9 @@ test("re-adopting at an existing key re-checks the bound, since a replacement ca
 
   // And a replacement that SHRINKS does not evict anything it did not need to.
   const w2 = new RootWindows(8, { maxLeaves: 250 });
-  w2.adopt({ height: 1, root: "s1", ts: 1, order: null, snapshot: withLeaves(100, "a") });
-  w2.adopt({ height: 2, root: "s2", ts: 2, order: null, snapshot: withLeaves(140, "b") });
-  w2.adopt({ height: 2, root: "s2b", ts: 3, order: null, snapshot: withLeaves(10, "c") });
+  w2.adopt(rec({ height: 1, root: "s1", ts: 1, order: null, n: 100, tag: "a" }));
+  w2.adopt(rec({ height: 2, root: "s2", ts: 2, order: null, n: 140, tag: "b" }));
+  w2.adopt(rec({ height: 2, root: "s2b", ts: 3, order: null, n: 10, tag: "c" }));
   assert.deepEqual(w2.snaps.map((s) => s.height), [1, 2], "a shrinking replacement evicts nothing");
   assert.equal(w2.retainedLeaves(), 110);
 });
@@ -595,7 +609,7 @@ test("a window configured larger than the leaf bound allows is shortened by the 
   const byDefault = new RootWindows(buildConfig({}).rootWindow, { maxLeaves: shipped });
   for (let h = 1; h <= 8; h++) {
     for (const order of [null, "proRegTxHash"]) {
-      byDefault.adopt({ height: h, root: `d${h}${order}`, ts: h, order, snapshot: withLeaves(perRecord, `${h}${order}`) });
+      byDefault.adopt(rec({ height: h, root: `d${h}${order}`, ts: h, order, n: perRecord, tag: `${h}${order}` }));
     }
   }
   assert.equal(byDefault.snaps.length, 16, "under the default window the bound is silent");
@@ -603,7 +617,7 @@ test("a window configured larger than the leaf bound allows is shortened by the 
   // A window of 100 heights at the same list size: the bound binds first and the history is shorter
   // than the operator asked for.
   const wide = new RootWindows(100, { maxLeaves: shipped });
-  for (let h = 1; h <= 100; h++) wide.adopt({ height: h, root: `w${h}`, ts: h, order: null, snapshot: withLeaves(perRecord, `w${h}`) });
+  for (let h = 1; h <= 100; h++) wide.adopt(rec({ height: h, root: `w${h}`, ts: h, n: perRecord, tag: `w${h}` }));
   assert.ok(wide.snaps.length < 100, "the configured window was not delivered");
   assert.equal(wide.snaps.length, Math.floor(shipped / perRecord), "and what it delivers is exactly what the bound allows");
   assert.equal(wide.current().root, "w100", "the newest is still what is served");
@@ -616,12 +630,12 @@ test("a root a live challenge was minted against is not evicted by the leaf boun
   // fault of their own. The proof was correct when it was asked for.
   const pinned = new Set();
   const w = new RootWindows(8, { maxLeaves: 250, pinnedRoots: () => pinned });
-  w.adopt({ height: 1, root: "r1", ts: 1, order: null, snapshot: withLeaves(100, "a") });
-  w.adopt({ height: 2, root: "r2", ts: 2, order: null, snapshot: withLeaves(100, "b") });
+  w.adopt(rec({ height: 1, root: "r1", ts: 1, order: null, n: 100, tag: "a" }));
+  w.adopt(rec({ height: 2, root: "r2", ts: 2, order: null, n: 100, tag: "b" }));
 
   // A challenge names r1, so the member is off proving against height 1.
   pinned.add("r1");
-  w.adopt({ height: 3, root: "r3", ts: 3, order: null, snapshot: withLeaves(100, "c") });
+  w.adopt(rec({ height: 3, root: "r3", ts: 3, order: null, n: 100, tag: "c" }));
 
   assert.equal(w.isRecent("r1"), true, "the pinned root survived, so the member's proof can still land");
   assert.equal(w.isRecent("r2"), false, "and the unpinned neighbour is what made room for the new height");
@@ -636,9 +650,9 @@ test("pinning cannot hold the window open without limit, so the bound wins when 
   // Those challenges then fail exactly as they did before pinning existed.
   const pinned = new Set(["r1", "r2", "r3"]);
   const w = new RootWindows(8, { maxLeaves: 250, pinnedRoots: () => pinned });
-  w.adopt({ height: 1, root: "r1", ts: 1, order: null, snapshot: withLeaves(100, "a") });
-  w.adopt({ height: 2, root: "r2", ts: 2, order: null, snapshot: withLeaves(100, "b") });
-  w.adopt({ height: 3, root: "r3", ts: 3, order: null, snapshot: withLeaves(100, "c") });
+  w.adopt(rec({ height: 1, root: "r1", ts: 1, order: null, n: 100, tag: "a" }));
+  w.adopt(rec({ height: 2, root: "r2", ts: 2, order: null, n: 100, tag: "b" }));
+  w.adopt(rec({ height: 3, root: "r3", ts: 3, order: null, n: 100, tag: "c" }));
 
   assert.ok(w.retainedLeaves() <= 250, `the bound is not negotiable, retained ${w.retainedLeaves()}`);
   assert.equal(w.isRecent("r1"), false, "the oldest went even though it was pinned");
@@ -647,6 +661,35 @@ test("pinning cannot hold the window open without limit, so the bound wins when 
 
 test("a window given no pin source behaves exactly as it did before pinning existed", () => {
   const w = new RootWindows(8, { maxLeaves: 250 });
-  for (let h = 1; h <= 3; h++) w.adopt({ height: h, root: `r${h}`, ts: h, order: null, snapshot: withLeaves(100, `h${h}`) });
+  for (let h = 1; h <= 3; h++) w.adopt(rec({ height: h, root: `r${h}`, ts: h, order: null, n: 100, tag: `h${h}` }));
   assert.deepEqual(w.snaps.map((s) => s.height), [2, 3]);
+});
+
+test("a record whose snapshot is not its own is refused, which the store only ever claimed before", () => {
+  // The record holds a root and a snapshot precisely so the two can never name different things, and
+  // nothing checked it. A caller could store one advertised root beside another snapshot's leaves, and
+  // the gateway would then mint a challenge for a root whose served leaves cannot build a proof for
+  // it: the same split the record design exists to prevent, arriving through the front door. A
+  // folder-access review found the claim unenforced, and several tests in this file had been relying
+  // on the gap without meaning to.
+  const w = new RootWindows(8, { maxLeaves: 0 });
+
+  assert.throws(
+    () => w.adopt({ height: 5, root: "advertised", ts: 5, order: null, snapshot: withLeaves(3, "x", { height: 5, root: "different" }) }),
+    /advertises root advertised while its snapshot carries different/,
+  );
+  assert.throws(
+    () => w.adopt({ height: 5, root: "r", ts: 5, order: null, snapshot: withLeaves(3, "x", { height: 9, root: "r" }) }),
+    /at height 5 while its snapshot says 9/,
+  );
+  assert.throws(
+    () => w.adopt({ height: 5, root: "r", shaRoot: "aa", ts: 5, order: null, snapshot: withLeaves(3, "x", { height: 5, root: "r", shaRoot: "bb" }) }),
+    /shaRoot aa is not the snapshot's bb/,
+  );
+  assert.equal(w.snaps.length, 0, "and nothing was stored on the way to refusing");
+
+  // The exit ordinary operation takes: a record built from one snapshot is accepted.
+  w.adopt(rec({ height: 5, root: "r5" }));
+  assert.equal(w.current().root, "r5");
+  assert.equal(w.current().snapshot.root, "r5", "and what it serves names what it advertises");
 });

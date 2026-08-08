@@ -7,13 +7,13 @@ prioritized punch list.
 
 ## CURRENT STATE, 2026-08-07. THIS SUPERSEDES EVERY SECTION BELOW IT
 
-`main` at `21be20c`, pushed, clean tree. Suite 595, all three CI jobs green. The dated sections that
+`main` at `HEAD`, pushed, clean tree. Suite 606, all three CI jobs green. The dated sections that
 follow are the running record of 2026-08-04 to 08-07 and are kept append-only. Read them only when
 you need the reasoning behind something here.
 
-THE FIVE-REVIEW ROUND IS DONE. Most of it is folded and section 3 lists exactly what is not, which is
-the next session's work after a fresh pass. Both reports are committed alongside the code as this
-repository does. Nothing waits on a reviewer.
+THE FIVE-REVIEW ROUND IS DONE AND FULLY FOLDED, including the six findings that were carried. Both
+reports are committed alongside the code as this repository does. Nothing waits on a reviewer, and
+the next thing due is a FRESH pass over the fold rather than a re-check of the named findings.
 
 ### 1. WHERE TO START
 
@@ -59,59 +59,29 @@ folder access, one author-side charter, and two packet reviews without access. A
 REQUEST-CHANGES. Findings are in `REVIEW_FINDINGS_dash-mno-verify_adversarial_2026-08-07.md` and
 `REVIEW_FINDINGS_dash-mno-verify_folder-access_2026-08-07.md`, both committed.
 
-Folded: the blocker and both majors below, the two minors, the stale-view major from the folder-access
-pass, and its N4. NOT YET FOLDED, and the next session's first work after the fresh pass:
+Everything is folded. The six findings carried over from the folder-access pass are closed:
 
-- **M2, the JSON-RPC path has no response-size bound** (`oracle/node_client.js`). A node can make the
-  gateway buffer and parse an arbitrarily large response before any DML check runs. The CLI buffer
-  limit was settled at 64 MiB long ago and the HTTP path never got the equivalent.
-- **M3, `RootWindows.adopt()` does not enforce the root-to-snapshot invariant it claims**
-  (`core/stores.js`). A caller can store one advertised root beside another snapshot's leaves. The
-  store already refuses an un-normalized snapshot, so this is the same class of guard and belongs
-  beside it.
-- **M4, the registration loader accepts parsed JSON without validating a record shape**
-  (`core/registration_store.js`). Syntactically valid corruption can enter the member cache or bind a
-  bucket to an impossible engine and statement instead of the file being refused at startup.
-- **N1, the partial merkle parser accepts noncanonical CompactSize encodings**, which contradicts the
-  one-encoding-per-commitment property the malleability work claimed.
-- **N2, malformed IPv6 groups alias valid service bytes** in `oracle/dml_commitment.js`, against a
-  boundary that claims malformed fields refuse.
-- **N3, the X11 reference is pinned by a mutable TAG rather than the commit it records.** The image
-  already writes `REFERENCE_COMMIT`, and the pin should be that commit so a rebuild years later
-  compiles the same source.
-
-**The blocker invalidated a fix from two days earlier.** The registration store's uncertain-write
-path reported success when a reread found the record, and `readFile()` can see dirty page-cache data
-that never reached stable storage. A failed `sync()` is precisely the case where visibility and
-durability differ, so the store told members they were registered on evidence a crash could erase.
-That is worse than the duplicate the reread was written to prevent, because the atomic commit point
-quietly stopped being one. Durability now needs a DURABILITY BARRIER: the recovery path reopens the
-file and syncs, and only a sync that succeeds makes it a commit. The reread is demoted to learning
-the index.
-
-Two majors with it. Recovery searched by key alone, so a record a second writer put there under the
-same key was claimed as this caller's success while the live tree got this caller's commitment. And a
-failed reload left the view stale, so a later append assigned an index the rebuilt tree would not
-agree with and the live member order diverged from what a restart produces.
-
-**A METHOD LESSON WORTH MORE THAN THE BUGS.** `prune(Infinity)` emptied the nullifier store. That
-guard had been written, then DELETED earlier the same session after mutation-testing it with only
-NaN-producing values and concluding it was redundant. The mutation method was sound and the input set
-was too small. When a guard looks redundant, the question is which inputs were tried, not whether the
-reasoning was tidy.
-
-**THE PACKET REVIEWS WERE STALE AND IDENTICAL, and both facts matter.** They were cut 2026-08-05,
-before `tools/x11-reference/` existed, so their blocker ("the deleted X11 harness leaves the evidence
-nonreproducible") and two of their three requirements were already answered by the time they arrived.
-Rebuild packets from the post-fold code, which the global playbook already says and which this round
-is the specimen for. The two packet reports were also WORD FOR WORD IDENTICAL, including the same
-four minors and the same closing paragraph, so they are one voice rather than two families and were
-weighted as one.
-
-Their third requirement was real and is done: the vectors file now records where a third party
-independently obtains each block hash and header, with four ways to check them without trusting the
-file. Adding it surfaced a bug, since regeneration silently dropped unknown metadata, which the test
-asserting the provenance exists caught by failing.
+- **The JSON-RPC path is bounded** (`oracle/node_client.js`). The declared length is refused over the
+  cap and the body is read in chunks so a response that lies about its length is cut off at the same
+  bound. The command-line path had been capped since it was written and the HTTP path never got the
+  equivalent, which the refresh timer reached on an ordinary schedule.
+- **`RootWindows.adopt()` enforces the root-to-snapshot pairing it always claimed.** A record's root,
+  height and shaRoot must be its snapshot's. Several tests in `test/root_windows.test.js` had been
+  relying on the gap without meaning to and now build consistent records, which is what a real
+  adoption does anyway.
+- **The registration loader validates a record's shape** before it enters the index, and refuses at
+  load rather than letting syntactically valid corruption surface later as something else. A record
+  with NO engine or statement still loads, because the format promises to keep reading pre-existing
+  files and a first version would have refused every one of them at boot.
+- **The varint reader accepts only the canonical form.** A wider encoding of a small number was a
+  second spelling of the same tree, which quietly undercut the one-encoding-per-commitment property
+  the malleability work had established.
+- **Malformed IPv6 groups refuse** instead of coercing to zero through a masked NaN. Writing the test
+  for that found a second case nobody had reported: two `::` abbreviations parsed as one and silently
+  discarded the rest.
+- **The X11 reference is pinned by COMMIT**, with the tag only as the way to find it. The build now
+  compares and fails on a mismatch, so a moved tag cannot quietly produce a reference built from other
+  source. Verified by building against a wrong commit and watching it refuse.
 
 **THE PATTERN ACROSS THE WHOLE ROUND.** The two reviewers with access found DEFECTS, including the
 blocker and every major. The reviewers without it found FRAMING, and their central blocker had already

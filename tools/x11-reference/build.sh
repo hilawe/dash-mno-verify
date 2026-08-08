@@ -3,7 +3,11 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DOCKER="${DOCKER:-$(command -v docker || echo /opt/homebrew/bin/docker)}"
-TAG="${DASH_TAG:-$(cat "$HERE/PIN")}"
+# PIN carries "<tag> <commit>". The tag is how the source is found and the COMMIT is the pin, since a
+# tag is mutable and a rebuild years from now must compile the same source the vectors came from.
+PIN_LINE="$(cat "$HERE/PIN")"
+TAG="${DASH_TAG:-${PIN_LINE%% *}}"
+COMMIT="${DASH_COMMIT-${PIN_LINE##* }}"
 # THE TAG ALONE WAS THE CACHE KEY, so editing harness.cpp or the Dockerfile left the old image in
 # place and every later run verified against a binary that no longer matched the sources. A reviewer
 # appended "#error" to harness.cpp and watched build.sh report "already built" and exit 0. Folding a
@@ -21,5 +25,5 @@ if "$DOCKER" image inspect "$IMAGE" >/dev/null 2>&1 && [ -z "${X11REF_REBUILD:-}
   exit 0
 fi
 
-echo "building $IMAGE from Dash Core $TAG, which clones upstream and takes a few minutes the first time"
-"$DOCKER" build --build-arg "DASH_TAG=${TAG}" -t "$IMAGE" "$HERE"
+echo "building $IMAGE from Dash Core $TAG at ${COMMIT:-whatever the tag resolves to}, which clones upstream and takes a few minutes the first time"
+"$DOCKER" build --build-arg "DASH_TAG=${TAG}" --build-arg "DASH_COMMIT=${COMMIT}" -t "$IMAGE" "$HERE"

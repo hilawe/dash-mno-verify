@@ -27,7 +27,13 @@ checkout. Nothing from upstream is copied into this repository, which keeps the 
 about the pin rather than about whoever last updated a vendored copy. The same approach the project
 already takes with `circom-ecdsa`.
 
-The pin is in `Dockerfile` as `DASH_TAG`. The committed vectors were produced at **v23.1.3**.
+The pin is `PIN`, which carries a tag and a COMMIT. The tag is how the source is found and the commit
+is the pin, because a tag is mutable and a rebuild years from now has to compile the same source the
+committed vectors came from. The build fetches the tag, compares the resulting commit, and FAILS if
+upstream has moved it. To follow a moved tag deliberately, build with `DASH_COMMIT=` empty, read the
+commit it prints, and write it into `PIN`.
+
+The committed vectors were produced at **v23.1.3**, commit `8f06d398`.
 
 ## Running it
 

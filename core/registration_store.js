@@ -116,6 +116,31 @@ function declarationOfRecord(record) {
 // interrupted write into a file the gateway refuses to start on, which is the opposite of what the
 // duplicate handling exists for, and a reviewer reproduced exactly that sequence. The fields compared
 // are the ones that decide whether admitting both would admit the same member twice.
+// What a loaded record must be, returned as a reason rather than a boolean so the refusal can say
+// which field is wrong. Every one of these is a field the members tree or the declaration logic reads,
+// so a record failing any of them is one that would fail later and further from the cause.
+function registrationRecordProblem(rec) {
+  if (rec === null || typeof rec !== "object" || Array.isArray(rec)) return "not an object";
+  if (!Number.isInteger(rec.season) || rec.season < 0) return `season ${JSON.stringify(rec.season)} is not a non-negative integer`;
+  for (const f of ["contextHash", "regNullifier", "commitment"]) {
+    if (typeof rec[f] !== "string" || rec[f].length === 0) return `${f} is not a non-empty string`;
+  }
+  if (!Number.isInteger(rec.index) || rec.index < 0) return `index ${JSON.stringify(rec.index)} is not a non-negative integer`;
+  // The engine and statement bind the bucket, and an invalid pair would make every later registration
+  // for that bucket refuse with a statement mismatch against a declaration nothing could satisfy.
+  //
+  // ABSENT IS LEGAL AND INVALID IS NOT. A record written before these fields existed carries neither,
+  // and declarationOfRecord reads that as the plonk/derive default, which is a supported format rather
+  // than corruption. What is not supported is a pair that is present and impossible, which is the case
+  // this refuses. A first version demanded the fields outright and would have refused every legacy
+  // file at boot, which is a guard with no exit for state the format promises to keep reading.
+  const hasEngine = rec.engine !== undefined || rec.statement !== undefined;
+  if (hasEngine && !isValidEngineStatement(rec.engine, rec.statement)) {
+    return `engine/statement ${JSON.stringify(rec.engine)}/${JSON.stringify(rec.statement)} is not a valid pair`;
+  }
+  return null;
+}
+
 function sameRegistrationRecord(a, b) {
   return (
     String(a.season) === String(b.season) &&
@@ -386,6 +411,20 @@ export class FileBackend {
         }
         duplicatesCollapsed += 1;
         continue;
+      }
+      // THE RECORD'S SHAPE IS CHECKED BEFORE IT ENTERS THE INDEX. Parsing as JSON says only that the
+      // bytes were syntactically valid, and a folder-access review pointed out what that lets in:
+      // syntactically valid corruption reaching the member cache, a bucket bound to an impossible
+      // engine and statement, or a tree materialization failing later instead of the file being
+      // refused at startup. The whole point of loading is to rebuild a durable index, so a record it
+      // cannot vouch for should stop the boot, where an operator can act on it.
+      const bad = registrationRecordProblem(rec);
+      if (bad) {
+        throw new Error(
+          `${this.path} line ${i + 1} is not a usable registration record (${bad}). Refusing at load ` +
+            `rather than admitting it to the members tree, where it would surface later as something ` +
+            `else entirely.`,
+        );
       }
       this.#remember(rec);
     }

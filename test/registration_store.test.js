@@ -274,7 +274,7 @@ test("a torn final line is discarded on load, so a crash mid-append does not ref
   const path = join(dir, "regs.jsonl");
   const header = JSON.stringify({ type: "schedule", schedule: "sch1" });
   const good = JSON.stringify({
-    season: 0, contextHash: "ctx", regNullifier: "nf1", commitment: "11", engine: "groth16", statement: "st", index: 0,
+    season: 0, contextHash: "ctx", regNullifier: "nf1", commitment: "11", engine: "plonk", statement: "derive", index: 0,
   });
   await writeFile(path, `${header}\n${good}\n{"season":0,"contextHa`);
   const b = new FileBackend(path, "sch1");
@@ -291,7 +291,7 @@ test("a malformed line in the MIDDLE still refuses, because that is not an inter
   const path = join(dir, "regs.jsonl");
   const header = JSON.stringify({ type: "schedule", schedule: "sch1" });
   const good = JSON.stringify({
-    season: 0, contextHash: "ctx", regNullifier: "nf1", commitment: "11", engine: "groth16", statement: "st", index: 0,
+    season: 0, contextHash: "ctx", regNullifier: "nf1", commitment: "11", engine: "plonk", statement: "derive", index: 0,
   });
   await writeFile(path, `${header}\n{"broken\n${good}\n`);
   const b = new FileBackend(path, "sch1");
@@ -320,14 +320,14 @@ test("a COMPLETE record with no trailing newline is terminated, not left to pois
   const path = join(dir, "regs.jsonl");
   const header = JSON.stringify({ type: "schedule", schedule: "sch1" });
   const rec = (nf, index) => JSON.stringify({
-    season: 0, contextHash: "ctx", regNullifier: nf, commitment: "11", engine: "groth16", statement: "st", index,
+    season: 0, contextHash: "ctx", regNullifier: nf, commitment: "11", engine: "plonk", statement: "derive", index,
   });
   await writeFile(path, `${header}\n${rec("nf1", 0)}`); // no trailing newline
 
   const b = new FileBackend(path, "sch1");
   await b.ready();
   assert.equal(b.tornTailTerminated, true, "the repair happened and is recorded, not silent");
-  await b.append({ season: 0, contextHash: "ctx", regNullifier: "nf2", commitment: "22", engine: "groth16", statement: "st" });
+  await b.append({ season: 0, contextHash: "ctx", regNullifier: "nf2", commitment: "22", engine: "plonk", statement: "derive" });
 
   // The reopen is the assertion that matters: the first repair passed a test that only read once.
   const b2 = new FileBackend(path, "sch1");
@@ -343,7 +343,7 @@ test("a normal file ending in a newline is not touched by the repair", async () 
   const path = join(dir, "regs.jsonl");
   const header = JSON.stringify({ type: "schedule", schedule: "sch1" });
   const rec = JSON.stringify({
-    season: 0, contextHash: "ctx", regNullifier: "nf1", commitment: "11", engine: "groth16", statement: "st", index: 0,
+    season: 0, contextHash: "ctx", regNullifier: "nf1", commitment: "11", engine: "plonk", statement: "derive", index: 0,
   });
   await writeFile(path, `${header}\n${rec}\n`);
   const before = await readFile(path, "utf8");
@@ -656,7 +656,7 @@ test("a failed recovery read leaves no public view answering from stale state", 
     });
     await backend.ready();
 
-    const record = { season: 1, contextHash: "c", regNullifier: "n1", commitment: "m1", engine: "zkvm", statement: "receipt" };
+    const record = { season: 1, contextHash: "c", regNullifier: "n1", commitment: "m1", engine: "zkvm", statement: "custody" };
     failNextRead = true; // the recovery READ fails, after the retry sync has already succeeded
     await assert.rejects(() => backend.append(record), /simulated sync failure/, "the append reports the uncertain write");
 
@@ -666,6 +666,48 @@ test("a failed recovery read leaves no public view answering from stale state", 
     assert.equal(await backend.seasonHasEngine(1, "zkvm"), true, "and the zkVM downgrade signal is not silently false");
     assert.equal((await backend.forSeasonContext(1, "c")).length, 1);
     assert.ok(await backend.declarationFor(1, "c"), "and the declaration is visible");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a syntactically valid record that is not a registration is refused at load", async () => {
+  // Parsing as JSON says only that the bytes were syntactically valid. A folder-access review pointed
+  // out what that lets in: corruption reaching the member cache, a bucket bound to an impossible
+  // engine and statement, or a tree materialization failing later instead of the file being refused
+  // where an operator can act on it.
+  const cases = [
+    [{ season: "one", contextHash: "c", regNullifier: "n", commitment: "m", index: 0 }, /season/],
+    [{ season: 1, contextHash: "", regNullifier: "n", commitment: "m", index: 0 }, /contextHash/],
+    [{ season: 1, contextHash: "c", regNullifier: "n", commitment: "m", index: -1 }, /index/],
+    [{ season: 1, contextHash: "c", regNullifier: "n", commitment: "m", index: 0, engine: "plonk", statement: "custody" }, /not a valid pair/],
+    [{ season: 1, contextHash: "c", regNullifier: "n", commitment: "m", index: 0, engine: "__proto__", statement: "derive" }, /not a valid pair/],
+    [[1, 2, 3], /not an object/],
+  ];
+  for (const [bad, pattern] of cases) {
+    const dir = mkdtempSync(join(tmpdir(), "mno-reg-shape-"));
+    const path = join(dir, "registrations.jsonl");
+    try {
+      writeFileSync(path, JSON.stringify(bad) + "\n");
+      const backend = new FileBackend(path, null, false);
+      await assert.rejects(() => backend.ready(), pattern, JSON.stringify(bad));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+});
+
+test("a legacy record with no engine or statement still loads, because the format promises it will", async () => {
+  // The fields were added later and declarationOfRecord reads their absence as the plonk/derive
+  // default. A first version of the shape check demanded them outright, which would have refused every
+  // pre-existing file at boot: a guard with no exit for state the format says it keeps reading.
+  const dir = mkdtempSync(join(tmpdir(), "mno-reg-legacy-shape-"));
+  const path = join(dir, "registrations.jsonl");
+  try {
+    writeFileSync(path, JSON.stringify({ season: 1, contextHash: "c", regNullifier: "n", commitment: "m", index: 0 }) + "\n");
+    const backend = new FileBackend(path, null, false);
+    await backend.ready();
+    assert.deepEqual(await backend.declarationFor(1, "c"), { engine: "plonk", statement: "derive" });
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

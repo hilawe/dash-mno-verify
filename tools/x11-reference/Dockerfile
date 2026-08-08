@@ -19,11 +19,30 @@ RUN apt-get update \
 
 WORKDIR /build
 
-# A shallow single-tag clone, because only src/crypto/x11 is wanted and the full history is a few
-# hundred megabytes of things this harness never reads.
-RUN git clone --depth 1 --branch "${DASH_TAG}" https://github.com/dashpay/dash.git dashcore \
- && git -C dashcore rev-parse HEAD > /build/REFERENCE_COMMIT \
- && echo "${DASH_TAG}" > /build/REFERENCE_TAG
+# THE COMMIT IS THE PIN, and the tag is only how it is found.
+#
+# A git tag is mutable. Upstream can move or re-cut one, so a clean rebuild years from now was not
+# guaranteed to compile the source the committed vectors were derived from, which is the one property
+# this whole directory exists to provide. A reviewer pointed out that the image already RECORDED the
+# commit and then did not use it.
+#
+# So the tag is fetched, the resulting commit is checked against DASH_COMMIT, and a mismatch fails the
+# build rather than quietly producing a reference built from something else. Passing DASH_COMMIT empty
+# is the deliberate escape for moving the pin: the build then records whatever the tag resolved to and
+# prints it, which is the value to write into PIN.
+ARG DASH_COMMIT=8f06d39897babc4c4d28598af9426f483e3c5596
+
+RUN set -eu; \
+    git clone --depth 1 --branch "${DASH_TAG}" https://github.com/dashpay/dash.git dashcore; \
+    GOT="$(git -C dashcore rev-parse HEAD)"; \
+    if [ -n "${DASH_COMMIT}" ] && [ "${GOT}" != "${DASH_COMMIT}" ]; then \
+      echo "PIN MISMATCH: tag ${DASH_TAG} now resolves to ${GOT}, not the pinned ${DASH_COMMIT}."; \
+      echo "A tag moved upstream. Decide whether to follow it before regenerating anything."; \
+      exit 1; \
+    fi; \
+    echo "${GOT}" > /build/REFERENCE_COMMIT; \
+    echo "${DASH_TAG}" > /build/REFERENCE_TAG; \
+    echo "reference pinned at ${GOT}"
 
 COPY harness.cpp /build/harness.cpp
 

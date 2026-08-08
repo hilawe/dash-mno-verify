@@ -438,3 +438,37 @@ test("the commitment covers banned nodes too, so it must be checked over the unf
     /does not match the coinbase commitment/,
   );
 });
+
+test("a varint written wider than its shortest form is refused, so one tree has one encoding", () => {
+  // Found by a folder-access review. The malleability work established that one commitment must have
+  // exactly one accepted encoding, and this reader quietly undercut it: the hash count 5 could be
+  // written bare, or as 0xfd 05 00, or wider still, and every spelling parsed to the same tree. The
+  // partial merkle tree's other malleability guards were pointless while this one stood.
+  const tree = BLOCK.cbTxMerkleTree;
+  const buf = Buffer.from(tree, "hex");
+  const nHashes = buf[4];
+  assert.ok(nHashes < 0xfd, "the fixture's hash count is small enough to be written bare");
+
+  // The same tree with the count written in the two-byte form. Nothing else changes.
+  const wider = Buffer.concat([
+    buf.subarray(0, 4),
+    Buffer.from([0xfd, nHashes, 0x00]),
+    buf.subarray(5),
+  ]);
+  assert.throws(() => partialMerkleTree(wider.toString("hex")), /wider form than its shortest/);
+
+  // And the canonical spelling still parses, so the guard has an exit.
+  assert.ok(partialMerkleTree(tree).root);
+});
+
+test("a malformed IPv6 group is refused rather than silently becoming zero", () => {
+  // parseInt("gg", 16) is NaN and the old mask turned that into zero, so "gg" and "0" produced
+  // identical bytes. A malformed service from the node then serialized to a valid-looking entry,
+  // against a boundary that claims malformed fields refuse.
+  for (const bad of ["[2001:gg::1]:9999", "[2001:100000::1]:9999", "[2001:-1::1]:9999", "[2001::1::2]:9999"]) {
+    assert.throws(() => serviceBytes(bad), /malformed IPv6/, bad);
+  }
+  // A real IPv6 service still encodes, and the abbreviation still expands.
+  assert.equal(serviceBytes("[2001:db8::1]:9999").subarray(0, 16).toString("hex"), "20010db8000000000000000000000001");
+  assert.equal(serviceBytes("[::]:0").subarray(0, 16).toString("hex"), "00".repeat(16));
+});

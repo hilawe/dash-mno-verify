@@ -25,6 +25,31 @@ export const DEFAULT_MAX_BUFFER = 64 * 1024 * 1024;
 // shells out to a local `dash-cli`. Everything is injectable so a test can drive both paths without
 // a node, which is the whole reason the snapshot builders take a `call` rather than opening their
 // own connection.
+// Read a response body under a hard byte cap, counting RECEIVED BYTES rather than string units so a
+// multibyte payload is measured correctly. Stops reading and destroys the stream the moment the cap is
+// crossed, rather than discovering the size after buffering it.
+async function readCapped(res, maxBytes, method) {
+  if (!res.body) return await res.text();
+  const reader = res.body.getReader();
+  const chunks = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel().catch(() => {});
+        throw new Error(`RPC ${method}: response exceeded the ${maxBytes} byte cap`);
+      }
+      chunks.push(Buffer.from(value));
+    }
+  } finally {
+    reader.releaseLock?.();
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
 export function makeNodeCall({
   rpcUrl = null,
   rpcUser = null,
@@ -52,7 +77,27 @@ export function makeNodeCall({
       signal: AbortSignal.timeout(timeoutMs),
     });
     if (!res.ok) throw new Error(`RPC ${method} -> HTTP ${res.status}`);
-    const j = await res.json();
+    // BOUNDED THE SAME WAY THE COMMAND-LINE PATH IS. `maxBuffer` has capped the dash-cli path since it
+    // was written, and the HTTP path had no equivalent: res.json() buffers and parses whatever the node
+    // sends, so a buggy or hostile one could exhaust memory or block the event loop before a single DML
+    // check ran. The refresh timer calls this, so it is reachable on an ordinary schedule.
+    //
+    // The declared length is checked first because it is free, and then the body is read in chunks so a
+    // response that lies about its length, or omits one entirely, is cut off at the same bound rather
+    // than being trusted. The stream is cancelled on the way out, since abandoning it leaves the
+    // connection and its buffers open and a source that does this every refresh would accumulate them.
+    const declared = Number(res.headers.get("content-length") ?? 0);
+    if (declared > maxBuffer) {
+      await res.body?.cancel().catch(() => {});
+      throw new Error(`RPC ${method}: response declares ${declared} bytes, over the ${maxBuffer} cap`);
+    }
+    const text = await readCapped(res, maxBuffer, method);
+    let j;
+    try {
+      j = JSON.parse(text);
+    } catch {
+      throw new Error(`RPC ${method}: response was not JSON`);
+    }
     if (j.error) throw new Error(`RPC ${method}: ${j.error.message ?? JSON.stringify(j.error)}`);
     return j.result;
   }

@@ -19,7 +19,7 @@ import { createHash } from "node:crypto";
 // resolve to an image built from the old ones.
 function resolveImage() {
   const here = fileURLToPath(new URL(".", import.meta.url));
-  const tag = process.env.DASH_TAG ?? readFileSync(join(here, "PIN"), "utf8").trim();
+  const tag = process.env.DASH_TAG ?? readFileSync(join(here, "PIN"), "utf8").trim().split(/\s+/)[0];
   const inputs = ["Dockerfile", "harness.cpp", "PIN"].map((f) => readFileSync(join(here, f))).join("");
   const hash = createHash("sha256").update(inputs).digest("hex").slice(0, 12);
   return `x11ref:${tag}-${hash}`;

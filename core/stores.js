@@ -167,6 +167,29 @@ export class RootWindows {
           );
         }
       }
+      // THE RECORD'S ROOT AND ITS SNAPSHOT MUST BE THE SAME SNAPSHOT. The whole point of holding both
+      // in one record is that they are adopted, aged and evicted together and can never name different
+      // things, and nothing checked it: a caller could store one advertised root beside another
+      // snapshot's leaves, and the gateway would then mint a challenge for a root whose served leaves
+      // cannot build a proof for it. That is the same split the record design exists to prevent,
+      // arriving through the front door instead. A folder-access review found the claim unenforced.
+      //
+      // Checked on the fields the record and the snapshot both carry, rather than by recomputing the
+      // root from the leaves, because this store must not need a hasher to accept a record and the
+      // gateway has already recomputed both roots before it gets here.
+      if (String(snapshot.root) !== String(root)) {
+        throw new Error(
+          `RootWindows: the record advertises root ${root} while its snapshot carries ${snapshot.root}. ` +
+            `One record holds one snapshot, which is what stops a challenge naming a root whose leaves ` +
+            `the same instant cannot serve.`,
+        );
+      }
+      if (Number(snapshot.height) !== Number(height)) {
+        throw new Error(`RootWindows: the record is at height ${height} while its snapshot says ${snapshot.height}`);
+      }
+      if (shaRoot != null && snapshot.shaRoot != null && String(snapshot.shaRoot) !== String(shaRoot)) {
+        throw new Error(`RootWindows: the record's shaRoot ${shaRoot} is not the snapshot's ${snapshot.shaRoot}`);
+      }
     }
     // Executable invariant, not a comment. An unknown ordering means the key space is no longer
     // bounded by the version enumeration, which is the only thing bounding records per height.

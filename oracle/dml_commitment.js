@@ -61,12 +61,27 @@ export function serviceBytes(service) {
   const port = Number(String(service).slice(split + 1));
   if (!Number.isInteger(port) || port < 0 || port > 0xffff) throw new Error(`service port out of range in ${JSON.stringify(service)}`);
   if (host.includes(":")) {
-    const [head, tail = ""] = host.split("::");
+    // ONE ABBREVIATION AT MOST. "::" may appear once in an IPv6 address, and splitting on it without
+    // saying so took the first two parts and silently discarded the rest, so "2001::1::2" parsed as
+    // "2001::1" and encoded bytes for an address nobody wrote. Found by a test written for the
+    // group-validation fix, which is the useful kind of accident.
+    const parts = host.split("::");
+    if (parts.length > 2) throw new Error(`malformed IPv6 host in ${JSON.stringify(service)}, more than one "::"`);
+    const [head, tail = ""] = parts;
     const h = head ? head.split(":").filter(Boolean) : [];
     const t = tail ? tail.split(":").filter(Boolean) : [];
     if (h.length + t.length > 8) throw new Error(`malformed IPv6 host in ${JSON.stringify(service)}`);
     const groups = [...h, ...Array(8 - h.length - t.length).fill("0"), ...t];
-    groups.forEach((g, n) => out.writeUInt16BE(parseInt(g || "0", 16) & 0xffff, n * 2));
+    // EACH GROUP IS VALIDATED, not coerced. parseInt("gg", 16) is NaN and the mask turned that into
+    // zero, so "gg" and "0" produced identical bytes and a malformed service from the node serialized
+    // to a valid-looking entry. The surrounding boundary claims malformed fields refuse, and this was
+    // the one place quietly disagreeing.
+    groups.forEach((g, n) => {
+      if (!/^[0-9a-fA-F]{1,4}$/.test(g)) {
+        throw new Error(`malformed IPv6 group ${JSON.stringify(g)} in ${JSON.stringify(service)}`);
+      }
+      out.writeUInt16BE(parseInt(g, 16), n * 2);
+    });
   } else {
     const octets = host.split(".");
     if (octets.length !== 4) throw new Error(`malformed IPv4 host in ${JSON.stringify(service)}`);
@@ -227,15 +242,29 @@ class Reader {
     this.at += 4;
     return v;
   }
+  // CANONICAL ONLY. The encoding has one shortest form for each value, and a wider form encoding a
+  // small number is a second spelling of the same structure. The malleability work on the partial
+  // merkle tree established that one commitment must have exactly one accepted encoding, and this
+  // reader quietly undercut it: 0xfd 0x05 0x00 and a bare 0x05 both said five. A reviewer with folder
+  // access pointed out the contradiction between the claim and the parser.
   varint() {
     this.#need(1);
     const first = this.buf[this.at++];
     if (first < 0xfd) return first;
-    if (first === 0xfd) return this.u16();
-    if (first === 0xfe) return this.u32();
+    if (first === 0xfd) {
+      const v = this.u16();
+      if (v < 0xfd) throw new Error(`varint ${v} is written in a wider form than its shortest one`);
+      return v;
+    }
+    if (first === 0xfe) {
+      const v = this.u32();
+      if (v <= 0xffff) throw new Error(`varint ${v} is written in a wider form than its shortest one`);
+      return v;
+    }
     this.#need(8);
     const v = this.buf.readBigUInt64LE(this.at);
     this.at += 8;
+    if (v <= 0xffffffffn) throw new Error(`varint ${v} is written in a wider form than its shortest one`);
     // A count that cannot be held in a JS number is not something a real structure contains, and
     // silently truncating it would turn a malformed input into a wrong answer.
     if (v > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("varint too large");
