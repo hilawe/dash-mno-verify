@@ -15,9 +15,10 @@ CI IS NOT EVIDENCE FOR ANY OF THIS WORK. The last run was green, and it ran at `
 what origin holds. None of the six commits has been through CI. Push, then read the conclusion.
 
 THE THIRD FRESH FULL ROUND RETURNED REQUEST-CHANGES WITH THREE MAJORS AND ONE MINOR, ALL EXECUTED BY
-THE REVIEWER, AND NONE IS FOLDED. They are listed in section 6. Its log lived in the session
-scratchpad and does not survive, so section 6 is the record. TWO OF THE THREE MAJORS WERE INTRODUCED
-BY `f39e9f4`, THE MOST RECENT COMMIT, AND BOTH ARE WORSE THAN WHAT THEY REPLACED. START THERE.
+THE REVIEWER. Its log lived in the session scratchpad and does not survive, so section 6 is the
+record. THE TWO THAT `f39e9f4` INTRODUCED ARE NOW WITHDRAWN, because both were additions rather than
+repairs and both were worse than what they replaced. TWO FINDINGS REMAIN OPEN plus one root cause,
+all in section 6. Start at punch-list item 1.
 
 ### 1. WHERE TO START
 
@@ -77,17 +78,19 @@ the corresponding change is reverted.
   carries the index the writer finally assigned, and a bucket whose positions are not a complete
   `0..n-1` set is refused rather than guessed.
 
-THE LAST OF THOSE IS NOW KNOWN TO BE WRONG, see section 6 finding 3. The bucket refusal is too
-strict and breaks upgrades.
+THE LAST OF THOSE NOW SORTS RATHER THAN REFUSES. A bucket whose recorded positions are not a
+complete set is no longer rejected, because the base revision legitimately produces such files and
+refusing them turned an upgrade into an outage. Ties keep file order, which rebuilds what the base
+revision rebuilt.
 
-AND THE ASSERTION ADDED ALONGSIDE THEM WAS WRONG TOO. Readiness refuses unless both flags are clear,
-and the code asserts that unbarriered-with-current is unreachable. No mutation of that condition
-failed the suite, which was read as the combination being impossible, and it was kept as the
-definition of readiness with an assertion so it would not read as decoration. The third round
-constructed the interleaving. The combination IS reachable, and because the assertion throws before
-anything can reconcile, reaching it wedges the store permanently rather than failing closed
-recoverably. An unpinned branch that no mutation can kill means the tests do not reach it, which is
-not the same as the code not reaching it, and that distinction is the lesson.
+READINESS REQUIRES BOTH FLAGS CLEAR, and that condition is load-bearing rather than decorative. An
+assertion was briefly added claiming unbarriered-with-current was unreachable, on the strength of no
+mutation of the condition failing the suite. The third round built the interleaving and the state IS
+reachable. The assertion is withdrawn: it threw before anything could reconcile, turning a state this
+condition already recovers from into a permanent refusal. Confirmed both ways in the session, the
+assertion version throwing on every later call and the current one answering after one more barrier.
+A mutation surviving means the property is UNTESTED, not that it is impossible, and that is the
+lesson worth keeping.
 
 ### 5. THE FIVE FINDINGS STILL OPEN
 
@@ -117,7 +120,7 @@ All four were executed by the reviewer. Findings 1 and 3 were introduced by `f39
 worse than what they replaced, so the recommended first move is to take those two additions out
 rather than to patch them.
 
-1. **Major, and it wedges the store.** The state the code asserts is unreachable is reachable.
+1. **Major, root cause still open, no longer wedging.** The asserted-unreachable state is reachable.
    `#barrierThenLoad()` clears `#unbarriered` BEFORE awaiting `#load()`, while `#reconcile()`'s
    success continuation clears only `#stale`. So a reader can clear `#unbarriered`, enter the load,
    have the append's outer catch re-set both flags underneath it, and then clear `#stale` on
@@ -125,18 +128,22 @@ rather than to patch them.
    can reconcile, even after storage recovers. The root cause is that the two flags are cleared at
    different moments by different code. A generation counter captured at the start of a
    reconciliation and compared before clearing would let both clear together and only when nothing
-   newer has been marked, which removes the state rather than asserting about it.
+   newer has been marked, which removes the state rather than asserting about it. THE WEDGE IS GONE
+   as of the assertion's withdrawal, so reaching this state now costs one extra barrier and then
+   recovers. The underlying defect, two flags cleared at different moments by different code, is NOT
+   fixed and is punch-list item 1.
 2. **Major, pre-existing.** A failed torn-tail repair stays armed. `_truncateTo` is left set when the
    truncate fails, so a later successful `ready()` on the same backend applies the stale offset and
    deletes a record from a file an operator has since repaired. Verified end to end by the reviewer,
    including the gapped indexes that a later append then writes.
-3. **Major, and it breaks upgrades.** The new complete-position refusal rejects files the BASE
+3. **Major, WITHDRAWN and verified.** The complete-position refusal rejected files the BASE
    revision legitimately produces. Under `66127dd`, K writes at index 0 and its barriers fail, then M
    writes successfully at index 0 and M's sync also makes K's bytes durable, so the file holds
    distinct records K@0 and M@0. Confirmed directly in this session: `66127dd` reopens that file as
    `[K, M]`, `HEAD` refuses it at boot. That turns an upgrade after the exact storage failure this
    work repairs into a gateway outage. A stable sort by index, tie-broken by file position, handles
-   both this file and the duplicate case correctly and refuses neither.
+   both this file and the duplicate case correctly and refuses neither, and that is what now ships.
+   Both revisions were run against the same file to confirm it, and a test pins the base shape.
 4. **Minor.** The last-occurrence-wins branch replaces the stored record BEFORE
    `registrationRecordProblem()` runs, so a corrupted duplicate bypasses validation. `engine: ""`
    against an absent engine compares equal, and the bucket ends up declared under an empty engine, so
@@ -169,29 +176,26 @@ rather than to patch them.
 
 ### 8. PUNCH LIST
 
-1. Take the two over-reaches out of `f39e9f4`, section 6 findings 1 and 3. The assertion wedges the
-   store and the bucket refusal breaks upgrades, and both are additions rather than repairs. The two
-   REPAIRS in that commit are good and stay: both flags marked together, and last-occurrence-wins.
-2. Fix section 6 finding 1 at its root with a generation counter, so both flags clear together and
-   only when nothing newer has been marked.
-3. Section 6 finding 3, a stable sort by index tie-broken by file position, replacing the refusal.
-4. Section 6 finding 4, validate the replacement record before it goes in.
-5. Section 6 finding 2, the armed `_truncateTo` after a failed repair.
-6. Run another fresh full round after that fold. Repeat folding and re-running until a fresh full
+1. Fix section 6 finding 1 at its root with a generation counter captured at the start of a
+   reconciliation, so both flags clear together and only when nothing newer has been marked. The
+   wedge is already gone, this removes the state itself.
+2. Section 6 finding 4, validate the replacement record before it goes in.
+3. Section 6 finding 2, the armed `_truncateTo` after a failed repair.
+4. Run another fresh full round after that fold. Repeat folding and re-running until a fresh full
    round returns APPROVE with nothing to fold. This is the stopping condition, not a converged
    focused re-check.
-7. Leak-scan and push. This repository is direct-push public with NO automated leak gate, so the scan
+5. Leak-scan and push. This repository is direct-push public with NO automated leak gate, so the scan
    is manual and per commit. Then read the CI conclusion rather than assuming it.
-8. F2, the root window evicting the newest height.
-9. F4, field-element validation at load.
-10. F3, the `shaRoot` asymmetry.
-11. F5, the IPv6 parser and its exact collision.
-12. F6, the reference image cache key.
-13. Keep the proof and the challenge off the chat platform. Recorded in `TODO.md` with the note that
+6. F2, the root window evicting the newest height.
+7. F4, field-element validation at load.
+8. F3, the `shaRoot` asymmetry.
+9. F5, the IPv6 parser and its exact collision.
+10. F6, the reference image cache key.
+11. Keep the proof and the challenge off the chat platform. Recorded in `TODO.md` with the note that
    the gateway already stores the account with the challenge, so a direct submission needs no new
    trust.
-14. The audit. Still none, and `circom-ecdsa` is unaudited demonstration code by its own README.
-15. Decide what to do about the untracked `output/`, which is neither committed nor ignored.
+12. The audit. Still none, and `circom-ecdsa` is unaudited demonstration code by its own README.
+13. Decide what to do about the untracked `output/`, which is neither committed nor ignored.
 
 ### 9. GOTCHAS, SO THEY ARE NOT REDISCOVERED
 

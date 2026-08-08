@@ -587,24 +587,22 @@ export class FileBackend {
     // it from the recorded positions is what makes a restart rebuild the tree the gateway was
     // actually serving.
     //
-    // AND THE POSITIONS MUST BE A COMPLETE SET. A bucket's indexes are assigned as the length of the
-    // bucket at the time, so a healthy one holds exactly 0..n-1 with nothing missing and nothing
-    // repeated. Anything else is a file this cannot reconstruct a unique order from, and guessing
-    // would mean serving a root no prover can build a path for. Refuse and say which bucket, so an
-    // operator has something to act on.
-    for (const [bucket, recs] of byBucket) {
-      recs.sort((a, b) => a.index - b.index);
-      const wrong = recs.findIndex((r, i) => r.index !== i);
-      if (wrong !== -1) {
-        throw new Error(
-          `${this.path} bucket ${bucket} does not carry a complete set of leaf positions: after ` +
-            `collapsing duplicates it holds ${recs.length} record(s) with indexes ` +
-            `[${recs.map((r) => r.index).join(", ")}], which is not 0..${recs.length - 1}. The leaf ` +
-            `order is what the members root commits to, so a unique order cannot be reconstructed ` +
-            `from this and guessing one would serve a root no prover can build a path for.`,
-        );
-      }
-    }
+    // TIES KEEP FILE ORDER, which is what Array.prototype.sort already guarantees, and it is the
+    // whole reason this is a sort rather than a placement into recorded positions.
+    //
+    // A version of this REFUSED any bucket whose positions were not exactly 0..n-1, on the reasoning
+    // that a healthy bucket always is. Healthy ones are. The files this repair exists for are not,
+    // and refusing them turned an upgrade into an outage: under the base revision a registration can
+    // land at index 0 with its barriers failing, a second registration then takes index 0 as well
+    // and its successful sync makes the first one's bytes durable, so the file legitimately holds
+    // two distinct records both claiming position 0. The base revision reopens that file and this
+    // one refused it, after exactly the storage failure the repair is about. Confirmed by running
+    // both revisions against the same file.
+    //
+    // A stable sort handles both shapes without refusing either. Equal positions keep the order the
+    // file already implies, which is what the base revision would have rebuilt, and the collapsed
+    // duplicate case orders correctly because the surviving record carries the later index.
+    for (const recs of byBucket.values()) recs.sort((a, b) => a.index - b.index);
     // INSTALLED LAST, after every step that can throw. Until this line the store is still serving
     // whatever it had, which is what makes a failed load a no-op rather than something to undo.
     this.seen = seen;
@@ -662,21 +660,16 @@ export class FileBackend {
     // is true. Checking #stale alone let a reconciliation clear it while #unbarriered stayed set, so
     // the store went on answering from records no barrier had ever forced to storage.
     //
-    // NO TEST PINS THE SECOND HALF, and that is stated rather than hidden. Both flags are set in the
-    // same synchronous step and a successful reconciliation clears both, so #unbarriered true with
-    // #stale false is not reachable today, and no mutation of this line fails the suite. It is kept
-    // because it is the DEFINITION of readiness here rather than a guard against a known ordering,
-    // which is what separates it from the explicit reconciliation join that was removed for being
-    // decoration. If a later change can reach that combination, this is what makes it refuse instead
-    // of answering, and the assertion below is what says so out loud.
-    if (this.#unbarriered && !this.#stale) {
-      throw new Error(
-        "registration store: the file is marked unbarriered while the view is marked current. These " +
-          "are set together and cleared together, so reaching this means a new path clears one " +
-          "without the other, and answering from the view would report records no durability " +
-          "barrier established.",
-      );
-    }
+    // BOTH HALVES ARE LOAD-BEARING, and the second one was nearly lost to a bad inference. An
+    // earlier version asserted that #unbarriered true with #stale false could not happen, on the
+    // strength of no mutation of this line failing the suite. A fresh round then built the
+    // interleaving: a reader clears #unbarriered in #barrierThenLoad(), enters the load, the append's
+    // outer catch re-marks both underneath it, and the success continuation clears only #stale. A
+    // mutation surviving means the property is UNTESTED, not that it is impossible, and the
+    // assertion turned a state this line already recovers from into a permanent refusal, because it
+    // threw before anything could reconcile. Falling through to #reconcile() runs the barrier and
+    // clears both, which is the recovery. The flags being cleared at different moments is the real
+    // defect and is repaired separately.
     if (!this.#stale && !this.#unbarriered) return;
     // Throws if it cannot reconcile, which is the fail-closed path. The flag is cleared inside the
     // shared attempt rather than here: clearing it on the strength of "my reload returned" is what

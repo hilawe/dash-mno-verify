@@ -1127,18 +1127,28 @@ test("an unbarriered write cannot be laundered into a commit during the awaited 
   }
 });
 
-test("a legacy file whose leaf positions are not a complete set is refused rather than guessed", async () => {
-  // Ordering by recorded index only reconstructs a unique order when the positions form 0..n-1.
-  // A bucket that does not is one this cannot rebuild, and serving a guessed order would mean a root
-  // no prover can build a path for.
-  const dir = mkdtempSync(join(tmpdir(), "reg-gappy-"));
+test("a file the base revision produces still loads, rather than refusing an upgrade", async () => {
+  // A version of the leaf-order repair refused any bucket whose positions were not exactly 0..n-1.
+  // Healthy buckets always are. The files this repair exists for are not, and a fresh round showed
+  // the refusal turning an upgrade into an outage.
+  //
+  // Under the base revision K writes at index 0 and its barriers fail, M then writes successfully at
+  // index 0, and M's sync also makes K's earlier bytes durable. The file legitimately holds two
+  // DISTINCT records both claiming position 0. That is not a duplicate key and nothing collapses.
+  // The base revision reopens it, so this one must too, and after exactly the storage failure this
+  // whole repair is about.
+  const dir = mkdtempSync(join(tmpdir(), "reg-upgrade-"));
   const path = join(dir, "registrations.jsonl");
   try {
-    const A = { season: 1, contextHash: "c", regNullifier: "nA", commitment: "1", engine: "plonk", statement: "derive" };
-    const B = { season: 1, contextHash: "c", regNullifier: "nB", commitment: "2", engine: "plonk", statement: "derive" };
-    writeFileSync(path, [JSON.stringify({ ...A, index: 0 }), JSON.stringify({ ...B, index: 2 }), ""].join("\n"));
+    const K = { season: 1, contextHash: "c", regNullifier: "nK", commitment: "7", engine: "plonk", statement: "derive" };
+    const M = { season: 1, contextHash: "c", regNullifier: "nM", commitment: "9", engine: "plonk", statement: "derive" };
+    writeFileSync(path, [JSON.stringify({ ...K, index: 0 }), JSON.stringify({ ...M, index: 0 }), ""].join("\n"));
+
     const backend = new FileBackend(path, null, false);
-    await assert.rejects(() => backend.ready(), /complete set of leaf positions/);
+    await backend.ready(); // must not throw
+    const recs = await backend.forSeasonContext(1, "c");
+    // Ties keep file order, so this rebuilds what the base revision rebuilt rather than a new order.
+    assert.deepEqual(recs.map((r) => r.regNullifier), ["nK", "nM"]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
