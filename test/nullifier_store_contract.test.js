@@ -58,11 +58,13 @@ test("the in-memory store prunes old epochs, like the durable one has all along"
   assert.equal(store.has(11, "ctx", "tagB"), true, "the retained past epoch is not");
   assert.equal(store.has(12, "ctx", "tagC"), true, "and neither is the current one");
 
-  // A malformed cutoff must not silently empty the store. This holds because every comparison
-  // against NaN is false, not because of a guard: one was written, and a mutation showed no test
-  // could fail with it removed, so it went. The behaviour is what is asserted.
-  for (const bad of [undefined, null, "not-a-number", NaN]) {
-    assert.deepEqual(store.prune(bad), { removed: 0 }, `cutoff ${JSON.stringify(bad)}`);
+  // A malformed cutoff must not silently empty the store, and the input set here is the point. An
+  // earlier version tried only NaN-producing values, concluded the guard was redundant because every
+  // comparison against NaN is false, and deleted it. A reviewer supplied Infinity, which compares
+  // fine in the direction that matters and emptied the store completely. The guard is back, and the
+  // table now includes the infinities that showed why it was needed.
+  for (const bad of [undefined, null, "not-a-number", NaN, Infinity, -Infinity]) {
+    assert.deepEqual(store.prune(bad), { removed: 0 }, `cutoff ${String(bad)}`);
   }
   assert.equal(store.size(), 2, "an unusable cutoff removes nothing rather than everything");
 });

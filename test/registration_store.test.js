@@ -391,12 +391,12 @@ test("a sync error after the bytes land does not let a retry write the registrat
     const backend = new FileBackend(path, null, false, { open: faultingOpen });
     await backend.ready();
     const record = { season: 1, contextHash: "c", regNullifier: "n1", commitment: "m1", engine: "plonk", statement: "derive" };
-    // THE WRITE SUCCEEDED, AND ONLY ITS CONFIRMATION FAILED, so this resolves rather than rejecting.
-    // An earlier version of this test asserted a rejection, and two reviewers showed that expectation
-    // was the defect rather than the behaviour. Reporting failure for a record that IS durable is
-    // wrong twice: the member is refused although they are registered, and the caller never appends
-    // the commitment to the live members tree, so the tree serves a root missing a member the store
-    // holds on disk until a restart rebuilds it.
+    // THE RETRY BARRIER IS WHAT MAKES THIS A SUCCESS, not the fact that the bytes are visible. The
+    // fault is armed once, so the recovery path reopens the file and its sync SUCCEEDS, which is what
+    // establishes durability. An earlier version reported success merely because a reread found the
+    // record, and a reviewer showed that is wrong at the root: readFile() can see dirty page-cache
+    // data that never reached stable storage, and a failed sync is exactly when visibility and
+    // durability differ. See the case below for what happens when the barrier does not hold.
     const first = await backend.append(record);
     assert.equal(first.duplicate, false, "the record landed, so this is a commit and not a duplicate");
     assert.equal(first.index, 0, "and it carries the index the record on disk actually has");
@@ -537,6 +537,80 @@ test("but two records sharing a key while disagreeing on the registration are st
     ].join("\n"));
     const backend = new FileBackend(path, null, false);
     await assert.rejects(() => backend.ready(), /different content/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("when the durability barrier ALSO fails, the write is reported as the failure it is", async () => {
+  // The blocker a different-family review found. Success after an uncertain write requires a
+  // successful durability barrier, and a reread cannot stand in for one: seeing the bytes proves they
+  // are in the page cache, not that they survived. Here every sync fails, so nothing establishes
+  // durability and the caller must be told the write failed rather than being handed an index for a
+  // record that a crash could still lose.
+  const dir = mkdtempSync(join(tmpdir(), "mno-reg-nosync-"));
+  const path = join(dir, "registrations.jsonl");
+  try {
+    const { FileBackend } = await import("../core/registration_store.js");
+    const { open: realOpen } = await import("node:fs/promises");
+    const alwaysFailsSync = async (...args) => {
+      const fh = await realOpen(...args);
+      return new Proxy(fh, {
+        get(target, prop) {
+          if (prop === "sync") return async () => { throw new Error("the disk is not answering"); };
+          const v = target[prop];
+          return typeof v === "function" ? v.bind(target) : v;
+        },
+      });
+    };
+    const backend = new FileBackend(path, null, false, { open: alwaysFailsSync });
+    await backend.ready();
+    await assert.rejects(
+      () => backend.append({ season: 1, contextHash: "c", regNullifier: "n1", commitment: "m1", engine: "plonk", statement: "derive" }),
+      /the disk is not answering/,
+      "no barrier held, so the write is uncertain and says so",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("recovery will not claim another writer's record as this write", async () => {
+  // Recovery used to search by (season, context, regNullifier) alone, so a record another writer had
+  // put there under the same key was reported as THIS caller's successful write. The caller would
+  // then append its own commitment to the live members tree while the durable file held a different
+  // one, and a restart would rebuild from the other. The backend is documented single-writer and
+  // nothing enforces that, so the comparison is what makes the claim true rather than merely likely.
+  const dir = mkdtempSync(join(tmpdir(), "mno-reg-compete-"));
+  const path = join(dir, "registrations.jsonl");
+  try {
+    const { FileBackend } = await import("../core/registration_store.js");
+    const { open: realOpen } = await import("node:fs/promises");
+
+    const ours = { season: 1, contextHash: "c", regNullifier: "n1", commitment: "OUR_MEMBER", engine: "plonk", statement: "derive" };
+    const theirs = { ...ours, commitment: "OTHER_MEMBER", index: 0 };
+
+    // The append fails BEFORE writing anything, and a competing record for the same key appears in
+    // the file meanwhile, which is what a second writer would produce.
+    let armed = true;
+    const failWriteThenPlantTheirs = async (...args) => {
+      if (armed) {
+        armed = false;
+        writeFileSync(path, JSON.stringify(theirs) + "\n");
+        throw new Error("simulated append failure");
+      }
+      return realOpen(...args);
+    };
+    const backend = new FileBackend(path, null, false, { open: failWriteThenPlantTheirs });
+    await backend.ready();
+
+    const res = await backend.append(ours);
+    assert.equal(res.duplicate, true, "the key is taken by a record that is not ours, so this write did not win");
+    assert.notEqual(res.index, 0, "and it is certainly not reported as a commit at index 0");
+
+    const held = await backend.forSeasonContext(1, "c");
+    assert.equal(held.length, 1);
+    assert.equal(held[0].commitment, "OTHER_MEMBER", "the durable view is the other writer's, which is what the caller must act on");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

@@ -603,13 +603,16 @@ export class NullifierStore {
   //
   // The epoch is the key's first field, and neither of the other two can contain a colon (both are
   // decimal field elements), so splitting on the first one is exact rather than a guess about format.
-  // An unusable cutoff removes nothing, and that falls out of the comparison rather than needing a
-  // guard in front of it: `epoch < NaN` is false for every epoch. A guard was written here first and
-  // removed after a mutation showed no test could fail with it gone, which is the definition of
-  // decoration. The property still matters, so it is asserted in the tests against the behaviour
-  // rather than against the guard.
+  // An unusable cutoff must remove NOTHING, and that needs a guard after all.
+  //
+  // A guard was written here, then deleted when a mutation showed no test could fail with it gone,
+  // on the reasoning that `epoch < NaN` is false for every epoch. That reasoning covered NaN and
+  // nothing else. A reviewer supplied the case it missed: `prune(Infinity)` is finite-comparable in
+  // the direction that matters, so every claim is older than the cutoff and the store empties. The
+  // mutation testing was sound and the input set was too small, which is the more useful lesson.
   prune(minEpoch) {
     const cutoff = Number(minEpoch);
+    if (!Number.isFinite(cutoff)) return { removed: 0 };
     let removed = 0;
     for (const key of this.claims.keys()) {
       const epoch = Number(key.slice(0, key.indexOf(":")));

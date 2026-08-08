@@ -2,6 +2,17 @@
  "_source": "per-round digests from the sph reference implementations in Dash Core v23.1.3 (8f06d39897babc4c4d28598af9426f483e3c5596), compiled unmodified in a Linux container. Regenerate with tools/x11-reference/regenerate.sh, which reuses these inputs so an unchanged pin produces no diff.",
  "_why": "per-round ground truth, so a JavaScript port can be verified one algorithm at a time instead of only end to end",
  "_blockCases": "the block cases below are real mainnet headers and the names the chain gave them, gathered from a synced node. They are VERIFIED against the reference by tools/x11-reference/generate.mjs and never rewritten by it, because they are the only evidence here that does not come from something this repository built.",
+ "_blockCaseProvenance": {
+  "what": "Real Dash mainnet block headers and the names the chain gave them. These are the only values in this file that did not come from something this repository built, and they are what pins the ORDER of the eleven rounds: eleven individually correct rounds composed wrongly satisfy every per-round vector and still name no block.",
+  "gathered": "dash-cli getblockhash <height> then dash-cli getblockheader <hash> false, against a synced mainnet node, 2026-08-05 and 2026-08-07.",
+  "how_a_third_party_checks_these_without_trusting_this_file": [
+   "Every hash here is public. Look any height up in a block explorer, or on any synced node, and compare.",
+   "The 80-byte header for a height is `getblockheader <hash> false` on any node, or the raw header from an explorer API. It is not something this repository can influence.",
+   "Block 1's header names the Dash mainnet genesis hash 00000ffd590b1485b3caadc19b22e6379c733355108f107a430458cdf3407ab6 as its predecessor, a fixed public constant, and block 2's names block 1's hash. That linkage is asserted in test/x11_rounds.test.js and can be re-checked by hand.",
+   "tools/x11-reference/regenerate.sh recomputes every one of these from Dash Core's own sources at a pinned tag and refuses to write anything if one disagrees."
+  ],
+  "why_the_spread": "Eleven heights from 1 to the current tip, spanning 2014 to 2026, three header versions, and five orders of magnitude of difficulty, so the cases are not all from one era with one shape."
+ },
  "vectors": {
   "blake": [
    {

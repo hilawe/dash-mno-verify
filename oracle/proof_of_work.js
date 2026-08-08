@@ -23,7 +23,7 @@
 // is a light client, or verifying the ChainLock signature against the quorum that signed it. Neither
 // is done here. The floor turns "free" into "expensive", not into "as expensive as the real chain".
 
-import { x11 } from "../common/x11/index.js";
+import { x11, headerBytes } from "../common/x11/index.js";
 
 // The compact form packs an exponent in the top byte and a 23-bit mantissa below it, with the mantissa
 // signed. Bitcoin and Dash share this encoding. A negative or overflowing value is not something a
@@ -54,8 +54,8 @@ function hashToNumber(hash32) {
 export const MAINNET_POW_LIMIT = 0x00000fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffn;
 
 export function meetsProofOfWork(headerHex, { powLimit = MAINNET_POW_LIMIT } = {}) {
-  const header = typeof headerHex === "string" ? Buffer.from(headerHex, "hex") : Buffer.from(headerHex);
-  if (header.length !== 80) throw new Error(`a block header is 80 bytes, got ${header.length}`);
+  // The same strict decode the naming path uses, so one header has exactly one spelling here too.
+  const header = headerBytes(headerHex);
   // A MALFORMED TARGET IS A HEADER THAT FAILS, NOT AN EXCEPTION. `targetFromBits` throws on a negative
   // mantissa or an overflowing exponent, and letting that escape meant a hostile nBits raised out of a
   // predicate whose whole job is to answer yes or no. It still failed closed at the call site, but the

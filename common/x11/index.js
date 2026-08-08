@@ -64,10 +64,25 @@ export function x11(input) {
 // The length is checked rather than assumed. A caller that passes a whole block, or a header with a
 // transaction count appended, would otherwise get a perfectly well-formed hash of the wrong thing,
 // and a wrong hash here reads as "this header is not the ChainLocked block" rather than as a bug.
-export function blockHashFromHeader(headerHex) {
-  const header = typeof headerHex === "string" ? Buffer.from(headerHex, "hex") : Buffer.from(headerHex);
-  if (header.length !== 80) {
-    throw new Error(`a block header is 80 bytes, got ${header.length}`);
+// A header's bytes, decoded STRICTLY. Node's hex decoder stops at the first character it cannot read
+// and silently drops a trailing half-byte, so a 161-character string decoded to the same 80 bytes as
+// its 160-character prefix and was accepted. Nothing was bypassed, since the hash and the proof of
+// work still ran on those bytes, but one header then had more than one accepted spelling, which is
+// the same malleability the partial merkle tree was tightened against. Found by review.
+export function headerBytes(headerHex) {
+  if (typeof headerHex !== "string") {
+    const buf = Buffer.from(headerHex);
+    if (buf.length !== 80) throw new Error(`a block header is 80 bytes, got ${buf.length}`);
+    return buf;
   }
-  return Buffer.from(x11(header)).reverse().toString("hex");
+  if (!/^[0-9a-fA-F]*$/.test(headerHex) || headerHex.length % 2 !== 0) {
+    throw new Error("a block header must be an even-length hex string with no other characters");
+  }
+  const header = Buffer.from(headerHex, "hex");
+  if (header.length !== 80) throw new Error(`a block header is 80 bytes, got ${header.length}`);
+  return header;
+}
+
+export function blockHashFromHeader(headerHex) {
+  return Buffer.from(x11(headerBytes(headerHex))).reverse().toString("hex");
 }

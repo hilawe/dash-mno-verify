@@ -130,6 +130,14 @@ if (mismatches > 0) {
 const referenceCommit = execFileSync(DOCKER, ["run", "--rm", "--entrypoint", "cat", IMAGE, "/build/REFERENCE_COMMIT"], { encoding: "utf8" }).trim();
 const referenceTag = execFileSync(DOCKER, ["run", "--rm", "--entrypoint", "cat", IMAGE, "/build/REFERENCE_TAG"], { encoding: "utf8" }).trim();
 
+// EVERY UNDERSCORE KEY THE FILE ALREADY CARRIES IS PRESERVED. The output used to be built from a
+// fixed list, so any metadata this script did not know about was silently dropped on the next
+// regeneration. Provenance notes added by hand disappeared the first time someone ran it, which the
+// test asserting they exist is what caught. A regeneration should change digests and nothing else.
+const carried = Object.fromEntries(
+  Object.entries(existing).filter(([k]) => k.startsWith("_") && !["_source", "_why", "_blockCases"].includes(k)),
+);
+
 const out = {
   _source: `per-round digests from the sph reference implementations in Dash Core ${referenceTag} (${referenceCommit}), compiled unmodified in a Linux container. Regenerate with tools/x11-reference/regenerate.sh, which reuses these inputs so an unchanged pin produces no diff.`,
   _why: existing._why,
@@ -138,6 +146,7 @@ const out = {
     "synced node. They are VERIFIED against the reference by tools/x11-reference/generate.mjs and never " +
     "rewritten by it, because they are the only evidence here that does not come from something this " +
     "repository built.",
+  ...carried,
   vectors,
   blockHashes: existing.blockHashes,
 };

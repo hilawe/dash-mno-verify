@@ -222,6 +222,20 @@ test("a header whose declared target is malformed fails the check rather than ra
   assert.equal(meetsProofOfWork(base), true);
 });
 
+test("the block cases carry their provenance, so a third party knows where to check them", () => {
+  // A packet review asked for exactly this: say which public block hashes were used as oracles and
+  // where a reviewer obtains the corresponding headers. Every hash here is public and every header is
+  // one RPC call on any synced node, so the file records that rather than leaving a reader to take
+  // the values on trust.
+  const p = VECTORS._blockCaseProvenance;
+  assert.ok(p, "the vectors file records where the block cases came from");
+  assert.ok(p.gathered.includes("getblockheader"), "and names the command that produces a header");
+  assert.ok(
+    p.how_a_third_party_checks_these_without_trusting_this_file.length >= 3,
+    "and gives more than one independent way to check them",
+  );
+});
+
 test("the fixture is anchored outside this repository, by the chain's own genesis block", () => {
   // WHY THIS MATTERS MORE THAN THE OTHER VECTORS. The per-round vectors came from a generator that is
   // not in this repository, so they cannot be re-derived and a wrong port matched to a wrong generator

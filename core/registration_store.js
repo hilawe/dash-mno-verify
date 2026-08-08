@@ -204,6 +204,10 @@ function bucketsHaveEngine(byBucket, season, engine) {
 // Durable append-only backend. One JSON record per line. The in-memory index is rebuilt from
 // the file on load, so the tree survives a restart and every member keeps their leaf position.
 export class FileBackend {
+  // Set when a reload failed and the in-memory view is known to be behind the file. Private, because
+  // nothing outside should be able to clear it without doing the reconciliation it stands for.
+  #stale = false;
+
   // `open` is injectable for ONE reason: the uncertain write, where the bytes reach the file and the
   // sync or close still reports an error, cannot be produced from outside this class. It is the exact
   // sequence F3 describes, so a test that cannot create it can only assert the fix by reading it. The
@@ -221,6 +225,7 @@ export class FileBackend {
     this.byBucket = new Map(); // "season:contextHash" -> records[] in insertion order
     this._loading = null; // memoized load, so concurrent first-callers share one read
     this._tail = Promise.resolve(); // append mutex, see append()
+    this.#stale = false; // set when a reload failed, so the next operation reconciles first
   }
 
   // Load the file once. Memoizing the in-flight promise keeps two concurrent first-callers from
@@ -264,6 +269,12 @@ export class FileBackend {
       this.seen = priorSeen;
       this.byBucket = priorBuckets;
       this._loading = priorLoading;
+      // THE STORE IS NOW KNOWN TO BE BEHIND THE FILE. Restoring the old maps keeps it usable, and a
+      // reviewer showed that is not enough on its own: the uncertain record may already be in the
+      // file, so a later append that proceeds against this stale view assigns an index the rebuilt
+      // tree will not agree with, and the live members order diverges from the order a restart
+      // produces. Marking it means the next operation reconciles before it decides anything.
+      this.#stale = true;
       throw err;
     }
   }
@@ -476,6 +487,13 @@ export class FileBackend {
 
   async #appendOne(d) {
     await this.ready();
+    // A FAILED RELOAD LEFT THIS VIEW BEHIND THE FILE, so reconcile before deciding anything. Without
+    // this the duplicate check and the index both come from a view known to be stale, which is how
+    // the live member order and the order a restart rebuilds came apart.
+    if (this.#stale) {
+      await this.#reload();
+      this.#stale = false;
+    }
     const k = keyOf(d);
     if (this.seen.has(k)) return { duplicate: true };
     const recs = this.byBucket.get(bucketOf(d)) ?? [];
@@ -516,24 +534,45 @@ export class FileBackend {
         await fh.close();
       }
     } catch (err) {
-      // THE REREAD DECIDES WHETHER THIS WAS A FAILURE AT ALL. If the record reached the file, the
-      // write SUCCEEDED and only its confirmation failed, so reporting failure would be wrong twice
-      // over: the member is refused although they are registered, and the caller never appends the
-      // commitment to the live members tree, so the tree serves a root missing a member it holds
-      // durably until the next restart rebuilds it. Two reviewers found that independently, one of
-      // them noting the earlier comment here claimed the retry would be treated as success when the
-      // caller in fact answers already-registered.
+      // AN UNCERTAIN WRITE IS RESOLVED BY RETRYING THE DURABILITY BARRIER, not by looking to see
+      // whether the bytes are visible.
       //
-      // So the reread is the arbiter. Landed means success, with the index the record actually
-      // carries. Absent means the write really did fail and the original error is what the caller
-      // needs to see.
+      // The previous version rereads the file and reported success when it found the record. A
+      // reviewer showed why that is wrong at the root: readFile() can see dirty page-cache data that
+      // has never reached stable storage, and a FAILED sync() is precisely the case where visibility
+      // and durability differ. So the reread proved the bytes existed somewhere, told the member they
+      // were registered, and a crash could then lose the registration nullifier and the member
+      // commitment after the fact. That is worse than the duplicate it was written to prevent,
+      // because the atomic commit point silently stopped being one.
+      //
+      // What CAN establish durability is another barrier. Reopening the file and syncing it flushes
+      // whatever is pending for that file, so a sync that now succeeds means the record is on stable
+      // storage whatever happened to the first attempt. Only then is the write a commit, and the
+      // reread is used solely to learn the index the record actually carries.
       let landed = null;
       try {
+        const fh = await this.openFile(this.path, "r+");
+        try {
+          await fh.sync();
+        } finally {
+          await fh.close();
+        }
+        // The barrier held. Now find the record, and REQUIRE IT TO BE OURS. Searching by key alone
+        // accepted a record another writer had put there under the same key, and reported that
+        // writer's commitment as this caller's successful write while the live tree got this
+        // caller's. The file backend is documented single-writer and nothing enforces it, so the
+        // comparison is what makes the claim true rather than merely likely.
         await this.#reload();
-        landed = (this.byBucket.get(bucketOf(d)) ?? []).find((r) => keyOf(r) === k) ?? null;
+        const found = (this.byBucket.get(bucketOf(d)) ?? []).find((r) => keyOf(r) === k) ?? null;
+        if (found && sameRegistrationRecord(found, record)) landed = found;
+        else if (found) {
+          // Someone else's record holds this key. This write did not win, and saying so is the only
+          // honest answer: the caller must not append its own commitment to the live tree.
+          return { duplicate: true };
+        }
       } catch {
-        // A reread that itself fails leaves the store exactly as usable as it was (see #reload), and
-        // the write remains genuinely uncertain, so the original error is still the right answer.
+        // The barrier did not hold, or the reread failed. Either way the write is genuinely uncertain
+        // and the original error is what the caller needs to see.
       }
       if (landed) return { duplicate: false, index: landed.index };
       throw err;
