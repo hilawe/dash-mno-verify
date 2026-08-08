@@ -7,12 +7,12 @@ prioritized punch list.
 
 ## CURRENT STATE, 2026-08-07. THIS SUPERSEDES EVERY SECTION BELOW IT
 
-`main` at `e1099f8`, pushed, clean tree. Suite 594, all three CI jobs green. The dated sections that
+`main` at `21be20c`, pushed, clean tree. Suite 595, all three CI jobs green. The dated sections that
 follow are the running record of 2026-08-04 to 08-07 and are kept append-only. Read them only when
 you need the reasoning behind something here.
 
-THE FOUR-REVIEW ROUND IS DONE AND FOLDED. Findings are in
-`REVIEW_FINDINGS_dash-mno-verify_adversarial_2026-08-07.md`, committed alongside the code as this
+THE FIVE-REVIEW ROUND IS DONE. Most of it is folded and section 3 lists exactly what is not, which is
+the next session's work after a fresh pass. Both reports are committed alongside the code as this
 repository does. Nothing waits on a reviewer.
 
 ### 1. WHERE TO START
