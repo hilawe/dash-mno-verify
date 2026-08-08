@@ -833,3 +833,92 @@ test("a failed reconciliation cannot leave a stale view marked fresh", async () 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("no public view answers from the old maps while an uncertain write is still recovering", async () => {
+  // The blocker an independent review raised against the first version of the single-flight fix.
+  // The two tests above both begin AFTER the stale flag is already set, so they prove single-flight
+  // from a stale start and say nothing about how the store gets there.
+  //
+  // The gap was the recovery window itself. An append whose first sync fails may already have put
+  // the record on disk, and the retry barrier and the reconciliation call after it are both awaits.
+  // The flag used to be set only when the recovery load SETTLED, so a reader landing in between
+  // found it false and `ready()` already fulfilled, and answered from the old maps: has false,
+  // forSeasonContext empty, declarationFor null, and seasonHasEngine false for a durable zkVM
+  // record, which is the downgrade signal reading backwards.
+  //
+  // The window is held open here rather than raced for. Waiting longer only gives a regression more
+  // opportunity to answer wrongly, so this cannot become flaky in the direction of a false pass.
+  const dir = mkdtempSync(join(tmpdir(), "mno-reg-window-"));
+  const path = join(dir, "registrations.jsonl");
+  try {
+    const { open: realOpen, readFile: realReadFile } = await import("node:fs/promises");
+    let firstSync = true;
+    let reads = 0;
+    let releaseRecoveryRead;
+    const backend = new FileBackend(path, null, false, {
+      open: async (...args) => {
+        const fh = await realOpen(...args);
+        if (!firstSync) return fh;
+        firstSync = false;
+        return new Proxy(fh, {
+          get(target, prop) {
+            if (prop === "sync") return async () => { throw new Error("simulated sync failure"); };
+            const v = target[prop];
+            return typeof v === "function" ? v.bind(target) : v;
+          },
+        });
+      },
+      readFile: async (...args) => {
+        reads += 1;
+        // Read 1 is the initial load. Read 2 is the recovery reconciliation, held open.
+        if (reads === 2) return new Promise((resolve) => { releaseRecoveryRead = () => resolve(realReadFile(...args)); });
+        return realReadFile(...args);
+      },
+    });
+    await backend.ready();
+
+    const record = { season: 1, contextHash: "c", regNullifier: "n1", commitment: "1", engine: "zkvm", statement: "custody" };
+    const appending = backend.append(record).then(() => {}, () => {}); // settles after the release
+
+    // Real filesystem work resolves on the threadpool, which outlasts a burst of setImmediate turns.
+    for (let i = 0; i < 400 && reads < 2; i += 1) await new Promise((r) => setTimeout(r, 5));
+    assert.ok(reads >= 2, "the append never reached its recovery read, so the window was never open");
+    assert.ok(
+      readFileSync(path, "utf8").includes('"regNullifier":"n1"'),
+      "the record must already be durable, or this is not the window under test",
+    );
+
+    const answered = {};
+    const track = (label, p) =>
+      p.then(
+        () => { answered[label] ??= "answered"; },
+        () => { answered[label] ??= "refused"; },
+      );
+    const queries = [
+      track("has", backend.has(record)),
+      track("seasonHasEngine", backend.seasonHasEngine(1, "zkvm")),
+      track("forSeasonContext", backend.forSeasonContext(1, "c")),
+      track("declarationFor", backend.declarationFor(1, "c")),
+    ];
+    for (let i = 0; i < 40; i += 1) await new Promise((r) => setTimeout(r, 5));
+
+    // Refusing is allowed. Answering from a view that predates a durable record is not.
+    assert.deepEqual(
+      Object.entries(answered).filter(([, how]) => how === "answered"),
+      [],
+      "a public view answered from the old maps while an uncertain write was still recovering",
+    );
+
+    releaseRecoveryRead();
+    await Promise.all(queries);
+    await appending;
+
+    // And once the reconciliation lands, every view reflects the durable record.
+    assert.equal(await backend.has(record), true);
+    assert.equal(await backend.seasonHasEngine(1, "zkvm"), true);
+    assert.equal((await backend.forSeasonContext(1, "c")).length, 1);
+    assert.deepEqual(await backend.declarationFor(1, "c"), { engine: "zkvm", statement: "custody" });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

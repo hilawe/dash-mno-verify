@@ -574,6 +574,14 @@ export class FileBackend {
   // assumes the answer describes durable state.
   async #ready() {
     await this.ready();
+    // Consulting the flag is enough to join an in-flight reconciliation, and that holds because
+    // nothing starts one without marking the view stale FIRST. The append path sets the flag
+    // synchronously the moment its write becomes uncertain, and every other reconciliation is
+    // started from this line in response to the flag already being set. So a reader that arrives
+    // mid-reconciliation sees stale, calls #reconcile(), and is handed the attempt already running
+    // rather than answering past it. An explicit join here was tried and removed: it could not be
+    // given a failing case that the flag does not already cover, and a guard with no reachable case
+    // is decoration.
     if (!this.#stale) return;
     // Throws if it cannot reconcile, which is the fail-closed path. The flag is cleared inside the
     // shared attempt rather than here: clearing it on the strength of "my reload returned" is what
@@ -623,6 +631,21 @@ export class FileBackend {
         await fh.close();
       }
     } catch (err) {
+      // MARKED BEHIND THE FILE SYNCHRONOUSLY, before this path yields to anything. The bytes may
+      // already be on disk, so from this instant the in-memory index is a view that can be missing a
+      // durable record, and every reader must reconcile or refuse rather than answer from it.
+      //
+      // It has to be set HERE rather than by the reconciliation below, and an independent review
+      // proved why with the interleaving this replaces. The version before it left the flag false
+      // until the recovery load SETTLED, and the barrier retry and the reconciliation call in
+      // between are both awaits. A concurrent reader in that window found `#stale` false and
+      // `ready()` already fulfilled, so it answered from the old maps: `has` false,
+      // `forSeasonContext` empty, `declarationFor` null, and `seasonHasEngine` false for a durable
+      // zkVM record, which is the downgrade signal reading backwards. The earlier code closed this
+      // by pointing `_loading` at the in-flight reload so `ready()` blocked on it, and dropping that
+      // bookkeeping reopened it. Marking the view rather than parking the readiness promise says the
+      // thing that is actually true and does not depend on which promise a caller happens to await.
+      this.#stale = true;
       // AN UNCERTAIN WRITE IS RESOLVED BY RETRYING THE DURABILITY BARRIER, not by looking to see
       // whether the bytes are visible.
       //
