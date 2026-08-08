@@ -7,13 +7,17 @@ prioritized punch list.
 
 ## CURRENT STATE, 2026-08-07. THIS SUPERSEDES EVERY SECTION BELOW IT
 
-`main` at `1b1eb1d`, pushed, clean tree. Suite 589, all three CI jobs green. The six dated sections
-that follow are the running record of 2026-08-04 to 08-07 and are kept append-only. Read them only
-when you need the reasoning behind something here.
+`main` at `e1099f8`, pushed, clean tree. Suite 594, all three CI jobs green. The dated sections that
+follow are the running record of 2026-08-04 to 08-07 and are kept append-only. Read them only when
+you need the reasoning behind something here.
+
+THE FOUR-REVIEW ROUND IS DONE AND FOLDED. Findings are in
+`REVIEW_FINDINGS_dash-mno-verify_adversarial_2026-08-07.md`, committed alongside the code as this
+repository does. Nothing waits on a reviewer.
 
 ### 1. WHERE TO START
 
-Nothing is half-done. Take punch-list item 1. Read section 4 before writing code, because those are
+Nothing is half-done. Take punch-list item 1. Read section 5 before writing code, because those are
 the things that cost time rather than facts about any one defect.
 
 ### 2. WHAT THE SYSTEM NOW DOES THAT IT DID NOT
@@ -37,11 +41,92 @@ regenerate the vectors and re-run the differential fuzz. All 110 vectors reprodu
 build. The fuzz is 1,655 comparisons over 0 to 300 bytes and was confirmed able to fail.
 
 **Six review findings are closed** (F1, F3, F4, F5, F6, and the binding proxy), and **F2 is enforced
-rather than fixed**: Platform nullifier mode refuses to boot without
+rather than fixed**. Platform nullifier mode refuses to boot without
 `MNO_PLATFORM_ACCEPT_UNCERTAIN_BROADCAST=1`, because an uncertain broadcast can cost a member their
 epoch and that needs a contract change.
 
-### 3. THE TWO RESIDUALS, which no amount of testing removes
+**The registration store's commit rule, since it was rewritten twice and the current one is not
+obvious.** A write is a commit only when a DURABILITY BARRIER succeeded. If the first sync fails, the
+recovery path reopens the file and syncs again, and success there is what makes the record durable.
+The reread only supplies the index, and it must find a record that matches the one attempted, not
+merely the same key. When no barrier holds, the caller is told the write failed. Reading the bytes
+back is NOT evidence, because a read can see page cache that never reached the disk.
+
+### 3. THE REVIEW ROUND, and what it changed
+
+Five reviews ran: the different-family CLI with repository access, a second different-family pass with
+folder access, one author-side charter, and two packet reviews without access. All five returned
+REQUEST-CHANGES. Findings are in `REVIEW_FINDINGS_dash-mno-verify_adversarial_2026-08-07.md` and
+`REVIEW_FINDINGS_dash-mno-verify_folder-access_2026-08-07.md`, both committed.
+
+Folded: the blocker and both majors below, the two minors, the stale-view major from the folder-access
+pass, and its N4. NOT YET FOLDED, and the next session's first work after the fresh pass:
+
+- **M2, the JSON-RPC path has no response-size bound** (`oracle/node_client.js`). A node can make the
+  gateway buffer and parse an arbitrarily large response before any DML check runs. The CLI buffer
+  limit was settled at 64 MiB long ago and the HTTP path never got the equivalent.
+- **M3, `RootWindows.adopt()` does not enforce the root-to-snapshot invariant it claims**
+  (`core/stores.js`). A caller can store one advertised root beside another snapshot's leaves. The
+  store already refuses an un-normalized snapshot, so this is the same class of guard and belongs
+  beside it.
+- **M4, the registration loader accepts parsed JSON without validating a record shape**
+  (`core/registration_store.js`). Syntactically valid corruption can enter the member cache or bind a
+  bucket to an impossible engine and statement instead of the file being refused at startup.
+- **N1, the partial merkle parser accepts noncanonical CompactSize encodings**, which contradicts the
+  one-encoding-per-commitment property the malleability work claimed.
+- **N2, malformed IPv6 groups alias valid service bytes** in `oracle/dml_commitment.js`, against a
+  boundary that claims malformed fields refuse.
+- **N3, the X11 reference is pinned by a mutable TAG rather than the commit it records.** The image
+  already writes `REFERENCE_COMMIT`, and the pin should be that commit so a rebuild years later
+  compiles the same source.
+
+**The blocker invalidated a fix from two days earlier.** The registration store's uncertain-write
+path reported success when a reread found the record, and `readFile()` can see dirty page-cache data
+that never reached stable storage. A failed `sync()` is precisely the case where visibility and
+durability differ, so the store told members they were registered on evidence a crash could erase.
+That is worse than the duplicate the reread was written to prevent, because the atomic commit point
+quietly stopped being one. Durability now needs a DURABILITY BARRIER: the recovery path reopens the
+file and syncs, and only a sync that succeeds makes it a commit. The reread is demoted to learning
+the index.
+
+Two majors with it. Recovery searched by key alone, so a record a second writer put there under the
+same key was claimed as this caller's success while the live tree got this caller's commitment. And a
+failed reload left the view stale, so a later append assigned an index the rebuilt tree would not
+agree with and the live member order diverged from what a restart produces.
+
+**A METHOD LESSON WORTH MORE THAN THE BUGS.** `prune(Infinity)` emptied the nullifier store. That
+guard had been written, then DELETED earlier the same session after mutation-testing it with only
+NaN-producing values and concluding it was redundant. The mutation method was sound and the input set
+was too small. When a guard looks redundant, the question is which inputs were tried, not whether the
+reasoning was tidy.
+
+**THE PACKET REVIEWS WERE STALE AND IDENTICAL, and both facts matter.** They were cut 2026-08-05,
+before `tools/x11-reference/` existed, so their blocker ("the deleted X11 harness leaves the evidence
+nonreproducible") and two of their three requirements were already answered by the time they arrived.
+Rebuild packets from the post-fold code, which the global playbook already says and which this round
+is the specimen for. The two packet reports were also WORD FOR WORD IDENTICAL, including the same
+four minors and the same closing paragraph, so they are one voice rather than two families and were
+weighted as one.
+
+Their third requirement was real and is done: the vectors file now records where a third party
+independently obtains each block hash and header, with four ways to check them without trusting the
+file. Adding it surfaced a bug, since regeneration silently dropped unknown metadata, which the test
+asserting the provenance exists caught by failing.
+
+**THE PATTERN ACROSS THE WHOLE ROUND.** The two reviewers with access found DEFECTS, including the
+blocker and every major. The reviewers without it found FRAMING, and their central blocker had already
+been answered before they were read. Both are useful and they are not interchangeable, which is the
+argument for the standing rule that at least one reviewer in every pool has access.
+
+**AND THE FOLD ITSELF NEEDED A SECOND PASS.** The stale-flag fix from earlier the same session was
+checked only by the append path, so after a successful retry barrier made a record durable and only
+the recovery read failed, `has`, `forSeasonContext`, `declarationFor` and `seasonHasEngine` all
+answered from the old maps. `seasonHasEngine` is the zkVM downgrade signal, so the store could report
+no zkVM registration while the file durably held one. Every public entry point now reconciles through
+one guard and FAILS CLOSED if it cannot, since answering from a view known to be behind the file is
+worse than refusing.
+
+### 4. THE TWO RESIDUALS, which no amount of testing removes
 
 Both are written into the code where they are relied on. Neither is a defect to fix, both are work
 not yet started.
@@ -56,7 +141,7 @@ not yet started.
 Together: a node can no longer make things up for free. A determined node with real resources is not
 yet ruled out.
 
-### 4. WHAT COST TIME, so it is not paid twice
+### 5. WHAT COST TIME, so it is not paid twice
 
 - **The author-side three-agent stage has now caught first FOUR times running**, including a blocker
   (a 39-byte response that hung the event loop permanently) and, on the F3 and F4 fixes, four defects
@@ -74,22 +159,20 @@ yet ruled out.
 - **The mainnet node container needs RPC credentials from its command line.** Read them with
   `docker inspect dash-mno-node`. A bare `dash-cli` fails with an error that reads like a broken node.
 
-### 5. PUNCH LIST, in the order recommended
+### 6. PUNCH LIST, in the order recommended
 
-1. **The packet reviews are out and unreturned.** Three identical packets in `~/Downloads/` dated
-   2026-08-05, for the other model families. They lead with the X11 evidence question, which the
-   harness commit has since answered, so their verdict on that is worth reading against what landed.
-   The Codex CLI was unavailable this session (usage limit, until 2026-08-07 evening).
-2. **A DIFFERENT-FAMILY review round.** Everything since `8d71fe0` has been reviewed only by the
-   author-side stage, which shares this author's blind spots by construction. The Codex CLI was out
-   of usage until 2026-08-07 evening, so that round never ran. The harness commits `1b1eb1d` and
-   `3681c00` in particular have had one author-side pass and nothing else.
-3. **Keep the proof and the challenge off the chat platform.** Recorded in TODO.md with the design
+1. **A FRESH FULL PASS over the fold.** Every review in the last round is folded, which by this
+   repository's own history is the moment the next round finds its material, because most of what
+   each round catches is in the previous round's fixes, and that has held six or more times running. The fold
+   included a rewrite of the registration store's uncertain-write path, which is durability-bearing
+   code, so it deserves a pass built FRESH from the post-fold state rather than a focused re-check of
+   the named findings.
+2. **Keep the proof and the challenge off the chat platform.** Recorded in TODO.md with the design
    note that the gateway already stores the account with the challenge, so a direct submission needs
    no new trust.
-4. **The audit.** Still none. `circom-ecdsa` remains unaudited demonstration code by its own README.
+3. **The audit.** Still none. `circom-ecdsa` remains unaudited demonstration code by its own README.
 
-### 6. WHAT FORCED REWORK THIS SESSION
+### 7. WHAT FORCED REWORK THIS SESSION
 
 - The F3 and F4 fixes shipped with four defects that two charters found the next day, three of them
   introduced BY those fixes. Feeds the existing rule that the newest code is the riskiest surface.
@@ -98,6 +181,17 @@ yet ruled out.
 - The first `generate.mjs` invented its own vector inputs and rewrote the committed set, destroying
   the no-diff signal the script exists to give. Feeds nothing yet, and if a second regeneration
   script does the same it becomes a rule.
+- The uncertain-write path was rewritten twice and was wrong both times. First it reported failure for
+  a record that was durable, stranding the member and leaving the live tree short. Then it reported
+  SUCCESS on a reread, which proves visibility and not durability. Feeds a rule this repository does
+  not yet have and probably should: when a fix turns on what a filesystem did, the question is which
+  BARRIER succeeded, never what a later read can see.
+- A guard was deleted as redundant after mutation testing with too small an input set, and a reviewer
+  emptied the store with the case that was missing. Feeds the mutation rule with a qualifier: a
+  surviving mutant means the test is weak OR the inputs are narrow, and those need telling apart.
+- The packet reviews were built before the work they were meant to review and arrived after it, so
+  their central finding was already answered. Feeds the existing playbook line about rebuilding
+  packets fresh from post-fold code, which this round is now the specimen for.
 - The harness shipped reporting success whether or not anything verified, and its one guard over the
   external evidence was disabled by deleting that evidence. Both found by the author-side stage the
   day after. Feeds the existing rule that a check whose failing case looks like its passing case is

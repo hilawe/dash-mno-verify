@@ -137,9 +137,13 @@ export function buildConfig(env = process.env) {
     // self-hosting operator is a strictly smaller trust set: no signing keys, no quorum, no snapshot
     // transport, nothing to compromise between the chain and the gateway.
     //
-    // It is NOT chain-authenticated even so. One server answers the ChainLock query, the block hash,
-    // and the list, so it can return matching hashes alongside an arbitrary set. That is a trusted-node
-    // read, and it becomes chain-authenticated only when the merkleRootMNList commitment check exists.
+    // It is NOT chain-authenticated even so, though the reason has narrowed. The list is checked
+    // against the merkleRootMNList in the block's own coinbase, the header is named with X11, and its
+    // work must meet the target it declares with a powLimit floor, so a node can neither serve an
+    // arbitrary list nor invent a block for free. What keeps it a TRUSTED-NODE read is that the
+    // ChainLock signature is unverified and the work is measured against powLimit rather than the
+    // difficulty in force at that height, so the same server still decides which block is being
+    // looked at, and a real but old or noncanonical block passes.
     dmlSource: env.MNO_DML_SOURCE ?? "snapshot",
     nodeRpcUrl: env.MNO_RPC_URL ?? null,
     nodeRpcUser: env.MNO_RPC_USER ?? null,

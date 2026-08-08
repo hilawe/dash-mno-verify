@@ -531,10 +531,14 @@ async function bootGateway({ config = buildConfig(process.env) } = {}, release) 
   if (config.dmlSource === "node") {
     console.warn(
       `[gateway] DIRECT NODE MODE: the DML is read from ${config.nodeRpcUrl ?? "the local dash-cli"} ` +
-        `and gated on ChainLock, so no oracle signing key is trusted. This is a TRUSTED-NODE read: one ` +
-        `server answers the ChainLock query, the block hash, and the list, so it can return matching ` +
-        `hashes over an arbitrary set. It becomes chain-authenticated only when the merkleRootMNList ` +
-        `commitment check exists.`,
+        `and gated on ChainLock, so no oracle signing key is trusted. The list is checked against the ` +
+        `merkleRootMNList in the block's own coinbase, the coinbase against the merkle branch, the ` +
+        `branch against the header, and the header is named with X11 and must meet the proof of work ` +
+        `its target declares, floored at powLimit. So a node cannot serve an arbitrary list, and ` +
+        `inventing a block costs mining rather than nothing. THIS IS STILL A TRUSTED-NODE READ: the ` +
+        `ChainLock signature is not verified, and the work is checked against powLimit rather than the ` +
+        `difficulty in force at that height, so the same server still decides WHICH block you are ` +
+        `looking at. Do not rely on this mode for anything of value.`,
     );
   }
 

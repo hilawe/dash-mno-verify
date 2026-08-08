@@ -469,7 +469,7 @@ export class FileBackend {
   }
 
   async has(d) {
-    await this.ready();
+    await this.#ready();
     return this.seen.has(keyOf(d));
   }
 
@@ -485,15 +485,26 @@ export class FileBackend {
     return result;
   }
 
-  async #appendOne(d) {
+  // EVERY PUBLIC ENTRY POINT GOES THROUGH THIS, not just the append.
+  //
+  // The first version of the stale flag was checked only by #appendOne, and a reviewer showed what
+  // that leaves: after a successful retry barrier made a record durable and only the recovery READ
+  // failed, has(), forSeasonContext(), declarationFor() and seasonHasEngine() all answered from the
+  // old maps. seasonHasEngine is the one that stings, because it is the zkVM downgrade signal, so the
+  // store could report no zkVM registration while the file durably held one.
+  //
+  // FAILING CLOSED IS THE POINT. If reconciliation cannot succeed, answering from a view known to be
+  // behind the file is worse than refusing, because every caller here is making a decision that
+  // assumes the answer describes durable state.
+  async #ready() {
     await this.ready();
-    // A FAILED RELOAD LEFT THIS VIEW BEHIND THE FILE, so reconcile before deciding anything. Without
-    // this the duplicate check and the index both come from a view known to be stale, which is how
-    // the live member order and the order a restart rebuilds came apart.
-    if (this.#stale) {
-      await this.#reload();
-      this.#stale = false;
-    }
+    if (!this.#stale) return;
+    await this.#reload(); // throws if it cannot reconcile, which is the fail-closed path
+    this.#stale = false;
+  }
+
+  async #appendOne(d) {
+    await this.#ready();
     const k = keyOf(d);
     if (this.seen.has(k)) return { duplicate: true };
     const recs = this.byBucket.get(bucketOf(d)) ?? [];
@@ -582,18 +593,18 @@ export class FileBackend {
   }
 
   async forSeasonContext(season, contextHash) {
-    await this.ready();
+    await this.#ready();
     return [...(this.byBucket.get(`${season}:${contextHash}`) ?? [])];
   }
 
   async declarationFor(season, contextHash) {
-    await this.ready();
+    await this.#ready();
     const recs = this.byBucket.get(`${season}:${contextHash}`);
     return recs && recs.length > 0 ? declarationOfRecord(recs[0]) : null;
   }
 
   async seasonHasEngine(season, engine) {
-    await this.ready();
+    await this.#ready();
     return bucketsHaveEngine(this.byBucket, season, engine);
   }
 }

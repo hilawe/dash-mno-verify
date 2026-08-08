@@ -615,3 +615,58 @@ test("recovery will not claim another writer's record as this write", async () =
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("a failed recovery read leaves no public view answering from stale state", async () => {
+  // The gap a folder-access review found in the first version of the stale flag: it was checked only
+  // by the append, so after a retry barrier had made a record durable and only the recovery READ
+  // failed, every public method still answered from the old maps. seasonHasEngine is the one that
+  // matters most, because it is the zkVM downgrade signal, so the store could report no zkVM
+  // registration while the file durably held one.
+  //
+  // The sequence is the reviewer's: a successful initial load, an uncertain append whose retry sync
+  // SUCCEEDS (so the record is genuinely durable), a failed recovery read, then every public read.
+  const dir = mkdtempSync(join(tmpdir(), "mno-reg-stale-"));
+  const path = join(dir, "registrations.jsonl");
+  try {
+    const { FileBackend } = await import("../core/registration_store.js");
+    const { open: realOpen, readFile: realReadFile } = await import("node:fs/promises");
+
+    let failNextSync = true;
+    let failNextRead = false;
+    const backend = new FileBackend(path, null, false, {
+      open: async (...args) => {
+        const fh = await realOpen(...args);
+        if (!failNextSync) return fh;
+        failNextSync = false;
+        return new Proxy(fh, {
+          get(target, prop) {
+            if (prop === "sync") return async () => { throw new Error("simulated sync failure"); };
+            const v = target[prop];
+            return typeof v === "function" ? v.bind(target) : v;
+          },
+        });
+      },
+      readFile: async (...args) => {
+        if (failNextRead) {
+          failNextRead = false;
+          throw Object.assign(new Error("simulated recovery read failure"), { code: "EIO" });
+        }
+        return realReadFile(...args);
+      },
+    });
+    await backend.ready();
+
+    const record = { season: 1, contextHash: "c", regNullifier: "n1", commitment: "m1", engine: "zkvm", statement: "receipt" };
+    failNextRead = true; // the recovery READ fails, after the retry sync has already succeeded
+    await assert.rejects(() => backend.append(record), /simulated sync failure/, "the append reports the uncertain write");
+
+    // The record IS in the file at this point, so every public view must either reflect it or refuse.
+    // Answering "no" from the old maps is the one outcome that is not allowed.
+    assert.equal(await backend.has(record), true, "has() reconciled rather than answering from the stale view");
+    assert.equal(await backend.seasonHasEngine(1, "zkvm"), true, "and the zkVM downgrade signal is not silently false");
+    assert.equal((await backend.forSeasonContext(1, "c")).length, 1);
+    assert.ok(await backend.declarationFor(1, "c"), "and the declaration is visible");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
