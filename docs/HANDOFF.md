@@ -5,7 +5,210 @@ counts and supersedes everything below it. Historical sections are append-only a
 only marked superseded. Read this first when picking the project back up, then `TODO.md` for the full
 prioritized punch list.
 
-## CURRENT STATE, 2026-08-07. THIS SUPERSEDES EVERY SECTION BELOW IT
+## CURRENT STATE, 2026-08-08. THIS SUPERSEDES EVERY SECTION BELOW IT
+
+`main` at `f39e9f4`. SIX COMMITS ARE UNPUSHED and `origin/main` is still at `66127dd`. Tree is clean
+apart from an untracked `output/` directory that has sat there since 08-04 and is not in
+`.gitignore`. Suite 613, all passing locally.
+
+CI IS NOT EVIDENCE FOR ANY OF THIS WORK. The last run was green, and it ran at `66127dd`, which is
+what origin holds. None of the six commits has been through CI. Push, then read the conclusion.
+
+THE THIRD FRESH FULL ROUND RETURNED REQUEST-CHANGES WITH THREE MAJORS AND ONE MINOR, ALL EXECUTED BY
+THE REVIEWER, AND NONE IS FOLDED. They are listed in section 6. Its log lived in the session
+scratchpad and does not survive, so section 6 is the record. TWO OF THE THREE MAJORS WERE INTRODUCED
+BY `f39e9f4`, THE MOST RECENT COMMIT, AND BOTH ARE WORSE THAN WHAT THEY REPLACED. START THERE.
+
+### 1. WHERE TO START
+
+Punch-list item 1. Nothing is half-written, and no code change is pending a decision.
+
+### 2. THE SIXTH REVIEW ROUND, AND WHY F1 TOOK FIVE COMMITS
+
+The round's report is committed at `REVIEW_FINDINGS_dash-mno-verify_fresh_full_2026-08-08.md`
+(`073d8cb`), verdict REQUEST-CHANGES, six findings. Every one was reproduced a second time before
+being acted on, so none is carried on the report's word. F1 IS CLOSED. F2 THROUGH F6 ARE OPEN.
+
+F1 took five commits because each review round found its defect INSIDE THE PREVIOUS ROUND'S FIX. That
+is the durable lesson from this session, and it is why the loop in section 3 exists.
+
+1. `4a5e691` made reconciliation single-flight and had `#load()` build into local maps installed only
+   on success.
+2. `07a300e` fixed what that broke. Removing the old `_loading` bookkeeping removed a readiness
+   barrier nobody had noticed it was providing, so a reader could answer from old maps while an
+   uncertain write was still recovering.
+3. `4565515` fixed what THAT missed. The mark sat in the outer catch, and a `finally` runs before the
+   catch after it, so the window survived one `await fh.close()` earlier.
+4. `e26f3a5` closed a major from the same round. A reread cannot establish durability, which this
+   file already argued on the write path while the reconciliation path did exactly that.
+5. `f39e9f4` fixed the same one-await-too-late defect on the SECOND flag, plus a pre-existing
+   duplicate-collapse defect that rebuilt buckets in the wrong leaf order.
+
+### 3. THE REVIEW LOOP IS A STANDING RULE HERE, NOT A PER-CHANGE DECISION
+
+Fold, then run a FRESH FULL round over the whole changed surface, and repeat until a fresh full round
+returns APPROVE with nothing real to fold. A focused re-check is not the stopping condition and on
+this work it would have stopped after round one. Three separate rounds this session each found their
+defect inside the previous round's repair, twice in code written minutes earlier.
+
+Two supporting habits, both earned this session:
+
+- Frame the prompt with the history and tell the reviewer plainly that every prior round found its
+  defect inside the last one's fix. Tell it not to re-verify named findings.
+- Mutation-check every new test by reverting each half of the fix separately. Two tests written this
+  session could not see the window they claimed to cover, and only a reviewer pointing at them and a
+  mutation run showed it.
+
+### 4. WHAT THE REGISTRATION STORE NOW GUARANTEES
+
+`core/registration_store.js`, `FileBackend`. All five properties are pinned by tests that fail when
+the corresponding change is reverted.
+
+- Reconciliation is single-flight. Concurrent callers share one attempt, so a failing reload can no
+  longer restore maps over a successful one and then have the flag cleared on top.
+- `#load()` builds into its own maps and installs them only after every step that can throw, so a
+  failed load changes nothing and needs no rollback.
+- `#stale` and `#unbarriered` are set in the SAME synchronous step, inside the inner catch around the
+  write and sync, so no `await` separates a write becoming uncertain from the store saying so.
+- Reconciliation carries a durability barrier when `#unbarriered` is set, so a reread cannot turn a
+  failed write into an apparent commit. A missing file is not an unbarriered one, and `ENOENT` clears
+  the state rather than wedging the store.
+- A bucket rebuilds in RECORDED LEAF ORDER. The last occurrence of a repeated key wins because it
+  carries the index the writer finally assigned, and a bucket whose positions are not a complete
+  `0..n-1` set is refused rather than guessed.
+
+THE LAST OF THOSE IS NOW KNOWN TO BE WRONG, see section 6 finding 3. The bucket refusal is too
+strict and breaks upgrades.
+
+AND THE ASSERTION ADDED ALONGSIDE THEM WAS WRONG TOO. Readiness refuses unless both flags are clear,
+and the code asserts that unbarriered-with-current is unreachable. No mutation of that condition
+failed the suite, which was read as the combination being impossible, and it was kept as the
+definition of readiness with an assertion so it would not read as decoration. The third round
+constructed the interleaving. The combination IS reachable, and because the assertion throws before
+anything can reconcile, reaching it wedges the store permanently rather than failing closed
+recoverably. An unpinned branch that no mutation can kill means the tests do not reach it, which is
+not the same as the code not reaching it, and that distinction is the lesson.
+
+### 5. THE FIVE FINDINGS STILL OPEN
+
+All from `REVIEW_FINDINGS_dash-mno-verify_fresh_full_2026-08-08.md`, all independently reproduced,
+none started.
+
+- **F2, major.** A repeated pinned root can evict the NEWEST height in `core/stores.js`. A DML root
+  repeats across heights when the list does not change, so one challenge pins every historical copy
+  and the only unpinned height is the one just adopted. Reproduced, with a control showing the pin
+  alone flips it. NOT REACHABLE ON DEFAULTS TODAY: the cap is 262,144 leaves over an 8-height window,
+  so 32,768 per height against a mainnet list near 2,972. It binds if an operator lowers
+  `MNO_ROOT_WINDOW_MAX_LEAVES` or the list grows roughly elevenfold.
+- **F3, moderate.** The snapshot guard compares `shaRoot` only when both sides are non-null, so it
+  accepts either asymmetric case. Reproduced both directions.
+- **F4, moderate.** Loaded registration strings are checked as non-empty strings and not as field
+  elements, so a `commitment` of `"not-a-field"` passes the loader and fails later at tree
+  materialization, which is the outcome the loader check exists to prevent.
+- **F5, low.** The IPv6 parser accepts structurally invalid addresses. Worth more than its severity
+  suggests: `[1:2:3:4:5:6:7:8::]` encodes to bytes IDENTICAL to canonical `[1:2:3:4:5:6:7:8]`, so it
+  is an exact collision rather than mere lenience, and those bytes feed the DIP4 commitment.
+- **F6, low.** The X11 reference image name omits the effective `DASH_COMMIT` override, so pinned,
+  empty, and arbitrary overrides all resolve to `x11ref:v23.1.3-f2c687699afb` and hit the cache.
+
+### 6. THE THIRD ROUND'S FINDINGS, NONE FOLDED, START HERE
+
+All four were executed by the reviewer. Findings 1 and 3 were introduced by `f39e9f4` and both are
+worse than what they replaced, so the recommended first move is to take those two additions out
+rather than to patch them.
+
+1. **Major, and it wedges the store.** The state the code asserts is unreachable is reachable.
+   `#barrierThenLoad()` clears `#unbarriered` BEFORE awaiting `#load()`, while `#reconcile()`'s
+   success continuation clears only `#stale`. So a reader can clear `#unbarriered`, enter the load,
+   have the append's outer catch re-set both flags underneath it, and then clear `#stale` on
+   success, leaving unbarriered-with-current. Every later operation throws the assertion before it
+   can reconcile, even after storage recovers. The root cause is that the two flags are cleared at
+   different moments by different code. A generation counter captured at the start of a
+   reconciliation and compared before clearing would let both clear together and only when nothing
+   newer has been marked, which removes the state rather than asserting about it.
+2. **Major, pre-existing.** A failed torn-tail repair stays armed. `_truncateTo` is left set when the
+   truncate fails, so a later successful `ready()` on the same backend applies the stale offset and
+   deletes a record from a file an operator has since repaired. Verified end to end by the reviewer,
+   including the gapped indexes that a later append then writes.
+3. **Major, and it breaks upgrades.** The new complete-position refusal rejects files the BASE
+   revision legitimately produces. Under `66127dd`, K writes at index 0 and its barriers fail, then M
+   writes successfully at index 0 and M's sync also makes K's bytes durable, so the file holds
+   distinct records K@0 and M@0. Confirmed directly in this session: `66127dd` reopens that file as
+   `[K, M]`, `HEAD` refuses it at boot. That turns an upgrade after the exact storage failure this
+   work repairs into a gateway outage. A stable sort by index, tie-broken by file position, handles
+   both this file and the duplicate case correctly and refuses neither.
+4. **Minor.** The last-occurrence-wins branch replaces the stored record BEFORE
+   `registrationRecordProblem()` runs, so a corrupted duplicate bypasses validation. `engine: ""`
+   against an absent engine compares equal, and the bucket ends up declared under an empty engine, so
+   a later valid registration is rejected as conflicting instead of the file being refused.
+
+### 7. WHAT FORCED REWORK THIS SESSION
+
+- The handoff header named `c9f44a0` while HEAD was `66127dd`, and the delivered Downloads copy
+  claimed a CURRENT STATE dated 08-08 that did not exist in the repository. Feeds the global rule
+  that the repo copy is authoritative and a Downloads copy is a view-only convenience.
+- A finished review was reported as unfinished because its log tail was read and the repository was
+  not. The report had already been written to the repo root. Feeds re-verify-before-acting.
+- The single-flight fix removed `_loading` bookkeeping that was load-bearing for readiness rather
+  than for its apparent purpose. Feeds the pre-commit rule about enumerating the invariants a fix
+  touches, INCLUDING guarantees the old code provided only through its limitations.
+- The stale mark was put in the outer catch, where a `finally` runs first. Same rule.
+- One commit later the identical mistake was made on the second flag. Same rule again, and it is the
+  clearest argument for the loop in section 3.
+- Two regression tests were written that could not see the window they claimed to cover. Feeds the
+  rule that a test does not exist until it has been watched failing, and that watching it fail
+  against the ORIGINAL code is not the same as mutation-checking each half of the fix.
+- An unreachability claim was made from a mutation that no test could kill, and the next round
+  constructed the interleaving. A branch the tests do not reach is not a branch the CODE cannot
+  reach, and turning that claim into a throwing assertion converted a recoverable state into a
+  permanent one. Feeds the same rule from the other side: when a mutation survives, the finding is
+  that the property is untested, not that it is impossible.
+- Two additions made beyond the repair they accompanied each caused a regression, one wedging the
+  store and one breaking upgrades from the base revision. Feeds the design rule about the abstraction
+  threshold and about hardening that no concrete failing case asked for.
+
+### 8. PUNCH LIST
+
+1. Take the two over-reaches out of `f39e9f4`, section 6 findings 1 and 3. The assertion wedges the
+   store and the bucket refusal breaks upgrades, and both are additions rather than repairs. The two
+   REPAIRS in that commit are good and stay: both flags marked together, and last-occurrence-wins.
+2. Fix section 6 finding 1 at its root with a generation counter, so both flags clear together and
+   only when nothing newer has been marked.
+3. Section 6 finding 3, a stable sort by index tie-broken by file position, replacing the refusal.
+4. Section 6 finding 4, validate the replacement record before it goes in.
+5. Section 6 finding 2, the armed `_truncateTo` after a failed repair.
+6. Run another fresh full round after that fold. Repeat folding and re-running until a fresh full
+   round returns APPROVE with nothing to fold. This is the stopping condition, not a converged
+   focused re-check.
+7. Leak-scan and push. This repository is direct-push public with NO automated leak gate, so the scan
+   is manual and per commit. Then read the CI conclusion rather than assuming it.
+8. F2, the root window evicting the newest height.
+9. F4, field-element validation at load.
+10. F3, the `shaRoot` asymmetry.
+11. F5, the IPv6 parser and its exact collision.
+12. F6, the reference image cache key.
+13. Keep the proof and the challenge off the chat platform. Recorded in `TODO.md` with the note that
+   the gateway already stores the account with the challenge, so a direct submission needs no new
+   trust.
+14. The audit. Still none, and `circom-ecdsa` is unaudited demonstration code by its own README.
+15. Decide what to do about the untracked `output/`, which is neither committed nor ignored.
+
+### 9. GOTCHAS, SO THEY ARE NOT REDISCOVERED
+
+- THE PRE-COMMIT HOOK RUNS THE FULL SUITE, about two and a half minutes. A commit invocation with a
+  two-minute timeout is stopped mid-gate and the commit does not land. Give it longer.
+- `npm test` is about two minutes and binds a loopback port. Never run two suites at once.
+- The review sandbox REFUSES `listen()`, so a reviewer cannot run the full suite and its evidence is
+  the targeted and non-socket subsets. Those `EPERM` failures are an environment restriction and not
+  a product failure. Do not fold them as findings.
+- The review prompt file is per-project at `/tmp/review_prompt_dash-mno-verify.md`, and it must be
+  overwritten immediately before piping, because a shared path raced between concurrent sessions once
+  before.
+- A `finally` runs BEFORE the `catch` that follows it. Two defects this session were exactly that.
+  When state must be marked at a failure, mark it in the same synchronous step as the failure.
+- Reading a log tail is not reading the result. Check the repository for the artifact first.
+
+## SUPERSEDED, 2026-08-07. Kept as the record of the fifth round and the X11 evidence work
 
 `main` at `c9f44a0`, pushed, clean tree. Suite 606, all three CI jobs green. The dated sections that
 follow are the running record of 2026-08-04 to 08-07 and are kept append-only. Read them only when
