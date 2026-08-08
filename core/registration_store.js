@@ -472,7 +472,9 @@ export class FileBackend {
       // Two records sharing a key but disagreeing on what they say is corruption this cannot resolve,
       // and picking one would be inventing an answer.
       if (rec && seen.has(keyOf(rec))) {
-        const first = (byBucket.get(bucketOf(rec)) ?? []).find((r) => keyOf(r) === keyOf(rec));
+        const bucket = byBucket.get(bucketOf(rec)) ?? [];
+        const at = bucket.findIndex((r) => keyOf(r) === keyOf(rec));
+        const first = at === -1 ? null : bucket[at];
         if (!first || !sameRegistrationRecord(first, rec)) {
           throw new Error(
             `${this.path} line ${i + 1} repeats registration key ${keyOf(rec)} with different content. ` +
@@ -480,6 +482,15 @@ export class FileBackend {
               `Repair the file.`,
           );
         }
+        // THE LAST OCCURRENCE WINS, because it is the one carrying the index the writer finally
+        // assigned. Keeping the first looked equally deterministic and rebuilt the WRONG TREE. A
+        // fresh pass executed the legacy sequence this duplicate handling exists for: K's bytes land
+        // and its sync errors, a different registration M succeeds into position 0, and K's retry
+        // computes position 1, leaving K@0, M@0, K@1 in the file. The live tree was [M, K]. Keeping
+        // the first copy rebuilt [K, M], a different Poseidon root, so every member's path against
+        // the live root stopped verifying at the next restart. It also left two records in one
+        // bucket both claiming index 0, which is incoherent on its own terms.
+        bucket[at] = rec;
         duplicatesCollapsed += 1;
         continue;
       }
@@ -502,9 +513,10 @@ export class FileBackend {
     if (duplicatesCollapsed > 0) {
       console.warn(
         `[registration] ${this.path} contained ${duplicatesCollapsed} duplicate registration ` +
-          `record(s), identical to ones already loaded. Kept the first of each, so the members tree ` +
-          `rebuilds the same way every time. This is the signature of an interrupted write from an ` +
-          `older build; the file is usable and worth repairing.`,
+          `record(s), identical to ones already loaded. Kept the LAST of each and rebuilt the bucket ` +
+          `in recorded leaf order, which is what reproduces the tree the gateway was serving. This ` +
+          `is the signature of an interrupted write from an older build, and the file is usable and ` +
+          `worth repairing.`,
       );
     }
     // REPAIR THE FILE SO IT ENDS ON A RECORD BOUNDARY, whatever shape the interruption left. There
@@ -568,6 +580,31 @@ export class FileBackend {
         await dirHandle.close();
       }
     }
+    // ORDERED BY THE INDEX EACH RECORD CARRIES, not by where it happens to sit in the file. For a
+    // file with no duplicates these are the same thing, since appends assign 0, 1, 2 in the order
+    // they are written, so this is a no-op on every ordinary store. It is the collapse above that
+    // can separate them, and the leaf ORDER is what the members root commits to, so reconstructing
+    // it from the recorded positions is what makes a restart rebuild the tree the gateway was
+    // actually serving.
+    //
+    // AND THE POSITIONS MUST BE A COMPLETE SET. A bucket's indexes are assigned as the length of the
+    // bucket at the time, so a healthy one holds exactly 0..n-1 with nothing missing and nothing
+    // repeated. Anything else is a file this cannot reconstruct a unique order from, and guessing
+    // would mean serving a root no prover can build a path for. Refuse and say which bucket, so an
+    // operator has something to act on.
+    for (const [bucket, recs] of byBucket) {
+      recs.sort((a, b) => a.index - b.index);
+      const wrong = recs.findIndex((r, i) => r.index !== i);
+      if (wrong !== -1) {
+        throw new Error(
+          `${this.path} bucket ${bucket} does not carry a complete set of leaf positions: after ` +
+            `collapsing duplicates it holds ${recs.length} record(s) with indexes ` +
+            `[${recs.map((r) => r.index).join(", ")}], which is not 0..${recs.length - 1}. The leaf ` +
+            `order is what the members root commits to, so a unique order cannot be reconstructed ` +
+            `from this and guessing one would serve a root no prover can build a path for.`,
+        );
+      }
+    }
     // INSTALLED LAST, after every step that can throw. Until this line the store is still serving
     // whatever it had, which is what makes a failed load a no-op rather than something to undo.
     this.seen = seen;
@@ -620,7 +657,27 @@ export class FileBackend {
     // rather than answering past it. An explicit join here was tried and removed: it could not be
     // given a failing case that the flag does not already cover, and a guard with no reachable case
     // is decoration.
-    if (!this.#stale) return;
+    // EITHER FLAG MEANS THIS VIEW HAS NOT BEEN ESTABLISHED. #stale says the index may not match the
+    // file, #unbarriered says the file may not match the disk, and a view is only good when neither
+    // is true. Checking #stale alone let a reconciliation clear it while #unbarriered stayed set, so
+    // the store went on answering from records no barrier had ever forced to storage.
+    //
+    // NO TEST PINS THE SECOND HALF, and that is stated rather than hidden. Both flags are set in the
+    // same synchronous step and a successful reconciliation clears both, so #unbarriered true with
+    // #stale false is not reachable today, and no mutation of this line fails the suite. It is kept
+    // because it is the DEFINITION of readiness here rather than a guard against a known ordering,
+    // which is what separates it from the explicit reconciliation join that was removed for being
+    // decoration. If a later change can reach that combination, this is what makes it refuse instead
+    // of answering, and the assertion below is what says so out loud.
+    if (this.#unbarriered && !this.#stale) {
+      throw new Error(
+        "registration store: the file is marked unbarriered while the view is marked current. These " +
+          "are set together and cleared together, so reaching this means a new path clears one " +
+          "without the other, and answering from the view would report records no durability " +
+          "barrier established.",
+      );
+    }
+    if (!this.#stale && !this.#unbarriered) return;
     // Throws if it cannot reconcile, which is the fail-closed path. The flag is cleared inside the
     // shared attempt rather than here: clearing it on the strength of "my reload returned" is what
     // let a caller mark a view fresh that a concurrent failure had already replaced with an old one.
@@ -673,7 +730,15 @@ export class FileBackend {
         // four public views denied a registration that was on disk, including seasonHasEngine
         // returning false for a zkVM record. Setting the flag in the same synchronous step as the
         // failure leaves no await between the write becoming uncertain and the store saying so.
+        //
+        // BOTH FLAGS, for the same reason. Marking only #stale here and leaving #unbarriered to the
+        // outer catch repeated the very defect this inner catch exists to fix, one flag over. A
+        // fresh pass executed it: during the awaited close a reader began reconciling, and because
+        // #unbarriered was still false the reconciliation SKIPPED the barrier, then installed
+        // page-cache bytes and cleared #stale. Zero barriers had succeeded, the append rejected, and
+        // the store answered that the registration was present, permanently.
         this.#stale = true;
+        this.#unbarriered = true;
         throw err;
       } finally {
         await fh.close();

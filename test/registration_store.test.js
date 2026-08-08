@@ -517,7 +517,16 @@ test("a duplicate written at a different index still loads, because the index is
     await backend.ready(); // must not throw
     const recs = await backend.forSeasonContext(1, "c");
     assert.equal(recs.length, 2, "two distinct registrations survive, and the repeated one collapsed");
-    assert.deepEqual(recs.map((r) => r.regNullifier).sort(), ["nK", "nM"]);
+    // NOT SORTED. This assertion used to sort the nullifiers, which checked membership as a set and
+    // was blind to the thing that actually matters here. The bucket's ORDER is what the members root
+    // commits to, and a fresh pass showed the load rebuilding [K, M] where the live tree had been
+    // [M, K], a different root, so every member's path stopped verifying at the next restart.
+    // K's LAST record carries index 1, which is the position the writer finally assigned it.
+    assert.deepEqual(
+      recs.map((r) => `${r.regNullifier}@${r.index}`),
+      ["nM@0", "nK@1"],
+      "the bucket rebuilds in recorded leaf order, which is the order the live tree had",
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -1066,6 +1075,70 @@ test("a reread cannot turn a failed durability barrier into an apparent commit",
     assert.equal(await backend.has(record), true);
     assert.equal(await backend.seasonHasEngine(1, "zkvm"), true);
     assert.ok(barriersSucceeded > 0, "the recovery must go through a barrier that actually succeeded");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("an unbarriered write cannot be laundered into a commit during the awaited close", async () => {
+  // The major a fresh full pass found after the barrier work landed. The inner catch marked #stale
+  // but left #unbarriered to the outer catch, which is the same one-await-too-late defect the inner
+  // catch exists to fix, one flag over. During the awaited close a reader began reconciling, saw
+  // #unbarriered still false, SKIPPED the barrier, installed page-cache bytes and cleared #stale.
+  const dir = mkdtempSync(join(tmpdir(), "mno-reg-launder-"));
+  const path = join(dir, "registrations.jsonl");
+  try {
+    const { open: realOpen, readFile: realReadFile } = await import("node:fs/promises");
+    let releaseClose;
+    const backend = new FileBackend(path, null, false, {
+      open: async (...args) => {
+        const fh = await realOpen(...args);
+        return new Proxy(fh, {
+          get(target, prop) {
+            // No sync EVER performs a real barrier, so nothing here reaches stable storage.
+            if (prop === "sync") return async () => { throw Object.assign(new Error("barrier failure"), { code: "EIO" }); };
+            if (prop === "close" && !releaseClose) {
+              return () => new Promise((resolve) => { releaseClose = () => resolve(target.close()); });
+            }
+            const v = target[prop];
+            return typeof v === "function" ? v.bind(target) : v;
+          },
+        });
+      },
+      readFile: async (...args) => realReadFile(...args),
+    });
+    await backend.ready();
+
+    const record = { season: 1, contextHash: "c", regNullifier: "n1", commitment: "1", engine: "zkvm", statement: "custody" };
+    const appending = backend.append(record).then(() => {}, () => {});
+    for (let i = 0; i < 400 && !releaseClose; i += 1) await new Promise((r) => setTimeout(r, 5));
+    assert.ok(releaseClose, "the append never reached close(), so the window was never open");
+    assert.ok(readFileSync(path, "utf8").includes('"regNullifier":"n1"'), "the bytes are visible, which is the trap");
+
+    // A reader arriving in the window must not be able to establish the record, because no barrier
+    // has succeeded and a read cannot supply one.
+    const racing = backend.has(record).then((v) => v, () => "refused");
+    releaseClose();
+    await appending;
+    assert.notEqual(await racing, true, "a read during the close window laundered an unbarriered write into a commit");
+    await assert.rejects(() => backend.seasonHasEngine(1, "zkvm"), /barrier failure/, "and it must keep refusing afterwards");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a legacy file whose leaf positions are not a complete set is refused rather than guessed", async () => {
+  // Ordering by recorded index only reconstructs a unique order when the positions form 0..n-1.
+  // A bucket that does not is one this cannot rebuild, and serving a guessed order would mean a root
+  // no prover can build a path for.
+  const dir = mkdtempSync(join(tmpdir(), "reg-gappy-"));
+  const path = join(dir, "registrations.jsonl");
+  try {
+    const A = { season: 1, contextHash: "c", regNullifier: "nA", commitment: "1", engine: "plonk", statement: "derive" };
+    const B = { season: 1, contextHash: "c", regNullifier: "nB", commitment: "2", engine: "plonk", statement: "derive" };
+    writeFileSync(path, [JSON.stringify({ ...A, index: 0 }), JSON.stringify({ ...B, index: 2 }), ""].join("\n"));
+    const backend = new FileBackend(path, null, false);
+    await assert.rejects(() => backend.ready(), /complete set of leaf positions/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
