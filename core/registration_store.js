@@ -237,6 +237,13 @@ export class FileBackend {
   // is running. See #reconcile() for why sharing one is what makes the flag mean anything.
   #reconciling = null;
 
+  // Set when a write may have put bytes in the file that no SUCCESSFUL durability barrier has forced
+  // to stable storage. Distinct from #stale on purpose. #stale asks whether the in-memory view
+  // matches the file, and this asks whether the file itself is trustworthy, which a read cannot
+  // answer: readFile() happily returns dirty page-cache data that has never reached the disk.
+  // Reconciliation must run a barrier before it believes what it reads while this is set.
+  #unbarriered = false;
+
   // `open` is injectable for ONE reason: the uncertain write, where the bytes reach the file and the
   // sync or close still reports an error, cannot be produced from outside this class. It is the exact
   // sequence F3 describes, so a test that cannot create it can only assert the fix by reading it. The
@@ -301,9 +308,40 @@ export class FileBackend {
   // restore because `#load()` now builds into its own maps and installs them only on success, and
   // there is no last-one-wins because there is only one. The flag and the maps are settled together
   // by the same outcome.
+  // A BARRIER BEFORE THE READ, when a failed write left bytes nothing has forced to disk. This file
+  // already argues, on the write path, that a reread cannot turn visibility into durability, because
+  // readFile() returns dirty page-cache data and a failed sync is exactly when the two differ. The
+  // reconciliation path was still doing it: after both barriers failed, the next reader reloaded,
+  // found the bytes in cache, installed them and cleared #stale, with nothing on stable storage.
+  //
+  // Running the barrier here puts the durability check where the durability claim is made. If it
+  // holds, the read means what it says. If it fails, the reconciliation fails and every caller
+  // refuses, which is the fail-closed path, and #unbarriered stays set so the next attempt retries.
+  //
+  // A MISSING FILE IS NOT AN UNBARRIERED ONE. The append can fail before creating anything, and then
+  // there are no bytes to force anywhere. Treating that as a barrier failure would wedge the store
+  // into refusing forever over a file that does not exist, so it clears the flag and reads on, where
+  // #load() already handles absence as an empty record set.
+  async #barrierThenLoad() {
+    if (this.#unbarriered) {
+      try {
+        const fh = await this.openFile(this.path, "r+");
+        try {
+          await fh.sync();
+        } finally {
+          await fh.close();
+        }
+      } catch (err) {
+        if (err?.code !== "ENOENT") throw err;
+      }
+      this.#unbarriered = false;
+    }
+    await this.#load();
+  }
+
   #reconcile() {
     if (!this.#reconciling) {
-      const attempt = this.#load().then(
+      const attempt = this.#barrierThenLoad().then(
         () => {
           this.#stale = false;
         },
@@ -661,6 +699,15 @@ export class FileBackend {
       // bookkeeping reopened it. Marking the view rather than parking the readiness promise says the
       // thing that is actually true and does not depend on which promise a caller happens to await.
       this.#stale = true;
+      // AND THE FILE ITSELF IS NOT YET TRUSTWORTHY. Set in the same synchronous step, and cleared
+      // only by a barrier that actually succeeds. Without it a reader's reconciliation could reload
+      // from the page cache, install a record no barrier ever forced to disk, and clear #stale, so
+      // an ordinary read would have converted a failed write into an apparent commit. A re-check
+      // executed exactly that: zero successful barriers, and the store then reporting the
+      // registration as present. The harm is not hypothetical, because the retry is refused as
+      // `already-registered` by the cheap read in verifier.js while season.js never appended the
+      // commitment, so the member holds a spent nullifier and is absent from the live members tree.
+      this.#unbarriered = true;
       // AN UNCERTAIN WRITE IS RESOLVED BY RETRYING THE DURABILITY BARRIER, not by looking to see
       // whether the bytes are visible.
       //
@@ -681,6 +728,10 @@ export class FileBackend {
         const fh = await this.openFile(this.path, "r+");
         try {
           await fh.sync();
+          // The barrier held, so whatever is in the file is on stable storage and a reread may be
+          // believed again. Cleared here rather than after the close, because the sync is what
+          // establishes durability and a close that fails afterwards does not undo it.
+          this.#unbarriered = false;
         } finally {
           await fh.close();
         }

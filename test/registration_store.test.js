@@ -1005,3 +1005,68 @@ test("a sync failure marks the view behind the file before close() is even await
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("a reread cannot turn a failed durability barrier into an apparent commit", async () => {
+  // The finding a re-check raised after the stale-marking fixes. This file already argues on the
+  // WRITE path that a reread cannot establish durability, because readFile() returns dirty
+  // page-cache data and a failed sync is exactly when visibility and durability differ. The
+  // reconciliation path was still doing it. With both barriers failing, the append rejected and
+  // marked the view stale, and the next reader reloaded, found the bytes in cache, installed the
+  // record and cleared the flag, with nothing ever forced to stable storage.
+  //
+  // The harm is not confined to this store. The retry is then refused as `already-registered` by
+  // the cheap read in verifier.js while season.js never appended the commitment, so the member
+  // holds a spent registration nullifier and is absent from the live members tree.
+  const dir = mkdtempSync(join(tmpdir(), "mno-reg-barrier-"));
+  const path = join(dir, "registrations.jsonl");
+  try {
+    const { open: realOpen, readFile: realReadFile } = await import("node:fs/promises");
+    let barriersAttempted = 0;
+    let barriersSucceeded = 0;
+    let syncsFail = true;
+    const backend = new FileBackend(path, null, false, {
+      open: async (...args) => {
+        const fh = await realOpen(...args);
+        return new Proxy(fh, {
+          get(target, prop) {
+            if (prop === "sync") {
+              return async () => {
+                barriersAttempted += 1;
+                if (syncsFail) throw Object.assign(new Error("simulated barrier failure"), { code: "EIO" });
+                await target.sync();
+                barriersSucceeded += 1;
+              };
+            }
+            const v = target[prop];
+            return typeof v === "function" ? v.bind(target) : v;
+          },
+        });
+      },
+      readFile: async (...args) => realReadFile(...args),
+    });
+    await backend.ready();
+
+    const record = { season: 1, contextHash: "c", regNullifier: "n1", commitment: "1", engine: "zkvm", statement: "custody" };
+    await assert.rejects(() => backend.append(record), /simulated barrier failure/);
+    assert.equal(barriersSucceeded, 0, "no barrier may have succeeded, or this is not the case under test");
+    // The bytes ARE visible, which is precisely what must not be mistaken for a commit.
+    assert.ok(readFileSync(path, "utf8").includes('"regNullifier":"n1"'), "the bytes are visible in the file");
+
+    // Every public view must refuse rather than reporting the unbarriered record as registered.
+    await assert.rejects(() => backend.has(record), /simulated barrier failure/);
+    await assert.rejects(() => backend.seasonHasEngine(1, "zkvm"), /simulated barrier failure/);
+    await assert.rejects(() => backend.forSeasonContext(1, "c"), /simulated barrier failure/);
+    await assert.rejects(() => backend.declarationFor(1, "c"), /simulated barrier failure/);
+
+    // And it must keep refusing rather than settling into a false answer.
+    await assert.rejects(() => backend.seasonHasEngine(1, "zkvm"), /simulated barrier failure/);
+
+    // Once the storage recovers, a barrier succeeds and the record is legitimately visible.
+    syncsFail = false;
+    assert.equal(await backend.has(record), true);
+    assert.equal(await backend.seasonHasEngine(1, "zkvm"), true);
+    assert.ok(barriersSucceeded > 0, "the recovery must go through a barrier that actually succeeded");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
