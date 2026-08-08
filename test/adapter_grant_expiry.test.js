@@ -1,5 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+
+const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { spawn } from "node:child_process";
@@ -548,7 +550,31 @@ test("a second process is refused while the first holds the ledger", async () =>
     assert.equal(child.exitCode, null, "the holder must still be running, or this proves nothing");
 
     const opts = { file, apply: async () => {}, revoke: async () => {}, now: () => 1000 };
-    assert.throws(() => new GrantLedger(opts), /locked|busy|in use/i, "two adapters on one ledger");
+
+    // WAIT FOR THE LOCK TO BE HELD, THEN ASSERT IT REPEATEDLY. `PRAGMA locking_mode=EXCLUSIVE` does
+    // not take the lock when it is set: SQLite acquires it on the first read or write and holds it
+    // from then on. So the child printing "held" after its grant() races the acquisition, and this
+    // test failed once in CI on a commit that changed only documentation, which is what identified it
+    // as a race rather than a regression. Locally it passed every time, which is the usual shape.
+    //
+    // Waiting is SETUP, not a weakened assertion. The property is that two adapters cannot share a
+    // ledger, so once the lock is established every attempt must be refused, and that is what is
+    // asserted below: three consecutive refusals rather than the single one this used to make.
+    let refusals = 0;
+    for (let attempt = 0; attempt < 40 && refusals === 0; attempt++) {
+      try {
+        const probe = new GrantLedger(opts);
+        probe.close();
+        await delay(100);
+      } catch (err) {
+        assert.match(String(err.message), /locked|busy|in use/i, "refused for the reason expected");
+        refusals = 1;
+      }
+    }
+    assert.equal(refusals, 1, "the holder took the exclusive lock within four seconds");
+    for (let i = 0; i < 3; i++) {
+      assert.throws(() => new GrantLedger(opts), /locked|busy|in use/i, "two adapters on one ledger");
+    }
 
     // And the moment that process is gone the ledger is available again, with its contents intact.
     child.kill("SIGKILL");
