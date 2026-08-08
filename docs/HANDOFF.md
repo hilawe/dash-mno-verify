@@ -7,7 +7,7 @@ prioritized punch list.
 
 ## CURRENT STATE, 2026-08-07. THIS SUPERSEDES EVERY SECTION BELOW IT
 
-`main` at `HEAD`, pushed, clean tree. Suite 606, all three CI jobs green. The dated sections that
+`main` at `c9f44a0`, pushed, clean tree. Suite 606, all three CI jobs green. The dated sections that
 follow are the running record of 2026-08-04 to 08-07 and are kept append-only. Read them only when
 you need the reasoning behind something here.
 
