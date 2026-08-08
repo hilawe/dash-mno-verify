@@ -627,10 +627,25 @@ export class FileBackend {
       try {
         await fh.appendFile(JSON.stringify(record) + "\n");
         await fh.sync(); // the record is on disk before we report success
+      } catch (err) {
+        // MARKED HERE RATHER THAN IN THE OUTER CATCH, and the difference is one await. A `finally`
+        // runs before the catch that follows it, so a sync failure reaches `await fh.close()` first
+        // and only then the outer handler. A re-check of the previous fix held that close open and
+        // showed what it costs: the record was already durable, the flag was still clear, and all
+        // four public views denied a registration that was on disk, including seasonHasEngine
+        // returning false for a zkVM record. Setting the flag in the same synchronous step as the
+        // failure leaves no await between the write becoming uncertain and the store saying so.
+        this.#stale = true;
+        throw err;
       } finally {
         await fh.close();
       }
     } catch (err) {
+      // ALSO MARKED HERE, for the one arrival the inner catch does not cover: appendFile and sync
+      // both succeeded and close() threw. The record is durable, the index has not learned it
+      // because #remember() is past this point, so the view is behind the file exactly as it is on
+      // the sync-failure path. Setting it twice on that path is free.
+      //
       // MARKED BEHIND THE FILE SYNCHRONOUSLY, before this path yields to anything. The bytes may
       // already be on disk, so from this instant the in-memory index is a view that can be missing a
       // durable record, and every reader must reconcile or refuse rather than answer from it.

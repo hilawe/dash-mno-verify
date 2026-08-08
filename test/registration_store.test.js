@@ -922,3 +922,86 @@ test("no public view answers from the old maps while an uncertain write is still
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("a sync failure marks the view behind the file before close() is even awaited", async () => {
+  // The window a re-check found after the previous fix. The flag was set in the OUTER catch, and a
+  // `finally` runs before that catch, so a sync failure reached `await fh.close()` with the record
+  // already durable and the flag still clear. Holding close open showed all four public views
+  // denying a registration that was on disk.
+  //
+  // This opens the EARLIER window deliberately. The recovery-read test above cannot see this one: by
+  // the time its held read begins, the retry barrier has run and the flag is long since set, so a
+  // mutant that merely moves the assignment down to the reconciliation call still passes it. That
+  // was demonstrated, not assumed.
+  const dir = mkdtempSync(join(tmpdir(), "mno-reg-close-"));
+  const path = join(dir, "registrations.jsonl");
+  try {
+    const { open: realOpen, readFile: realReadFile } = await import("node:fs/promises");
+    let firstHandle = true;
+    let releaseClose;
+    const backend = new FileBackend(path, null, false, {
+      open: async (...args) => {
+        const fh = await realOpen(...args);
+        if (!firstHandle) return fh;
+        firstHandle = false;
+        return new Proxy(fh, {
+          get(target, prop) {
+            // A REAL sync, then an error. This is the shape that matters: the bytes genuinely reach
+            // stable storage and the caller is still told the write failed.
+            if (prop === "sync") {
+              return async () => {
+                await target.sync();
+                throw new Error("simulated sync failure after a real barrier");
+              };
+            }
+            // Held so the window between the failure and the close stays open and measurable.
+            if (prop === "close") {
+              return () => new Promise((resolve) => { releaseClose = () => resolve(target.close()); });
+            }
+            const v = target[prop];
+            return typeof v === "function" ? v.bind(target) : v;
+          },
+        });
+      },
+      readFile: async (...args) => realReadFile(...args),
+    });
+    await backend.ready();
+
+    const record = { season: 1, contextHash: "c", regNullifier: "n1", commitment: "1", engine: "zkvm", statement: "custody" };
+    const appending = backend.append(record).then(() => {}, () => {});
+
+    for (let i = 0; i < 400 && !releaseClose; i += 1) await new Promise((r) => setTimeout(r, 5));
+    assert.ok(releaseClose, "the append never reached close(), so the window was never open");
+    assert.ok(
+      readFileSync(path, "utf8").includes('"regNullifier":"n1"'),
+      "the record must already be durable, or this is not the window under test",
+    );
+
+    // Answering is allowed here, unlike the held-read case above: the reconciliation read is NOT
+    // held, so a reader that reconciles can legitimately finish and answer. What is not allowed is
+    // DENYING a record that is already durable. Refusing is also fine.
+    const denials = [];
+    const track = (label, p, isDenial) =>
+      p.then(
+        (v) => { if (isDenial(v)) denials.push(`${label} denied a durable record`); },
+        () => {},
+      );
+    const queries = [
+      track("has", backend.has(record), (v) => v === false),
+      track("seasonHasEngine", backend.seasonHasEngine(1, "zkvm"), (v) => v === false),
+      track("forSeasonContext", backend.forSeasonContext(1, "c"), (v) => v.length === 0),
+      track("declarationFor", backend.declarationFor(1, "c"), (v) => v == null),
+    ];
+    for (let i = 0; i < 40; i += 1) await new Promise((r) => setTimeout(r, 5));
+    await Promise.all(queries);
+
+    assert.deepEqual(denials, [], "a public view denied a durable record between the sync failure and the close");
+
+    releaseClose();
+    await appending;
+    assert.equal(await backend.has(record), true);
+    assert.equal(await backend.seasonHasEngine(1, "zkvm"), true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
