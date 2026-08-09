@@ -85,12 +85,15 @@ File-shaped inputs, resolved by `#load()`:
   by index with ties keeping file order. The base revision legitimately produces a file holding two
   distinct records at index 0 (an uncertain-write retry), and refusing it turned an upgrade into an
   outage (`687a026`).
-- Bucket leaf positions with a GAP (a stored index at or above the bucket length): refused. A gap is
+- Bucket leaf positions with a GAP whose max index EXCEEDS the bucket length: refused. A gap is
   something an append-only store cannot produce, and it is not harmless like a tie: the next append
   assigns `recs.length` and pushes to the end, so a bucket holding `A@0, B@5` serves `[A, B, C@2]`
   live but rebuilds `[A, C@2, B@5]` on restart, and the served members root stops matching the
-  rebuilt one. A tie always sits below the length, so `max index < length` accepts every tie and
-  refuses every gap (a fresh round found the gap the pure stable sort left open).
+  rebuilt one. The exact condition is `max index <= length`, not `< length`: when the max EQUALS the
+  length, the appended index ties it and a stable sort keeps the appended record last, so the order
+  holds. So the loader refuses `max index > length` (a later round measured that `< length` refused
+  harmless files like `A@0, B@2`). Neither the writer nor the base-revision failure sequence produces
+  equality, so this only widens which corrupt files load, never which are served wrong.
 
 The durability and reconciliation state:
 

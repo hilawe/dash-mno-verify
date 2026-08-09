@@ -283,6 +283,19 @@ test("a torn final line is discarded on load, so a crash mid-append does not ref
   assert.equal(recs.length, 1, "the complete record before the torn one survives");
   assert.equal(recs[0].regNullifier, "nf1");
   assert.equal(b.tornTailDiscarded, true, "and the discard is recorded rather than silent");
+
+  // AND THE FILE MUST END ON A RECORD BOUNDARY, not merely parse in memory. A round noted that an
+  // off-by-one truncation (to truncateTo + 1) leaves the preceding record without its newline, which
+  // the in-memory check does not see; the next append then concatenates `}{` and the boot after that
+  // refuses forever. Append and reopen to prove the file is still well-formed.
+  await b.append({ season: 0, contextHash: "ctx", regNullifier: "nf2", commitment: "22", engine: "plonk", statement: "derive" });
+  const reopened = new FileBackend(path, "sch1");
+  await reopened.ready(); // must not throw on a concatenated line
+  assert.deepEqual(
+    (await reopened.forSeasonContext(0, "ctx")).map((r) => r.regNullifier),
+    ["nf1", "nf2"],
+    "the truncation cut on the record boundary, so the later append and reopen both succeed",
+  );
   await rm(dir, { recursive: true, force: true });
 });
 
@@ -1316,31 +1329,41 @@ test("a file with a leaf-index GAP is refused, and an accepted tie stays consist
   // retry) but wrong for a GAP. A file holding A@0, B@5 in a two-record bucket loads as [A, B], but
   // the next append takes index 2 and pushes to the end, so the live order is [A, B, C@2] while a
   // restart re-sorts to [A, C@2, B@5]. Live and restart disagree, so the served members root stops
-  // matching the rebuilt one. A gap has max index >= bucket length; a tie never does, so the loader
-  // refuses the gap and keeps the tie.
+  // matching the rebuilt one. The exact bound is max index <= length, so the test drives the BOUNDARY:
+  // max == length+1 must refuse (the smallest gap that reorders), max == length must load (a later
+  // round showed the stricter < wrongly refused it), and every accepted file's live order must equal
+  // its restart order after an append.
   const dir = mkdtempSync(join(tmpdir(), "reg-gap-"));
   const path = join(dir, "registrations.jsonl");
   try {
     const R = (n, i) => ({ season: 1, contextHash: "c", regNullifier: n, commitment: i + "", engine: "plonk", statement: "derive", index: i });
+    // Append to a loaded file, then reopen, and return whether the live and restart orders agree.
+    const appendAndCompare = async () => {
+      const live = new FileBackend(path, null, false);
+      await live.ready();
+      await live.append({ season: 1, contextHash: "c", regNullifier: "C", commitment: "9", engine: "plonk", statement: "derive" });
+      const liveOrder = (await live.forSeasonContext(1, "c")).map((r) => r.regNullifier);
+      const restart = new FileBackend(path, null, false);
+      await restart.ready();
+      const restartOrder = (await restart.forSeasonContext(1, "c")).map((r) => r.regNullifier);
+      return { liveOrder, restartOrder };
+    };
 
-    // The gap is refused at load.
-    writeFileSync(path, [JSON.stringify(R("A", 0)), JSON.stringify(R("B", 5)), ""].join("\n"));
-    await assert.rejects(() => new FileBackend(path, null, false).ready(), /gap an append-only store cannot produce|at or above/);
+    // BOUNDARY, refuse: max index length+1 (2 in a two-record bucket) is the smallest gap that reorders.
+    writeFileSync(path, [JSON.stringify(R("A", 0)), JSON.stringify(R("B", 3)), ""].join("\n"));
+    await assert.rejects(() => new FileBackend(path, null, false).ready(), /gap an append-only store cannot produce|above that count/);
 
-    // The accepted tie (base-revision shape) loads, and crucially the live order after an append
-    // equals the order a restart rebuilds, which is the property the gap violated.
+    // BOUNDARY, accept: max index EQUAL to the length. The stricter < refused this; it does not reorder.
+    writeFileSync(path, [JSON.stringify(R("A", 0)), JSON.stringify(R("B", 2)), ""].join("\n"));
+    const boundary = await appendAndCompare();
+    assert.deepEqual(boundary.liveOrder, boundary.restartOrder, "max==length loads and stays consistent across an append");
+    assert.deepEqual(boundary.liveOrder, ["A", "B", "C"], "and the append sorts last");
+
+    // The tie (base-revision shape) also loads and stays consistent.
     writeFileSync(path, [JSON.stringify(R("A", 0)), JSON.stringify(R("B", 0)), ""].join("\n"));
-    const live = new FileBackend(path, null, false);
-    await live.ready();
-    await live.append({ season: 1, contextHash: "c", regNullifier: "C", commitment: "9", engine: "plonk", statement: "derive" });
-    const liveOrder = (await live.forSeasonContext(1, "c")).map((r) => r.regNullifier);
-
-    const restart = new FileBackend(path, null, false);
-    await restart.ready();
-    const restartOrder = (await restart.forSeasonContext(1, "c")).map((r) => r.regNullifier);
-
-    assert.deepEqual(liveOrder, restartOrder, "the live bucket order and the restart order must match");
-    assert.deepEqual(liveOrder, ["A", "B", "C"], "and the appended record sorts after the tied pair");
+    const tie = await appendAndCompare();
+    assert.deepEqual(tie.liveOrder, tie.restartOrder, "the tie's live and restart order match after an append");
+    assert.deepEqual(tie.liveOrder, ["A", "B", "C"], "and the appended record sorts after the tied pair");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -1363,10 +1386,16 @@ test("a fresh multi-level directory path forces every new ancestor durable", asy
       },
     });
     await backend.ready();
-    // Every newly created level, plus the pre-existing ancestor that names the first new level.
-    assert.ok(syncedDirs.includes(join(base, "new-a", "new-b")), "the file's own directory is flushed");
-    assert.ok(syncedDirs.includes(join(base, "new-a")), "the intermediate new directory is flushed");
-    assert.ok(syncedDirs.includes(base), "the pre-existing ancestor that names the first new directory is flushed");
+    // EXACTLY the newly created levels plus the one pre-existing ancestor that names the first new
+    // level, and NOTHING above it. Asserting the exact set rather than `includes` rejects a walk that
+    // ignores the boundary and syncs to the filesystem root, which a round noted an includes-only
+    // assertion would pass and which would fail startup on a system that refuses syncing an unrelated
+    // ancestor.
+    assert.deepEqual(
+      [...syncedDirs].sort(),
+      [join(base, "new-a", "new-b"), join(base, "new-a"), base].sort(),
+      "the walk flushes the new chain and its naming ancestor, and stops there",
+    );
   } finally {
     rmSync(base, { recursive: true, force: true });
   }

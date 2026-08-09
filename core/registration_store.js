@@ -745,21 +745,27 @@ export class FileBackend {
     // duplicate case orders correctly because the surviving record carries the later index.
     //
     // BUT THE POSITIONS MUST STILL FIT THE BUCKET, and a fresh round found the gap the pure stable
-    // sort left. A file holding a GAP, a stored index at or above the bucket length (say A@0, B@5 in a
-    // two-record bucket), sorts to [A, B] on load, but the next append takes index recs.length (2) and
+    // sort left. A file holding a GAP whose max index EXCEEDS the bucket length (say A@0, B@5 in a
+    // two-record bucket) sorts to [A, B] on load, but the next append takes index recs.length (2) and
     // pushes to the end, so the live order is [A, B, C@2] while a restart re-sorts to [A, C@2, B@5].
     // Live and restart disagree, so the members root the gateway served stops matching the one a
-    // restart rebuilds, and every member's path breaks. Ties from the uncertain-write case are always
-    // BELOW the length (two records at index 0 is max 0 < length 2), so requiring max < length accepts
-    // every file the base revision can produce and refuses only the gap, which an append-only store
-    // cannot legitimately create and which no restart can serve consistently.
+    // restart rebuilds, and every member's path breaks.
+    //
+    // THE EXACT BOUND IS max index <= length, not < length. When the max equals the length, the next
+    // append's index (also the length) TIES the max, and a stable sort keeps the appended record after
+    // the loaded one because it comes later in the file, so the order is preserved. A later round
+    // measured this and showed the stricter < was an unnecessary refusal of files like A@0, B@2 (which
+    // do not reorder), so the condition is > length. Neither the writer nor the base-revision failure
+    // sequence produces equality, since a retry index is at most one below the count of unique
+    // records, so this only widens which corrupt or hand-edited files load, never which are served
+    // wrong.
     for (const [bucket, recs] of byBucket) {
       recs.sort((a, b) => a.index - b.index);
       const maxIndex = recs.length === 0 ? -1 : recs[recs.length - 1].index;
-      if (maxIndex >= recs.length) {
+      if (maxIndex > recs.length) {
         throw new Error(
           `${this.path} bucket ${bucket} holds ${recs.length} record(s) but a stored leaf index ` +
-            `${maxIndex} at or above that count, a gap an append-only store cannot produce. A later ` +
+            `${maxIndex} above that count, a gap an append-only store cannot produce. A later ` +
             `append would assign index ${recs.length} and reorder the bucket at the next restart, so ` +
             `the live members root would stop matching the rebuilt one. Repair the file.`,
         );
