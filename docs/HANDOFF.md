@@ -5,24 +5,33 @@ counts and supersedes everything below it. Historical sections are append-only a
 only marked superseded. Read this first when picking the project back up, then `TODO.md` for the full
 prioritized punch list.
 
-## CURRENT STATE, 2026-08-08. THIS SUPERSEDES EVERY SECTION BELOW IT
+## CURRENT STATE, 2026-08-09. THIS SUPERSEDES EVERY SECTION BELOW IT
 
-`main` at `f39e9f4`. SIX COMMITS ARE UNPUSHED and `origin/main` is still at `66127dd`. Tree is clean
+`main` at `450d25f`. NINE COMMITS ARE UNPUSHED and `origin/main` is still at `66127dd`. Tree is clean
 apart from an untracked `output/` directory that has sat there since 08-04 and is not in
-`.gitignore`. Suite 613, all passing locally.
+`.gitignore`. Suite 614, all passing locally.
 
 CI IS NOT EVIDENCE FOR ANY OF THIS WORK. The last run was green, and it ran at `66127dd`, which is
-what origin holds. None of the six commits has been through CI. Push, then read the conclusion.
+what origin holds. None of the nine commits has been through CI. Push, then read the conclusion.
 
-THE THIRD FRESH FULL ROUND RETURNED REQUEST-CHANGES WITH THREE MAJORS AND ONE MINOR, ALL EXECUTED BY
-THE REVIEWER. Its log lived in the session scratchpad and does not survive, so section 6 is the
-record. THE TWO THAT `f39e9f4` INTRODUCED ARE NOW WITHDRAWN, because both were additions rather than
-repairs and both were worse than what they replaced. TWO FINDINGS REMAIN OPEN plus one root cause,
-all in section 6. Start at punch-list item 1.
+THE REGISTRATION STORE WAS TAKEN OFF THE REPAIR TREADMILL WITH A WRITTEN SPECIFICATION.
+`FileBackend`'s reconciliation and durability state machine had been repaired six times across three
+review passes, four of those repairs introducing the next round's finding, which is the pre-commit
+playbook's rule-7 trigger. Rather than a seventh repair, `450d25f` wrote the contract at
+`docs/REGISTRATION_STORE_DURABILITY.md` and landed the third round's three findings as divergences
+from it. See section 6a for what that fixed and what is unproven in it.
+
+A FOURTH FRESH FULL ROUND on `450d25f` was running when this was written, framed with the full history
+and asked specifically to attack the generation guard and to build the deterministic test the author
+could not. Treat it as needing a re-run unless its findings are folded and committed. Rebuild the
+prompt at the per-project path and run it through the independent reviewer per the review-process
+section of `CLAUDE.md`, scoped to `git diff 66127dd..HEAD`.
 
 ### 1. WHERE TO START
 
-Punch-list item 1. Nothing is half-written, and no code change is pending a decision.
+Read section 6a. If the fourth round returned findings, fold them, then run ANOTHER fresh full round,
+because on this unit every round so far has found its defect inside the previous round's fix. The loop
+ends only when a fresh full round returns APPROVE with nothing to fold. Then push (section 8).
 
 ### 2. THE SIXTH REVIEW ROUND, AND WHY F1 TOOK FIVE COMMITS
 
@@ -114,11 +123,37 @@ none started.
 - **F6, low.** The X11 reference image name omits the effective `DASH_COMMIT` override, so pinned,
   empty, and arbitrary overrides all resolve to `x11ref:v23.1.3-f2c687699afb` and hit the cache.
 
-### 6. THE THIRD ROUND'S FINDINGS, NONE FOLDED, START HERE
+### 6a. THE RULE-7 CHANGE, `450d25f`, WHICH FOLDED THE THIRD ROUND
 
-All four were executed by the reviewer. Findings 1 and 3 were introduced by `f39e9f4` and both are
-worse than what they replaced, so the recommended first move is to take those two additions out
-rather than to patch them.
+All three of the third round's open items (section 6 findings 1, 2, 4) are folded here, not as three
+patches but as divergences from a written contract, `docs/REGISTRATION_STORE_DURABILITY.md`. Read that
+file before touching the store again. What landed:
+
+- **Finding 1, the flags cleared at different moments.** Clearing is now ONE decision in
+  `#reconcile`'s success continuation, and `#mark()` is the one place both flags are set. On top of
+  that a generation counter, bumped by `#mark()` and captured at `#barrierThenLoad`'s start, gates the
+  clear, so a mark landing during a load leaves the flags set. UNPROVEN PART, stated because it will
+  matter: the generation guard has NO local regression test. Removing it fails no test in the suite.
+  Two attempts to drive the deciding interleaving through the filesystem hooks were non-deterministic,
+  the fragile-timing shape the playbook warns against, so it is a rule-4 recorded reason in the spec.
+  The guard is fail-safe (a wrong decision only declines to clear, costing one extra reconcile) and
+  was handed to the fourth round to attack and to test. If a later session can build that
+  deterministic test, add it.
+- **Finding 4.** `registrationRecordProblem` now runs AHEAD of the duplicate branch, so the
+  last-occurrence-wins replacement is validated like a fresh insert. Test pins it, and it fails when
+  reverted.
+- **Finding 2.** `_truncateTo` is a per-load local, and `truncate` is injectable alongside `open` and
+  `readFile` so the failed-truncate path has a test. Test fails when the offset is made instance state
+  again.
+- A flaky test was REMOVED, not silenced: "a failed reconciliation cannot leave a stale view marked
+  fresh" forced two concurrent reconciliations, which single-flight makes unreachable, so it depended
+  on a read-index numbering the rework perturbed and failed one run in five. Its property is covered
+  by two other tests. Recorded in section 7.
+
+### 6. THE THIRD ROUND'S FINDINGS, ALL FOLDED BY `450d25f` (SEE 6a)
+
+All four were executed by the reviewer. Kept as the record of what was wrong. Findings 1 and 3 were
+introduced by `f39e9f4`; both were withdrawn in `687a026` and the rest folded in `450d25f`.
 
 1. **Major, root cause still open, no longer wedging.** The asserted-unreachable state is reachable.
    `#barrierThenLoad()` clears `#unbarriered` BEFORE awaiting `#load()`, while `#reconcile()`'s
@@ -173,15 +208,20 @@ rather than to patch them.
 - Two additions made beyond the repair they accompanied each caused a regression, one wedging the
   store and one breaking upgrades from the base revision. Feeds the design rule about the abstraction
   threshold and about hardening that no concrete failing case asked for.
+- The same unit drew a fourth round of findings, which finally triggered rule 7 (write the spec, stop
+  repairing). The lesson is that the trigger is mechanical and should have fired after round two, not
+  been reached by feel after round three. A unit repaired three times gets a specification next, not a
+  fourth repair.
+- A test written this session went flaky under a later rework because it was coupled to an internal
+  read-index numbering the rework changed, and its target interleaving became unreachable. Feeds the
+  rule against asserting on timing and against fixtures the system cannot emit. It was removed rather
+  than patched, because its property was covered elsewhere.
 
 ### 8. PUNCH LIST
 
-1. Fix section 6 finding 1 at its root with a generation counter captured at the start of a
-   reconciliation, so both flags clear together and only when nothing newer has been marked. The
-   wedge is already gone, this removes the state itself.
-2. Section 6 finding 4, validate the replacement record before it goes in.
-3. Section 6 finding 2, the armed `_truncateTo` after a failed repair.
-4. Run another fresh full round after that fold. Repeat folding and re-running until a fresh full
+1. Read section 6a and fold whatever the FOURTH fresh full round returned against `450d25f`. If it
+   found a way to make the generation guard's test deterministic, add that test.
+2. Run another fresh full round after that fold. Repeat folding and re-running until a fresh full
    round returns APPROVE with nothing to fold. This is the stopping condition, not a converged
    focused re-check.
 5. Leak-scan and push. This repository is direct-push public with NO automated leak gate, so the scan
