@@ -24,6 +24,7 @@
 // by regNullifier) so every gateway rebuilds the identical tree.
 import { open, readFile, mkdir, truncate } from "node:fs/promises";
 import { dirname } from "node:path";
+import { isCanonicalField } from "../common/field.js";
 
 // The statement a (season, contextHash) is registered under. The registration nullifier is derived
 // differently per statement (docs/ZKVM_INTEGRATION.md, "Two statements"): the derive statement keys
@@ -78,6 +79,22 @@ export class RegistrationStore {
     if (!isValidEngineStatement(engine, statement)) {
       return Promise.resolve({ invalid: true, engine: String(engine), statement: String(statement) });
     }
+    // THE THREE FIELD ELEMENTS ARE CANONICAL BEFORE THEY ARE WRITTEN, so the store never persists a
+    // record its own loader would refuse. A review found the asymmetry: the loader validates canonical
+    // fields (F4), but the append path only stringified them, so a caller could write a file that the
+    // same store rejects on the next restart. The verifier already canonical-checks these before it
+    // calls append, so in production this never fires, but making append uphold the durable-format
+    // invariant is the defense in depth that keeps write and read agreeing. Checked on the String()
+    // form because that is exactly what is stored.
+    for (const [field, value] of [
+      ["contextHash", contextHash],
+      ["regNullifier", regNullifier],
+      ["commitment", commitment],
+    ]) {
+      if (!isCanonicalField(String(value))) {
+        return Promise.resolve({ invalid: true, reason: "non-canonical-field", field });
+      }
+    }
     return this.backend.append({
       season: Number(season),
       contextHash: String(contextHash),
@@ -122,17 +139,17 @@ function declarationOfRecord(record) {
 function registrationRecordProblem(rec) {
   if (rec === null || typeof rec !== "object" || Array.isArray(rec)) return "not an object";
   if (!Number.isInteger(rec.season) || rec.season < 0) return `season ${JSON.stringify(rec.season)} is not a non-negative integer`;
-  // A NON-EMPTY STRING, which is the STRUCTURAL check the store owns. All three are BN254 field
-  // elements, but their CANONICAL validity is the verifier's responsibility on the write path, where
-  // isCanonicalField rejects a non-canonical signal before any record is written (core/verifier.js).
-  // The store does not re-run that cryptographic check on load: it is not the store's contract (see
-  // docs/REGISTRATION_STORE_DURABILITY.md), and requiring a string here already rejects the corruption
-  // the store must catch, a number or an array that would otherwise reach the members tree or compare
-  // equal to a valid string under sameRegistrationRecord. A hand-corrupted non-canonical STRING is an
-  // operational edge case that surfaces at tree materialization with a clear error rather than a
-  // silent wrong root, which is an acceptable boundary for a file only an operator can corrupt.
+  // CANONICAL BN254 FIELD ELEMENTS, checked at load. All three are field elements, and F4 from the
+  // sixth-round review is that the loader let a non-canonical one through: a `commitment` of
+  // "not-a-field" is a non-empty string, so it passed and threw only later, when the context's members
+  // tree first converted it to a BigInt, moving the failure off the boot path the loader exists to
+  // guard. The verifier canonical-checks these before it writes a record (core/verifier.js), so a
+  // non-canonical value reaches the file only by corruption or hand-editing, and the loader is the
+  // last place that catches it before a request path does. isCanonicalField also rejects a number or
+  // an array, and it refuses the aliasing spellings ("01" for "1") that would let a corrupted file
+  // spend one nullifier twice under two string-distinct keys.
   for (const f of ["contextHash", "regNullifier", "commitment"]) {
-    if (typeof rec[f] !== "string" || rec[f].length === 0) return `${f} is not a non-empty string`;
+    if (!isCanonicalField(rec[f])) return `${f} is not a canonical field element`;
   }
   if (!Number.isInteger(rec.index) || rec.index < 0) return `index ${JSON.stringify(rec.index)} is not a non-negative integer`;
   // The engine and statement bind the bucket, and an invalid pair would make every later registration

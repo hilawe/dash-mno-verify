@@ -102,7 +102,7 @@ test("commit refuses at capacity WITHOUT writing the durable record", async () =
   let durableCalled = false;
   const over = await sm.commit(0, CTX, "5", async () => {
     durableCalled = true;
-    return store.append({ season: 0, contextHash: CTX, regNullifier: "n4", commitment: "5" });
+    return store.append({ season: 0, contextHash: CTX, regNullifier: "139", commitment: "5" });
   });
   assert.equal(over.ok, false);
   assert.equal(over.reason, "members-tree-full");
@@ -135,7 +135,7 @@ test("a full context does not block a different context in the same season", asy
   const other = "77";
   await sm.ensureContext(0, other);
   const r = await sm.commit(0, other, "9", () =>
-    store.append({ season: 0, contextHash: other, regNullifier: "m0", commitment: "9" }),
+    store.append({ season: 0, contextHash: other, regNullifier: "129", commitment: "9" }),
   );
   assert.equal(r.ok, true, "capacity is per (season, context), not global");
 });

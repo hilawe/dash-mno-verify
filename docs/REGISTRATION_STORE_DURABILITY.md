@@ -47,17 +47,18 @@ File-shaped inputs, resolved by `#load()`:
 - A malformed line anywhere but the end: refuse the load. Silently skipping it would drop a member
   who WAS promised a registration.
 - A schedule header naming a different schedule: refuse.
-- A record whose fields are STRUCTURALLY wrong (a non-string or empty `contextHash`, `regNullifier`,
-  or `commitment`, a negative index, an impossible engine/statement pair): refuse at load, by
-  `registrationRecordProblem`, so the failure lands at boot where an operator can act. DIVERGENCE
-  (finding 4): the last-occurrence-wins collapse replaced a stored record WITHOUT re-validating the
-  replacement, so a corrupt duplicate bypassed the check; validation now runs ahead of the duplicate
-  branch. NOT the store's job: the CANONICAL field-element validity of those three strings. They are
-  BN254 field elements, but the verifier canonical-checks them on the write path before any record is
-  written, so the store checks structure (a non-empty string, which already rejects a number or array)
-  and leaves cryptographic canonicality to the verifier. A hand-corrupted non-canonical string
-  surfaces at tree materialization with a clear error, an accepted boundary for a file only an
-  operator can corrupt.
+- A record whose fields are wrong (a `contextHash`, `regNullifier`, or `commitment` that is not a
+  CANONICAL BN254 field element, a negative index, an impossible engine/statement pair): refuse at
+  load, by `registrationRecordProblem`, so the failure lands at boot where an operator can act. Two
+  DIVERGENCES were folded here. The last-occurrence-wins collapse used to replace a stored record
+  WITHOUT re-validating the replacement, so a corrupt duplicate bypassed the check; validation now
+  runs ahead of the duplicate branch (finding 4, store-review round). And the check used to require
+  only a non-empty string, so a `commitment` of "not-a-field" passed and threw only later at tree
+  materialization; it now uses `isCanonicalField` (F4, sixth-round review), which the verifier applies
+  on the write path, so the store re-applies the same check on the read path because a file can be
+  corrupted or hand-edited independently of the verifier, and the loader is the last guard before a
+  request path hits the bad value. Canonical also refuses the aliasing spellings ("01" for "1") that
+  would let a corrupted file spend one nullifier twice under two string-distinct keys.
 - Records in one (season, contextHash) bucket that disagree on their engine/statement DECLARATION:
   refuse at load. Each record's declaration is individually valid, but a query reads only the bucket's
   first record, so a bucket mixing a PLONK and a zkVM registration would make `seasonHasEngine` report
@@ -150,8 +151,11 @@ Directory durability:
 
 - `has()` returns a boolean, true only against a reconciled view.
 - `append()` returns `{duplicate:false, index}` on a durable write, `{duplicate:true}` when the key
-  is already spent, `{conflict:true, declared}` on a declaration mismatch, or throws when the write
-  is genuinely uncertain. The caller treats `duplicate` as success for the member.
+  is already spent, `{conflict:true, declared}` on a declaration mismatch, `{invalid:true, ...}` when
+  the engine/statement pair is impossible or a field element is not canonical, or throws when the
+  write is genuinely uncertain. The caller treats `duplicate` as success for the member. Append
+  validates the three field elements as canonical before writing, the same check the loader applies,
+  so the store never persists a record it would refuse on the next load.
 - `forSeasonContext()` returns the bucket's records in leaf order, which is the order the members
   tree is built over.
 - `declarationFor()` returns the bucket's `{engine, statement}` or null.

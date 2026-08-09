@@ -26,7 +26,7 @@ test("a commit into a bucket declared for a different statement is rejected, tre
 
   // First registration declares (plonk, derive) for this (season, context).
   const first = await m.commit(0, CTX, "111", () =>
-    store.append({ season: 0, contextHash: CTX, regNullifier: "n0", commitment: "111", engine: "plonk", statement: "derive" }),
+    store.append({ season: 0, contextHash: CTX, regNullifier: "135", commitment: "111", engine: "plonk", statement: "derive" }),
   );
   assert.equal(first.ok, true);
   assert.equal(m.size(CTX), 1);
@@ -35,7 +35,7 @@ test("a commit into a bucket declared for a different statement is rejected, tre
   // A custody registration for the same bucket is rejected with statement-mismatch, and the members
   // tree is not touched (no durable record was written).
   const mismatch = await m.commit(0, CTX, "222", () =>
-    store.append({ season: 0, contextHash: CTX, regNullifier: "n1", commitment: "222", engine: "zkvm", statement: "custody" }),
+    store.append({ season: 0, contextHash: CTX, regNullifier: "136", commitment: "222", engine: "zkvm", statement: "custody" }),
   );
   assert.equal(mismatch.ok, false);
   assert.equal(mismatch.reason, "statement-mismatch");
@@ -45,7 +45,7 @@ test("a commit into a bucket declared for a different statement is rejected, tre
 
   // An impossible engine/statement pair (plonk custody) is rejected the same way, tree untouched.
   const invalid = await m.commit(0, CTX, "333", () =>
-    store.append({ season: 0, contextHash: CTX, regNullifier: "n2", commitment: "333", engine: "plonk", statement: "custody" }),
+    store.append({ season: 0, contextHash: CTX, regNullifier: "137", commitment: "333", engine: "plonk", statement: "custody" }),
   );
   assert.equal(invalid.ok, false);
   assert.equal(invalid.reason, "invalid-engine-statement");
@@ -63,7 +63,7 @@ test("a member is scoped to its season: present on that season's rebuild, absent
   const emptyRoot = m.root(CTX); // the all-empty tree root, reused to avoid a second tree build
 
   const r = await m.commit(0, CTX, "111", () =>
-    store.append({ season: 0, contextHash: CTX, regNullifier: "n0", commitment: "111", engine: "plonk", statement: "derive" }),
+    store.append({ season: 0, contextHash: CTX, regNullifier: "135", commitment: "111", engine: "plonk", statement: "derive" }),
   );
   assert.equal(r.ok, true);
   assert.equal(r.index, 0);
@@ -91,7 +91,7 @@ test("a member is scoped to its context: absent from another community's tree (B
   const emptyRoot = m.root(CTX_B);
 
   await m.commit(0, CTX, "111", () =>
-    store.append({ season: 0, contextHash: CTX, regNullifier: "n0", commitment: "111", engine: "plonk", statement: "derive" }),
+    store.append({ season: 0, contextHash: CTX, regNullifier: "135", commitment: "111", engine: "plonk", statement: "derive" }),
   );
 
   // The member is in CTX's tree but not in CTX_B's, so registering for one community does not grant
@@ -111,10 +111,10 @@ test("the same registration nullifier is a distinct spend per context, indexed f
   // The unique key is (season, context, nullifier), so the same nullifier value spends once in each
   // context, and each context indexes its own leaves from 0.
   const a = await m.commit(0, CTX, "111", () =>
-    store.append({ season: 0, contextHash: CTX, regNullifier: "n0", commitment: "111", engine: "plonk", statement: "derive" }),
+    store.append({ season: 0, contextHash: CTX, regNullifier: "135", commitment: "111", engine: "plonk", statement: "derive" }),
   );
   const b = await m.commit(0, CTX_B, "222", () =>
-    store.append({ season: 0, contextHash: CTX_B, regNullifier: "n0", commitment: "222", engine: "plonk", statement: "derive" }),
+    store.append({ season: 0, contextHash: CTX_B, regNullifier: "135", commitment: "222", engine: "plonk", statement: "derive" }),
   );
   assert.deepEqual([a.ok, b.ok], [true, true]);
   assert.deepEqual([a.index, b.index], [0, 0], "each context's leaf index starts at 0");
@@ -129,7 +129,7 @@ test("a commit for a season that is no longer current is rejected and writes not
   let appendCalled = false;
   const r = await m.commit(0, CTX, "111", () => {
     appendCalled = true;
-    return store.append({ season: 0, contextHash: CTX, regNullifier: "n0", commitment: "111", engine: "plonk", statement: "derive" });
+    return store.append({ season: 0, contextHash: CTX, regNullifier: "135", commitment: "111", engine: "plonk", statement: "derive" });
   });
   assert.equal(r.ok, false);
   assert.equal(r.reason, "season-rolled-retry");
@@ -150,7 +150,7 @@ test("a rollover cannot interleave with an in-flight commit (M2 serialization)",
   const gate = new Promise((r) => (release = r));
   const commitP = m.commit(0, CTX, "111", async () => {
     await gate;
-    return store.append({ season: 0, contextHash: CTX, regNullifier: "n0", commitment: "111", engine: "plonk", statement: "derive" });
+    return store.append({ season: 0, contextHash: CTX, regNullifier: "135", commitment: "111", engine: "plonk", statement: "derive" });
   });
   const rolloverP = m.ensure(1);
 
@@ -177,7 +177,7 @@ test("concurrent commits in the same season and context get distinct, ordered le
 
   const mk = (n, c) =>
     m.commit(0, CTX, c, () => store.append({ season: 0, contextHash: CTX, regNullifier: n, commitment: c, engine: "plonk", statement: "derive" }));
-  const [a, b] = await Promise.all([mk("n0", "111"), mk("n1", "222")]);
+  const [a, b] = await Promise.all([mk("135", "111"), mk("136", "222")]);
   assert.deepEqual([a.ok, b.ok], [true, true]);
   assert.deepEqual([a.index, b.index].sort(), [0, 1], "indices are distinct and dense");
   assert.equal(m.size(CTX), 2);

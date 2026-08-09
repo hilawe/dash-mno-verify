@@ -11,6 +11,7 @@ import {
   FileBackend,
 } from "../core/registration_store.js";
 import { MembersTree } from "../core/members_tree.js";
+import { FIELD_PRIME } from "../common/field.js";
 
 // The registration store is where the two-tier P0 fix lives: one atomic, durable, season- and
 // context-scoped record per registration, with the members tree rebuilt from records. These tests
@@ -34,84 +35,84 @@ for (const [name, makeStore] of [
     const { store } = await makeStore();
     await store.ready();
 
-    assert.equal(await store.has(1, "ctx", "nf1"), false);
-    const first = await store.append({ season: 1, contextHash: "ctx", regNullifier: "nf1", commitment: "c1", engine: "plonk", statement: "derive" });
+    assert.equal(await store.has(1, "122", "146"), false);
+    const first = await store.append({ season: 1, contextHash: "122", regNullifier: "146", commitment: "109", engine: "plonk", statement: "derive" });
     assert.deepEqual(first, { duplicate: false, index: 0 });
-    assert.equal(await store.has(1, "ctx", "nf1"), true);
+    assert.equal(await store.has(1, "122", "146"), true);
 
     // the same season, context, and registration nullifier is the same spend, even with a
     // different commitment: one voting key registers once per season and context
-    const dup = await store.append({ season: 1, contextHash: "ctx", regNullifier: "nf1", commitment: "c-other", engine: "plonk", statement: "derive" });
+    const dup = await store.append({ season: 1, contextHash: "122", regNullifier: "146", commitment: "108", engine: "plonk", statement: "derive" });
     assert.equal(dup.duplicate, true);
 
-    const recs = await store.forSeasonContext(1, "ctx");
+    const recs = await store.forSeasonContext(1, "122");
     assert.equal(recs.length, 1);
-    assert.equal(recs[0].commitment, "c1");
+    assert.equal(recs[0].commitment, "109");
   });
 
   test(`${name}: season, context, and registration nullifier are independent`, async () => {
     const { store } = await makeStore();
     await store.ready();
-    await store.append({ season: 1, contextHash: "ctx", regNullifier: "nf", commitment: "c", engine: "plonk", statement: "derive" });
-    assert.equal(await store.has(2, "ctx", "nf"), false); // different season
-    assert.equal(await store.has(1, "ctx2", "nf"), false); // different community
-    assert.equal(await store.has(1, "ctx", "nf2"), false); // different node
+    await store.append({ season: 1, contextHash: "122", regNullifier: "145", commitment: "107", engine: "plonk", statement: "derive" });
+    assert.equal(await store.has(2, "122", "145"), false); // different season
+    assert.equal(await store.has(1, "123", "145"), false); // different community
+    assert.equal(await store.has(1, "122", "147"), false); // different node
   });
 
   test(`${name}: indexes are per (season, context) and assigned in insertion order`, async () => {
     const { store } = await makeStore();
     await store.ready();
-    const a = await store.append({ season: 5, contextHash: "ctx", regNullifier: "a", commitment: "ca", engine: "plonk", statement: "derive" });
-    const b = await store.append({ season: 5, contextHash: "ctx", regNullifier: "b", commitment: "cb", engine: "plonk", statement: "derive" });
-    const c = await store.append({ season: 6, contextHash: "ctx", regNullifier: "c", commitment: "cc", engine: "plonk", statement: "derive" });
+    const a = await store.append({ season: 5, contextHash: "122", regNullifier: "105", commitment: "118", engine: "plonk", statement: "derive" });
+    const b = await store.append({ season: 5, contextHash: "122", regNullifier: "106", commitment: "119", engine: "plonk", statement: "derive" });
+    const c = await store.append({ season: 6, contextHash: "122", regNullifier: "107", commitment: "120", engine: "plonk", statement: "derive" });
     assert.deepEqual([a.index, b.index, c.index], [0, 1, 0]);
 
     // A different community in the same season is a separate bucket, indexed from 0 (review B2).
-    const d = await store.append({ season: 5, contextHash: "ctx2", regNullifier: "d", commitment: "cd", engine: "plonk", statement: "derive" });
+    const d = await store.append({ season: 5, contextHash: "123", regNullifier: "126", commitment: "121", engine: "plonk", statement: "derive" });
     assert.equal(d.index, 0);
 
-    const s5 = await store.forSeasonContext(5, "ctx");
-    assert.deepEqual(s5.map((r) => r.commitment), ["ca", "cb"]);
-    const s6 = await store.forSeasonContext(6, "ctx");
-    assert.deepEqual(s6.map((r) => r.commitment), ["cc"]);
-    assert.deepEqual(await store.forSeasonContext(5, "ctx2"), [
-      { season: 5, contextHash: "ctx2", regNullifier: "d", commitment: "cd", engine: "plonk", statement: "derive", index: 0 },
+    const s5 = await store.forSeasonContext(5, "122");
+    assert.deepEqual(s5.map((r) => r.commitment), ["118", "119"]);
+    const s6 = await store.forSeasonContext(6, "122");
+    assert.deepEqual(s6.map((r) => r.commitment), ["120"]);
+    assert.deepEqual(await store.forSeasonContext(5, "123"), [
+      { season: 5, contextHash: "123", regNullifier: "126", commitment: "121", engine: "plonk", statement: "derive", index: 0 },
     ]);
-    assert.deepEqual(await store.forSeasonContext(99, "ctx"), []); // a fresh season starts empty
+    assert.deepEqual(await store.forSeasonContext(99, "122"), []); // a fresh season starts empty
   });
 
   test(`${name}: a bucket is bound to one (engine, statement); a mismatch is rejected`, async () => {
     const { store } = await makeStore();
     await store.ready();
     // The first registration declares the bucket (plonk, derive here).
-    const first = await store.append({ season: 1, contextHash: "ctx", regNullifier: "n1", commitment: "c1", engine: "plonk", statement: "derive" });
+    const first = await store.append({ season: 1, contextHash: "122", regNullifier: "136", commitment: "109", engine: "plonk", statement: "derive" });
     assert.equal(first.duplicate, false);
-    assert.deepEqual(await store.declarationFor(1, "ctx"), { engine: "plonk", statement: "derive" });
+    assert.deepEqual(await store.declarationFor(1, "122"), { engine: "plonk", statement: "derive" });
 
     // A later registration for the same bucket under a different statement is a conflict, not written.
-    const conflict = await store.append({ season: 1, contextHash: "ctx", regNullifier: "n2", commitment: "c2", engine: "zkvm", statement: "custody" });
+    const conflict = await store.append({ season: 1, contextHash: "122", regNullifier: "137", commitment: "110", engine: "zkvm", statement: "custody" });
     assert.equal(conflict.conflict, true);
     assert.deepEqual(conflict.declared, { engine: "plonk", statement: "derive" });
-    assert.equal(await store.has(1, "ctx", "n2"), false, "the conflicting registration was not stored");
+    assert.equal(await store.has(1, "122", "137"), false, "the conflicting registration was not stored");
 
     // A matching later registration is accepted.
-    const ok = await store.append({ season: 1, contextHash: "ctx", regNullifier: "n3", commitment: "c3", engine: "plonk", statement: "derive" });
+    const ok = await store.append({ season: 1, contextHash: "122", regNullifier: "138", commitment: "112", engine: "plonk", statement: "derive" });
     assert.equal(ok.duplicate, false);
     assert.equal(ok.index, 1);
 
     // A different bucket can declare a different statement.
-    const other = await store.append({ season: 1, contextHash: "ctx2", regNullifier: "n4", commitment: "c4", engine: "zkvm", statement: "custody" });
+    const other = await store.append({ season: 1, contextHash: "123", regNullifier: "139", commitment: "113", engine: "zkvm", statement: "custody" });
     assert.equal(other.duplicate, false);
-    assert.deepEqual(await store.declarationFor(1, "ctx2"), { engine: "zkvm", statement: "custody" });
+    assert.deepEqual(await store.declarationFor(1, "123"), { engine: "zkvm", statement: "custody" });
   });
 
   test(`${name}: an impossible engine/statement pair is rejected`, async () => {
     const { store } = await makeStore();
     await store.ready();
     // PLONK supports only derive, so plonk/custody is invalid and never declares a bucket.
-    const bad = await store.append({ season: 1, contextHash: "ctx", regNullifier: "n1", commitment: "c1", engine: "plonk", statement: "custody" });
+    const bad = await store.append({ season: 1, contextHash: "122", regNullifier: "136", commitment: "109", engine: "plonk", statement: "custody" });
     assert.equal(bad.invalid, true);
-    assert.equal(await store.declarationFor(1, "ctx"), null, "no bucket was declared");
+    assert.equal(await store.declarationFor(1, "122"), null, "no bucket was declared");
   });
 
   test(`${name}: a new write with no engine/statement fails closed, not a silent legacy default`, async () => {
@@ -119,10 +120,10 @@ for (const [name, makeStore] of [
     await store.ready();
     // Omitting the declaration on a NEW write is rejected, so a caller that drops the field cannot
     // silently write a plonk/derive record and mislabel a custody registration.
-    const noDecl = await store.append({ season: 1, contextHash: "ctx", regNullifier: "n1", commitment: "c1" });
+    const noDecl = await store.append({ season: 1, contextHash: "122", regNullifier: "136", commitment: "109" });
     assert.equal(noDecl.invalid, true);
-    assert.equal(await store.has(1, "ctx", "n1"), false, "nothing was written");
-    const partial = await store.append({ season: 1, contextHash: "ctx", regNullifier: "n2", commitment: "c2", engine: "zkvm" });
+    assert.equal(await store.has(1, "122", "136"), false, "nothing was written");
+    const partial = await store.append({ season: 1, contextHash: "122", regNullifier: "137", commitment: "110", engine: "zkvm" });
     assert.equal(partial.invalid, true, "a missing statement also fails closed");
   });
 
@@ -131,10 +132,10 @@ for (const [name, makeStore] of [
     await store.ready();
     assert.equal(await store.seasonHasEngine(1, "zkvm"), false);
     // A plonk registration in the season does not make it zkvm.
-    await store.append({ season: 1, contextHash: "ctxA", regNullifier: "a", commitment: "ca", engine: "plonk", statement: "derive" });
+    await store.append({ season: 1, contextHash: "124", regNullifier: "105", commitment: "118", engine: "plonk", statement: "derive" });
     assert.equal(await store.seasonHasEngine(1, "zkvm"), false);
     // A zkvm registration in another context of the same season does.
-    await store.append({ season: 1, contextHash: "ctxB", regNullifier: "b", commitment: "cb", engine: "zkvm", statement: "custody" });
+    await store.append({ season: 1, contextHash: "125", regNullifier: "106", commitment: "119", engine: "zkvm", statement: "custody" });
     assert.equal(await store.seasonHasEngine(1, "zkvm"), true);
     // Scoped to the season: a different season is unaffected.
     assert.equal(await store.seasonHasEngine(2, "zkvm"), false);
@@ -145,19 +146,19 @@ test("file: registrations survive a restart (durability)", async () => {
   await withTempFile(async (path) => {
     const first = new RegistrationStore(new FileBackend(path));
     await first.ready();
-    await first.append({ season: 3, contextHash: "ctx", regNullifier: "n1", commitment: "c1", engine: "plonk", statement: "derive" });
-    await first.append({ season: 3, contextHash: "ctx", regNullifier: "n2", commitment: "c2", engine: "plonk", statement: "derive" });
+    await first.append({ season: 3, contextHash: "122", regNullifier: "136", commitment: "109", engine: "plonk", statement: "derive" });
+    await first.append({ season: 3, contextHash: "122", regNullifier: "137", commitment: "110", engine: "plonk", statement: "derive" });
 
     // a new gateway process reads the same file and recovers the full set
     const reopened = new RegistrationStore(new FileBackend(path));
     await reopened.ready();
-    assert.equal(await reopened.has(3, "ctx", "n1"), true);
-    assert.equal(await reopened.has(3, "ctx", "n2"), true);
-    const recs = await reopened.forSeasonContext(3, "ctx");
-    assert.deepEqual(recs.map((r) => r.commitment), ["c1", "c2"]);
+    assert.equal(await reopened.has(3, "122", "136"), true);
+    assert.equal(await reopened.has(3, "122", "137"), true);
+    const recs = await reopened.forSeasonContext(3, "122");
+    assert.deepEqual(recs.map((r) => r.commitment), ["109", "110"]);
 
     // and the spend set is enforced after the restart, so no member registers twice
-    const dup = await reopened.append({ season: 3, contextHash: "ctx", regNullifier: "n1", commitment: "c1", engine: "plonk", statement: "derive" });
+    const dup = await reopened.append({ season: 3, contextHash: "122", regNullifier: "136", commitment: "109", engine: "plonk", statement: "derive" });
     assert.equal(dup.duplicate, true);
   });
 });
@@ -170,17 +171,17 @@ test("file: two concurrent first registrations with different declarations, exac
     // mutex serializes them, so exactly one declares the bucket and the other conflicts, reporting
     // the winner's declaration. Both must not be written.
     const [a, b] = await Promise.all([
-      store.append({ season: 1, contextHash: "ctx", regNullifier: "nA", commitment: "cA", engine: "plonk", statement: "derive" }),
-      store.append({ season: 1, contextHash: "ctx", regNullifier: "nB", commitment: "cB", engine: "zkvm", statement: "custody" }),
+      store.append({ season: 1, contextHash: "122", regNullifier: "140", commitment: "114", engine: "plonk", statement: "derive" }),
+      store.append({ season: 1, contextHash: "122", regNullifier: "141", commitment: "115", engine: "zkvm", statement: "custody" }),
     ]);
     const wins = [a, b].filter((r) => r.duplicate === false);
     const conflicts = [a, b].filter((r) => r.conflict === true);
     assert.equal(wins.length, 1, "exactly one registration is written");
     assert.equal(conflicts.length, 1, "the other conflicts");
     // The loser reports the winner's declaration, and the bucket holds exactly one record.
-    const decl = await store.declarationFor(1, "ctx");
+    const decl = await store.declarationFor(1, "122");
     assert.deepEqual(conflicts[0].declared, decl);
-    const recs = await store.forSeasonContext(1, "ctx");
+    const recs = await store.forSeasonContext(1, "122");
     assert.equal(recs.length, 1);
   });
 });
@@ -188,18 +189,18 @@ test("file: two concurrent first registrations with different declarations, exac
 test("file: a legacy record (no engine/statement) reopens as plonk/derive and rejects custody", async () => {
   await withTempFile(async (path) => {
     // Seed a real legacy JSON-lines record, the pre-declaration shape with no engine/statement.
-    await writeFile(path, JSON.stringify({ season: 2, contextHash: "ctx", regNullifier: "legacy", commitment: "cL", index: 0 }) + "\n");
+    await writeFile(path, JSON.stringify({ season: 2, contextHash: "122", regNullifier: "127", commitment: "116", index: 0 }) + "\n");
 
     const store = new RegistrationStore(new FileBackend(path));
     await store.ready();
-    assert.equal(await store.has(2, "ctx", "legacy"), true, "the legacy record loads");
-    assert.deepEqual(await store.declarationFor(2, "ctx"), { engine: "plonk", statement: "derive" });
+    assert.equal(await store.has(2, "122", "127"), true, "the legacy record loads");
+    assert.deepEqual(await store.declarationFor(2, "122"), { engine: "plonk", statement: "derive" });
 
     // A custody registration into the legacy (derive-declared) bucket is rejected and not written.
-    const conflict = await store.append({ season: 2, contextHash: "ctx", regNullifier: "new", commitment: "cN", engine: "zkvm", statement: "custody" });
+    const conflict = await store.append({ season: 2, contextHash: "122", regNullifier: "144", commitment: "117", engine: "zkvm", statement: "custody" });
     assert.equal(conflict.conflict, true);
     assert.deepEqual(conflict.declared, { engine: "plonk", statement: "derive" });
-    assert.equal(await store.has(2, "ctx", "new"), false);
+    assert.equal(await store.has(2, "122", "144"), false);
     // The file still holds only the legacy record.
     const lines = (await readFile(path, "utf8")).trim().split("\n").filter(Boolean);
     assert.equal(lines.length, 1);
@@ -215,12 +216,12 @@ test("a tree rebuilt from records matches sequential registration (no member is 
     const store = new RegistrationStore(new FileBackend(path));
     await store.ready();
     for (let i = 0; i < commitments.length; i++) {
-      await store.append({ season: 7, contextHash: "ctx", regNullifier: `n${i}`, commitment: commitments[i], engine: "plonk", statement: "derive" });
+      await store.append({ season: 7, contextHash: "122", regNullifier: String(200 + i), commitment: commitments[i], engine: "plonk", statement: "derive" });
       live.append(commitments[i]);
     }
 
     // tree as a restart rebuilds it from the durable records, in the persisted order
-    const recs = await store.forSeasonContext(7, "ctx");
+    const recs = await store.forSeasonContext(7, "122");
     const rebuilt = await MembersTree.fromCommitments(recs.map((r) => r.commitment));
 
     assert.equal(rebuilt.root(), live.root());
@@ -233,20 +234,20 @@ test("file: concurrent first use loads the records exactly once", async () => {
     // seed two records, then open a fresh backend and hit it from several callers at once
     const seed = new RegistrationStore(new FileBackend(path));
     await seed.ready();
-    await seed.append({ season: 2, contextHash: "ctx", regNullifier: "n1", commitment: "c1", engine: "plonk", statement: "derive" });
-    await seed.append({ season: 2, contextHash: "ctx", regNullifier: "n2", commitment: "c2", engine: "plonk", statement: "derive" });
+    await seed.append({ season: 2, contextHash: "122", regNullifier: "136", commitment: "109", engine: "plonk", statement: "derive" });
+    await seed.append({ season: 2, contextHash: "122", regNullifier: "137", commitment: "110", engine: "plonk", statement: "derive" });
 
     const fresh = new RegistrationStore(new FileBackend(path));
     const [recs, has1] = await Promise.all([
-      fresh.forSeasonContext(2, "ctx"),
-      fresh.has(2, "ctx", "n1"),
+      fresh.forSeasonContext(2, "122"),
+      fresh.has(2, "122", "136"),
       fresh.ready(),
-      fresh.forSeasonContext(2, "ctx"),
+      fresh.forSeasonContext(2, "122"),
     ]);
     // a double-load would have pushed each record twice
     assert.equal(recs.length, 2);
     assert.equal(has1, true);
-    assert.deepEqual((await fresh.forSeasonContext(2, "ctx")).map((r) => r.index), [0, 1]);
+    assert.deepEqual((await fresh.forSeasonContext(2, "122")).map((r) => r.index), [0, 1]);
   });
 });
 
@@ -254,9 +255,9 @@ test("a different season rebuilds an empty tree (stale-season access cannot carr
   await withTempFile(async (path) => {
     const store = new RegistrationStore(new FileBackend(path));
     await store.ready();
-    await store.append({ season: 10, contextHash: "ctx", regNullifier: "n", commitment: "c", engine: "plonk", statement: "derive" });
+    await store.append({ season: 10, contextHash: "122", regNullifier: "134", commitment: "107", engine: "plonk", statement: "derive" });
 
-    const next = await MembersTree.fromCommitments((await store.forSeasonContext(11, "ctx")).map((r) => r.commitment));
+    const next = await MembersTree.fromCommitments((await store.forSeasonContext(11, "122")).map((r) => r.commitment));
     const empty = await MembersTree.create();
     assert.equal(next.size(), 0);
     assert.equal(next.root(), empty.root());
@@ -274,26 +275,26 @@ test("a torn final line is discarded on load, so a crash mid-append does not ref
   const path = join(dir, "regs.jsonl");
   const header = JSON.stringify({ type: "schedule", schedule: "sch1" });
   const good = JSON.stringify({
-    season: 0, contextHash: "ctx", regNullifier: "nf1", commitment: "11", engine: "plonk", statement: "derive", index: 0,
+    season: 0, contextHash: "122", regNullifier: "146", commitment: "11", engine: "plonk", statement: "derive", index: 0,
   });
   await writeFile(path, `${header}\n${good}\n{"season":0,"contextHa`);
   const b = new FileBackend(path, "sch1");
   await b.ready();
-  const recs = await b.forSeasonContext(0, "ctx");
+  const recs = await b.forSeasonContext(0, "122");
   assert.equal(recs.length, 1, "the complete record before the torn one survives");
-  assert.equal(recs[0].regNullifier, "nf1");
+  assert.equal(recs[0].regNullifier, "146");
   assert.equal(b.tornTailDiscarded, true, "and the discard is recorded rather than silent");
 
   // AND THE FILE MUST END ON A RECORD BOUNDARY, not merely parse in memory. A round noted that an
   // off-by-one truncation (to truncateTo + 1) leaves the preceding record without its newline, which
   // the in-memory check does not see; the next append then concatenates `}{` and the boot after that
   // refuses forever. Append and reopen to prove the file is still well-formed.
-  await b.append({ season: 0, contextHash: "ctx", regNullifier: "nf2", commitment: "22", engine: "plonk", statement: "derive" });
+  await b.append({ season: 0, contextHash: "122", regNullifier: "147", commitment: "22", engine: "plonk", statement: "derive" });
   const reopened = new FileBackend(path, "sch1");
   await reopened.ready(); // must not throw on a concatenated line
   assert.deepEqual(
-    (await reopened.forSeasonContext(0, "ctx")).map((r) => r.regNullifier),
-    ["nf1", "nf2"],
+    (await reopened.forSeasonContext(0, "122")).map((r) => r.regNullifier),
+    ["146", "147"],
     "the truncation cut on the record boundary, so the later append and reopen both succeed",
   );
   await rm(dir, { recursive: true, force: true });
@@ -304,7 +305,7 @@ test("a malformed line in the MIDDLE still refuses, because that is not an inter
   const path = join(dir, "regs.jsonl");
   const header = JSON.stringify({ type: "schedule", schedule: "sch1" });
   const good = JSON.stringify({
-    season: 0, contextHash: "ctx", regNullifier: "nf1", commitment: "11", engine: "plonk", statement: "derive", index: 0,
+    season: 0, contextHash: "122", regNullifier: "146", commitment: "11", engine: "plonk", statement: "derive", index: 0,
   });
   await writeFile(path, `${header}\n{"broken\n${good}\n`);
   const b = new FileBackend(path, "sch1");
@@ -333,20 +334,20 @@ test("a COMPLETE record with no trailing newline is terminated, not left to pois
   const path = join(dir, "regs.jsonl");
   const header = JSON.stringify({ type: "schedule", schedule: "sch1" });
   const rec = (nf, index) => JSON.stringify({
-    season: 0, contextHash: "ctx", regNullifier: nf, commitment: "11", engine: "plonk", statement: "derive", index,
+    season: 0, contextHash: "122", regNullifier: nf, commitment: "11", engine: "plonk", statement: "derive", index,
   });
-  await writeFile(path, `${header}\n${rec("nf1", 0)}`); // no trailing newline
+  await writeFile(path, `${header}\n${rec("146", 0)}`); // no trailing newline
 
   const b = new FileBackend(path, "sch1");
   await b.ready();
   assert.equal(b.tornTailTerminated, true, "the repair happened and is recorded, not silent");
-  await b.append({ season: 0, contextHash: "ctx", regNullifier: "nf2", commitment: "22", engine: "plonk", statement: "derive" });
+  await b.append({ season: 0, contextHash: "122", regNullifier: "147", commitment: "22", engine: "plonk", statement: "derive" });
 
   // The reopen is the assertion that matters: the first repair passed a test that only read once.
   const b2 = new FileBackend(path, "sch1");
   await b2.ready();
-  const recs = await b2.forSeasonContext(0, "ctx");
-  assert.deepEqual(recs.map((r) => r.regNullifier), ["nf1", "nf2"], "both records survive a reopen");
+  const recs = await b2.forSeasonContext(0, "122");
+  assert.deepEqual(recs.map((r) => r.regNullifier), ["146", "147"], "both records survive a reopen");
   const bytes = await readFile(path, "utf8");
   assert.equal(bytes.includes("}{"), false, "and no two records ever share a line");
 });
@@ -356,7 +357,7 @@ test("a normal file ending in a newline is not touched by the repair", async () 
   const path = join(dir, "regs.jsonl");
   const header = JSON.stringify({ type: "schedule", schedule: "sch1" });
   const rec = JSON.stringify({
-    season: 0, contextHash: "ctx", regNullifier: "nf1", commitment: "11", engine: "plonk", statement: "derive", index: 0,
+    season: 0, contextHash: "122", regNullifier: "146", commitment: "11", engine: "plonk", statement: "derive", index: 0,
   });
   await writeFile(path, `${header}\n${rec}\n`);
   const before = await readFile(path, "utf8");
@@ -403,7 +404,7 @@ test("a sync error after the bytes land does not let a retry write the registrat
 
     const backend = new FileBackend(path, null, false, { open: faultingOpen });
     await backend.ready();
-    const record = { season: 1, contextHash: "c", regNullifier: "n1", commitment: "m1", engine: "plonk", statement: "derive" };
+    const record = { season: 1, contextHash: "107", regNullifier: "136", commitment: "130", engine: "plonk", statement: "derive" };
     // THE RETRY BARRIER IS WHAT MAKES THIS A SUCCESS, not the fact that the bytes are visible. The
     // fault is armed once, so the recovery path reopens the file and its sync SUCCEEDS, which is what
     // establishes durability. An earlier version reported success merely because a reread found the
@@ -424,9 +425,9 @@ test("a sync error after the bytes land does not let a retry write the registrat
     // And a restart rebuilds the same single-member tree, which is the harm the finding named.
     const reopened = new FileBackend(path, null, false);
     await reopened.ready();
-    const after = await reopened.forSeasonContext(1, "c");
+    const after = await reopened.forSeasonContext(1, "107");
     assert.equal(after.length, 1, "a restart loads one record");
-    assert.equal(after[0].commitment, "m1");
+    assert.equal(after[0].commitment, "130");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -439,12 +440,12 @@ test("a file that already holds a duplicate loads deterministically rather than 
   const path = join(dir, "registrations.jsonl");
   try {
     const { FileBackend } = await import("../core/registration_store.js");
-    const rec = { season: 1, contextHash: "c", regNullifier: "n1", commitment: "m1", engine: "plonk", statement: "derive", index: 0 };
+    const rec = { season: 1, contextHash: "107", regNullifier: "136", commitment: "130", engine: "plonk", statement: "derive", index: 0 };
     writeFileSync(path, JSON.stringify(rec) + "\n" + JSON.stringify(rec) + "\n");
 
     const backend = new FileBackend(path, null, false);
     await backend.ready();
-    const recs = await backend.forSeasonContext(1, "c");
+    const recs = await backend.forSeasonContext(1, "107");
     assert.equal(recs.length, 1, "the duplicate collapsed, so the commitment appears once");
     assert.equal(recs[0].index, 0);
   } finally {
@@ -457,8 +458,8 @@ test("two records for one key that DISAGREE are refused, because neither can be 
   const path = join(dir, "registrations.jsonl");
   try {
     const { FileBackend } = await import("../core/registration_store.js");
-    const a = { season: 1, contextHash: "c", regNullifier: "n1", commitment: "m1", engine: "plonk", statement: "derive", index: 0 };
-    const b = { ...a, commitment: "m2" };
+    const a = { season: 1, contextHash: "107", regNullifier: "136", commitment: "130", engine: "plonk", statement: "derive", index: 0 };
+    const b = { ...a, commitment: "131" };
     writeFileSync(path, JSON.stringify(a) + "\n" + JSON.stringify(b) + "\n");
 
     const backend = new FileBackend(path, null, false);
@@ -479,7 +480,7 @@ test("a reload that fails leaves the store as usable as it was, rather than wedg
   try {
     const backend = new FileBackend(path, null, false);
     await backend.ready();
-    await backend.append({ season: 1, contextHash: "c", regNullifier: "n1", commitment: "m1", engine: "plonk", statement: "derive" });
+    await backend.append({ season: 1, contextHash: "107", regNullifier: "136", commitment: "130", engine: "plonk", statement: "derive" });
 
     // A read failure during a reload, then the file becomes readable again.
     let failNextRead = true;
@@ -496,7 +497,7 @@ test("a reload that fails leaves the store as usable as it was, rather than wedg
     await assert.rejects(() => backendWithFlakyRead.ready(), /simulated read failure/);
 
     // The store must recover on the next call rather than repeating the stale error forever.
-    const recovered = await backendWithFlakyRead.forSeasonContext(1, "c");
+    const recovered = await backendWithFlakyRead.forSeasonContext(1, "107");
     assert.equal(recovered.length, 1, "the index rebuilt once the file was readable again");
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -517,8 +518,8 @@ test("a duplicate written at a different index still loads, because the index is
   const dir = mkdtempSync(join(tmpdir(), "reg-dupidx-"));
   const path = join(dir, "registrations.jsonl");
   try {
-    const K = { season: 1, contextHash: "c", regNullifier: "nK", commitment: "mK", engine: "plonk", statement: "derive" };
-    const M = { season: 1, contextHash: "c", regNullifier: "nM", commitment: "mM", engine: "plonk", statement: "derive" };
+    const K = { season: 1, contextHash: "107", regNullifier: "142", commitment: "132", engine: "plonk", statement: "derive" };
+    const M = { season: 1, contextHash: "107", regNullifier: "143", commitment: "133", engine: "plonk", statement: "derive" };
     writeFileSync(path, [
       JSON.stringify({ ...K, index: 0 }),
       JSON.stringify({ ...M, index: 0 }),
@@ -528,7 +529,7 @@ test("a duplicate written at a different index still loads, because the index is
 
     const backend = new FileBackend(path, null, false);
     await backend.ready(); // must not throw
-    const recs = await backend.forSeasonContext(1, "c");
+    const recs = await backend.forSeasonContext(1, "107");
     assert.equal(recs.length, 2, "two distinct registrations survive, and the repeated one collapsed");
     // NOT SORTED. This assertion used to sort the nullifiers, which checked membership as a set and
     // was blind to the thing that actually matters here. The bucket's ORDER is what the members root
@@ -537,7 +538,7 @@ test("a duplicate written at a different index still loads, because the index is
     // K's LAST record carries index 1, which is the position the writer finally assigned it.
     assert.deepEqual(
       recs.map((r) => `${r.regNullifier}@${r.index}`),
-      ["nM@0", "nK@1"],
+      ["143@0", "142@1"],
       "the bucket rebuilds in recorded leaf order, which is the order the live tree had",
     );
   } finally {
@@ -551,10 +552,10 @@ test("but two records sharing a key while disagreeing on the registration are st
   const dir = mkdtempSync(join(tmpdir(), "reg-dupbad-"));
   const path = join(dir, "registrations.jsonl");
   try {
-    const base = { season: 1, contextHash: "c", regNullifier: "nK", engine: "plonk", statement: "derive" };
+    const base = { season: 1, contextHash: "107", regNullifier: "142", engine: "plonk", statement: "derive" };
     writeFileSync(path, [
-      JSON.stringify({ ...base, commitment: "mK", index: 0 }),
-      JSON.stringify({ ...base, commitment: "DIFFERENT", index: 1 }),
+      JSON.stringify({ ...base, commitment: "132", index: 0 }),
+      JSON.stringify({ ...base, commitment: "102", index: 1 }),
       "",
     ].join("\n"));
     const backend = new FileBackend(path, null, false);
@@ -588,7 +589,7 @@ test("when the durability barrier ALSO fails, the write is reported as the failu
     const backend = new FileBackend(path, null, false, { open: alwaysFailsSync });
     await backend.ready();
     await assert.rejects(
-      () => backend.append({ season: 1, contextHash: "c", regNullifier: "n1", commitment: "m1", engine: "plonk", statement: "derive" }),
+      () => backend.append({ season: 1, contextHash: "107", regNullifier: "136", commitment: "130", engine: "plonk", statement: "derive" }),
       /the disk is not answering/,
       "no barrier held, so the write is uncertain and says so",
     );
@@ -609,8 +610,8 @@ test("recovery will not claim another writer's record as this write", async () =
     const { FileBackend } = await import("../core/registration_store.js");
     const { open: realOpen } = await import("node:fs/promises");
 
-    const ours = { season: 1, contextHash: "c", regNullifier: "n1", commitment: "OUR_MEMBER", engine: "plonk", statement: "derive" };
-    const theirs = { ...ours, commitment: "OTHER_MEMBER", index: 0 };
+    const ours = { season: 1, contextHash: "107", regNullifier: "136", commitment: "104", engine: "plonk", statement: "derive" };
+    const theirs = { ...ours, commitment: "103", index: 0 };
 
     // The append fails BEFORE writing anything, and a competing record for the same key appears in
     // the file meanwhile, which is what a second writer would produce.
@@ -630,9 +631,9 @@ test("recovery will not claim another writer's record as this write", async () =
     assert.equal(res.duplicate, true, "the key is taken by a record that is not ours, so this write did not win");
     assert.notEqual(res.index, 0, "and it is certainly not reported as a commit at index 0");
 
-    const held = await backend.forSeasonContext(1, "c");
+    const held = await backend.forSeasonContext(1, "107");
     assert.equal(held.length, 1);
-    assert.equal(held[0].commitment, "OTHER_MEMBER", "the durable view is the other writer's, which is what the caller must act on");
+    assert.equal(held[0].commitment, "103", "the durable view is the other writer's, which is what the caller must act on");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -678,7 +679,7 @@ test("a failed recovery read leaves no public view answering from stale state", 
     });
     await backend.ready();
 
-    const record = { season: 1, contextHash: "c", regNullifier: "n1", commitment: "m1", engine: "zkvm", statement: "custody" };
+    const record = { season: 1, contextHash: "107", regNullifier: "136", commitment: "130", engine: "zkvm", statement: "custody" };
     failNextRead = true; // the recovery READ fails, after the retry sync has already succeeded
     await assert.rejects(() => backend.append(record), /simulated sync failure/, "the append reports the uncertain write");
 
@@ -686,8 +687,8 @@ test("a failed recovery read leaves no public view answering from stale state", 
     // Answering "no" from the old maps is the one outcome that is not allowed.
     assert.equal(await backend.has(record), true, "has() reconciled rather than answering from the stale view");
     assert.equal(await backend.seasonHasEngine(1, "zkvm"), true, "and the zkVM downgrade signal is not silently false");
-    assert.equal((await backend.forSeasonContext(1, "c")).length, 1);
-    assert.ok(await backend.declarationFor(1, "c"), "and the declaration is visible");
+    assert.equal((await backend.forSeasonContext(1, "107")).length, 1);
+    assert.ok(await backend.declarationFor(1, "107"), "and the declaration is visible");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -699,11 +700,11 @@ test("a syntactically valid record that is not a registration is refused at load
   // engine and statement, or a tree materialization failing later instead of the file being refused
   // where an operator can act on it.
   const cases = [
-    [{ season: "one", contextHash: "c", regNullifier: "n", commitment: "m", index: 0 }, /season/],
-    [{ season: 1, contextHash: "", regNullifier: "n", commitment: "m", index: 0 }, /contextHash/],
-    [{ season: 1, contextHash: "c", regNullifier: "n", commitment: "m", index: -1 }, /index/],
-    [{ season: 1, contextHash: "c", regNullifier: "n", commitment: "m", index: 0, engine: "plonk", statement: "custody" }, /not a valid pair/],
-    [{ season: 1, contextHash: "c", regNullifier: "n", commitment: "m", index: 0, engine: "__proto__", statement: "derive" }, /not a valid pair/],
+    [{ season: "one", contextHash: "107", regNullifier: "134", commitment: "128", index: 0 }, /season/],
+    [{ season: 1, contextHash: "", regNullifier: "134", commitment: "128", index: 0 }, /contextHash/],
+    [{ season: 1, contextHash: "107", regNullifier: "134", commitment: "128", index: -1 }, /index/],
+    [{ season: 1, contextHash: "107", regNullifier: "134", commitment: "128", index: 0, engine: "plonk", statement: "custody" }, /not a valid pair/],
+    [{ season: 1, contextHash: "107", regNullifier: "134", commitment: "128", index: 0, engine: "__proto__", statement: "derive" }, /not a valid pair/],
     [[1, 2, 3], /not an object/],
   ];
   for (const [bad, pattern] of cases) {
@@ -719,6 +720,66 @@ test("a syntactically valid record that is not a registration is refused at load
   }
 });
 
+test("a non-canonical field element is refused at load, not left to fail at tree materialization (F4)", async () => {
+  // F4 FROM THE SIXTH-ROUND REVIEW. contextHash, regNullifier, and commitment are canonical BN254
+  // field elements, but the loader only checked that they were non-empty strings, so a `commitment`
+  // of "not-a-field" passed FileBackend.ready() and threw only later, when the context's members tree
+  // first converted it to a BigInt, moving the failure off the boot path the loader exists to guard.
+  // The verifier canonical-checks these before it writes, so a non-canonical value reaches the file
+  // only by corruption or hand-editing, and the loader is the last place that catches it. Each of the
+  // three fields, and each way a value can be non-canonical, must be refused at load.
+  const base = { season: 1, contextHash: "11", regNullifier: "12", commitment: "13", engine: "plonk", statement: "derive", index: 0 };
+  // Every way a value can be non-canonical, applied to EACH of the three field-element fields, plus
+  // the range boundary. A weaker per-field check, or one that skips the range, would pass a
+  // field-scoped subset; running the whole matrix is what pins that all three are fully checked.
+  const badValues = [
+    "not-a-field", // letters
+    13, // a number, not a string
+    "013", // a leading zero aliases "13"
+    "0x1f", // hex, not decimal
+    ["13"], // an array that coerces to a decimal
+    FIELD_PRIME.toString(), // exactly the field prime, out of range (the largest canonical is p-1)
+    (FIELD_PRIME + 1000n).toString(), // a larger out-of-range decimal
+  ];
+  for (const field of ["contextHash", "regNullifier", "commitment"]) {
+    for (const value of badValues) {
+      const bad = { ...base, [field]: value };
+      const dir = mkdtempSync(join(tmpdir(), "mno-reg-f4-"));
+      const path = join(dir, "registrations.jsonl");
+      try {
+        writeFileSync(path, JSON.stringify(bad) + "\n");
+        await assert.rejects(
+          () => new FileBackend(path, null, false).ready(),
+          new RegExp(`${field}.*canonical`),
+          `${field} = ${JSON.stringify(value)} must be refused`,
+        );
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  }
+});
+
+test("append refuses a non-canonical field, so the store never writes a file it would later refuse", async () => {
+  // A review of F4 found the asymmetry: the loader validated canonical fields but the append path only
+  // stringified them, so a caller could write a file the same store rejects on the next restart.
+  // Append now upholds the durable-format invariant. Checked on both backends, since the check lives
+  // in RegistrationStore above the backend.
+  for (const backend of [new MemoryRegistrationBackend(), new FileBackend(join(mkdtempSync(join(tmpdir(), "reg-appendcanon-")), "r.jsonl"))]) {
+    const store = new RegistrationStore(backend);
+    await store.ready();
+    const ok = { season: 1, contextHash: "11", regNullifier: "12", commitment: "13", engine: "plonk", statement: "derive" };
+    for (const field of ["contextHash", "regNullifier", "commitment"]) {
+      const res = await store.append({ ...ok, [field]: "not-a-field" });
+      assert.equal(res.invalid, true, `append refuses a non-canonical ${field}`);
+      assert.equal(res.field, field);
+    }
+    // A number coerces to a canonical decimal and is accepted, so the durable form is a canonical string.
+    const good = await store.append({ ...ok, commitment: 13 });
+    assert.notEqual(good.invalid, true, "a value that stringifies to a canonical decimal is accepted");
+  }
+});
+
 test("a legacy record with no engine or statement still loads, because the format promises it will", async () => {
   // The fields were added later and declarationOfRecord reads their absence as the plonk/derive
   // default. A first version of the shape check demanded them outright, which would have refused every
@@ -726,10 +787,10 @@ test("a legacy record with no engine or statement still loads, because the forma
   const dir = mkdtempSync(join(tmpdir(), "mno-reg-legacy-shape-"));
   const path = join(dir, "registrations.jsonl");
   try {
-    writeFileSync(path, JSON.stringify({ season: 1, contextHash: "c", regNullifier: "n", commitment: "m", index: 0 }) + "\n");
+    writeFileSync(path, JSON.stringify({ season: 1, contextHash: "107", regNullifier: "134", commitment: "128", index: 0 }) + "\n");
     const backend = new FileBackend(path, null, false);
     await backend.ready();
-    assert.deepEqual(await backend.declarationFor(1, "c"), { engine: "plonk", statement: "derive" });
+    assert.deepEqual(await backend.declarationFor(1, "107"), { engine: "plonk", statement: "derive" });
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -765,7 +826,7 @@ async function staleStoreWithDurableRecord(path) {
     },
   });
   await backend.ready();
-  const record = { season: 1, contextHash: "c", regNullifier: "n1", commitment: "1", engine: "zkvm", statement: "custody" };
+  const record = { season: 1, contextHash: "107", regNullifier: "136", commitment: "1", engine: "zkvm", statement: "custody" };
   await assert.rejects(() => backend.append(record), /simulated sync failure/);
   return { backend, record, state };
 }
@@ -787,8 +848,8 @@ test("concurrent callers of a stale store share ONE reconciliation", async () =>
     const answers = await Promise.all([
       backend.has(record),
       backend.seasonHasEngine(1, "zkvm"),
-      backend.forSeasonContext(1, "c"),
-      backend.declarationFor(1, "c"),
+      backend.forSeasonContext(1, "107"),
+      backend.declarationFor(1, "107"),
     ]);
     assert.equal(
       state.reads - before,
@@ -858,14 +919,14 @@ test("no public view answers from the old maps while an uncertain write is still
     });
     await backend.ready();
 
-    const record = { season: 1, contextHash: "c", regNullifier: "n1", commitment: "1", engine: "zkvm", statement: "custody" };
+    const record = { season: 1, contextHash: "107", regNullifier: "136", commitment: "1", engine: "zkvm", statement: "custody" };
     const appending = backend.append(record).then(() => {}, () => {}); // settles after the release
 
     // Real filesystem work resolves on the threadpool, which outlasts a burst of setImmediate turns.
     for (let i = 0; i < 400 && reads < 2; i += 1) await new Promise((r) => setTimeout(r, 5));
     assert.ok(reads >= 2, "the append never reached its recovery read, so the window was never open");
     assert.ok(
-      readFileSync(path, "utf8").includes('"regNullifier":"n1"'),
+      readFileSync(path, "utf8").includes('"regNullifier":"136"'),
       "the record must already be durable, or this is not the window under test",
     );
 
@@ -878,8 +939,8 @@ test("no public view answers from the old maps while an uncertain write is still
     const queries = [
       track("has", backend.has(record)),
       track("seasonHasEngine", backend.seasonHasEngine(1, "zkvm")),
-      track("forSeasonContext", backend.forSeasonContext(1, "c")),
-      track("declarationFor", backend.declarationFor(1, "c")),
+      track("forSeasonContext", backend.forSeasonContext(1, "107")),
+      track("declarationFor", backend.declarationFor(1, "107")),
     ];
     for (let i = 0; i < 40; i += 1) await new Promise((r) => setTimeout(r, 5));
 
@@ -897,8 +958,8 @@ test("no public view answers from the old maps while an uncertain write is still
     // And once the reconciliation lands, every view reflects the durable record.
     assert.equal(await backend.has(record), true);
     assert.equal(await backend.seasonHasEngine(1, "zkvm"), true);
-    assert.equal((await backend.forSeasonContext(1, "c")).length, 1);
-    assert.deepEqual(await backend.declarationFor(1, "c"), { engine: "zkvm", statement: "custody" });
+    assert.equal((await backend.forSeasonContext(1, "107")).length, 1);
+    assert.deepEqual(await backend.declarationFor(1, "107"), { engine: "zkvm", statement: "custody" });
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -948,13 +1009,13 @@ test("a sync failure marks the view behind the file before close() is even await
     });
     await backend.ready();
 
-    const record = { season: 1, contextHash: "c", regNullifier: "n1", commitment: "1", engine: "zkvm", statement: "custody" };
+    const record = { season: 1, contextHash: "107", regNullifier: "136", commitment: "1", engine: "zkvm", statement: "custody" };
     const appending = backend.append(record).then(() => {}, () => {});
 
     for (let i = 0; i < 400 && !releaseClose; i += 1) await new Promise((r) => setTimeout(r, 5));
     assert.ok(releaseClose, "the append never reached close(), so the window was never open");
     assert.ok(
-      readFileSync(path, "utf8").includes('"regNullifier":"n1"'),
+      readFileSync(path, "utf8").includes('"regNullifier":"136"'),
       "the record must already be durable, or this is not the window under test",
     );
 
@@ -970,8 +1031,8 @@ test("a sync failure marks the view behind the file before close() is even await
     const queries = [
       track("has", backend.has(record), (v) => v === false),
       track("seasonHasEngine", backend.seasonHasEngine(1, "zkvm"), (v) => v === false),
-      track("forSeasonContext", backend.forSeasonContext(1, "c"), (v) => v.length === 0),
-      track("declarationFor", backend.declarationFor(1, "c"), (v) => v == null),
+      track("forSeasonContext", backend.forSeasonContext(1, "107"), (v) => v.length === 0),
+      track("declarationFor", backend.declarationFor(1, "107"), (v) => v == null),
     ];
     for (let i = 0; i < 40; i += 1) await new Promise((r) => setTimeout(r, 5));
     await Promise.all(queries);
@@ -1027,17 +1088,17 @@ test("a reread cannot turn a failed durability barrier into an apparent commit",
     });
     await backend.ready();
 
-    const record = { season: 1, contextHash: "c", regNullifier: "n1", commitment: "1", engine: "zkvm", statement: "custody" };
+    const record = { season: 1, contextHash: "107", regNullifier: "136", commitment: "1", engine: "zkvm", statement: "custody" };
     await assert.rejects(() => backend.append(record), /simulated barrier failure/);
     assert.equal(barriersSucceeded, 0, "no barrier may have succeeded, or this is not the case under test");
     // The bytes ARE visible, which is precisely what must not be mistaken for a commit.
-    assert.ok(readFileSync(path, "utf8").includes('"regNullifier":"n1"'), "the bytes are visible in the file");
+    assert.ok(readFileSync(path, "utf8").includes('"regNullifier":"136"'), "the bytes are visible in the file");
 
     // Every public view must refuse rather than reporting the unbarriered record as registered.
     await assert.rejects(() => backend.has(record), /simulated barrier failure/);
     await assert.rejects(() => backend.seasonHasEngine(1, "zkvm"), /simulated barrier failure/);
-    await assert.rejects(() => backend.forSeasonContext(1, "c"), /simulated barrier failure/);
-    await assert.rejects(() => backend.declarationFor(1, "c"), /simulated barrier failure/);
+    await assert.rejects(() => backend.forSeasonContext(1, "107"), /simulated barrier failure/);
+    await assert.rejects(() => backend.declarationFor(1, "107"), /simulated barrier failure/);
 
     // And it must keep refusing rather than settling into a false answer.
     await assert.rejects(() => backend.seasonHasEngine(1, "zkvm"), /simulated barrier failure/);
@@ -1081,11 +1142,11 @@ test("an unbarriered write cannot be laundered into a commit during the awaited 
     });
     await backend.ready();
 
-    const record = { season: 1, contextHash: "c", regNullifier: "n1", commitment: "1", engine: "zkvm", statement: "custody" };
+    const record = { season: 1, contextHash: "107", regNullifier: "136", commitment: "1", engine: "zkvm", statement: "custody" };
     const appending = backend.append(record).then(() => {}, () => {});
     for (let i = 0; i < 400 && !releaseClose; i += 1) await new Promise((r) => setTimeout(r, 5));
     assert.ok(releaseClose, "the append never reached close(), so the window was never open");
-    assert.ok(readFileSync(path, "utf8").includes('"regNullifier":"n1"'), "the bytes are visible, which is the trap");
+    assert.ok(readFileSync(path, "utf8").includes('"regNullifier":"136"'), "the bytes are visible, which is the trap");
 
     // A reader arriving in the window must not be able to establish the record, because no barrier
     // has succeeded and a read cannot supply one.
@@ -1112,15 +1173,15 @@ test("a file the base revision produces still loads, rather than refusing an upg
   const dir = mkdtempSync(join(tmpdir(), "reg-upgrade-"));
   const path = join(dir, "registrations.jsonl");
   try {
-    const K = { season: 1, contextHash: "c", regNullifier: "nK", commitment: "7", engine: "plonk", statement: "derive" };
-    const M = { season: 1, contextHash: "c", regNullifier: "nM", commitment: "9", engine: "plonk", statement: "derive" };
+    const K = { season: 1, contextHash: "107", regNullifier: "142", commitment: "7", engine: "plonk", statement: "derive" };
+    const M = { season: 1, contextHash: "107", regNullifier: "143", commitment: "9", engine: "plonk", statement: "derive" };
     writeFileSync(path, [JSON.stringify({ ...K, index: 0 }), JSON.stringify({ ...M, index: 0 }), ""].join("\n"));
 
     const backend = new FileBackend(path, null, false);
     await backend.ready(); // must not throw
-    const recs = await backend.forSeasonContext(1, "c");
+    const recs = await backend.forSeasonContext(1, "107");
     // Ties keep file order, so this rebuilds what the base revision rebuilt rather than a new order.
-    assert.deepEqual(recs.map((r) => r.regNullifier), ["nK", "nM"]);
+    assert.deepEqual(recs.map((r) => r.regNullifier), ["142", "143"]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -1139,7 +1200,7 @@ test("a corrupt duplicate is refused rather than replacing a valid record", asyn
   const dir = mkdtempSync(join(tmpdir(), "reg-corruptdup-"));
   const path = join(dir, "registrations.jsonl");
   try {
-    const K = { season: 1, contextHash: "c", regNullifier: "nK", commitment: "7", engine: "plonk", statement: "derive" };
+    const K = { season: 1, contextHash: "107", regNullifier: "142", commitment: "7", engine: "plonk", statement: "derive" };
     // Case one: engine "" compares equal to absent engine, but is not a valid engine.
     writeFileSync(path, [JSON.stringify({ ...K, index: 0 }), JSON.stringify({ ...K, engine: "", index: 0 }), ""].join("\n"));
     await assert.rejects(() => new FileBackend(path, null, false).ready(), /not a usable registration record/);
@@ -1153,7 +1214,7 @@ test("a corrupt duplicate is refused rather than replacing a valid record", asyn
     writeFileSync(path, [JSON.stringify({ ...K, index: 0 }), JSON.stringify({ ...K, index: 0 }), ""].join("\n"));
     const b = new FileBackend(path, null, false);
     await b.ready();
-    assert.equal((await b.forSeasonContext(1, "c")).length, 1);
+    assert.equal((await b.forSeasonContext(1, "107")).length, 1);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -1170,7 +1231,7 @@ test("a failed torn-tail truncate does not arm a later load into deleting a repa
   const path = join(dir, "registrations.jsonl");
   try {
     const { truncate: realTruncate } = await import("node:fs/promises");
-    const A = { season: 1, contextHash: "c", regNullifier: "nA", commitment: "1", engine: "plonk", statement: "derive", index: 0 };
+    const A = { season: 1, contextHash: "107", regNullifier: "140", commitment: "1", engine: "plonk", statement: "derive", index: 0 };
     // A complete record, then a torn (unparseable) tail with no trailing newline.
     writeFileSync(path, JSON.stringify(A) + "\n" + "{ torn");
 
@@ -1184,7 +1245,7 @@ test("a failed torn-tail truncate does not arm a later load into deleting a repa
     await assert.rejects(() => backend.ready(), /simulated truncate failure/, "the first load fails IN the repair");
 
     // The operator repairs the file to two complete records, cleanly terminated.
-    const B = { season: 1, contextHash: "c", regNullifier: "nB", commitment: "2", engine: "plonk", statement: "derive", index: 1 };
+    const B = { season: 1, contextHash: "107", regNullifier: "141", commitment: "2", engine: "plonk", statement: "derive", index: 1 };
     writeFileSync(path, [JSON.stringify(A), JSON.stringify(B), ""].join("\n"));
     truncateFails = false; // storage recovered
 
@@ -1192,8 +1253,8 @@ test("a failed torn-tail truncate does not arm a later load into deleting a repa
 
     // Assert on IDENTITY and on disk, not on a count or a no-throw: a stale offset would have deleted
     // B, so the surviving record set and the file itself are what pin the property.
-    assert.deepEqual((await backend.forSeasonContext(1, "c")).map((r) => r.regNullifier), ["nA", "nB"]);
-    assert.ok(readFileSync(path, "utf8").includes('"regNullifier":"nB"'), "B is still on disk, not truncated away");
+    assert.deepEqual((await backend.forSeasonContext(1, "107")).map((r) => r.regNullifier), ["140", "141"]);
+    assert.ok(readFileSync(path, "utf8").includes('"regNullifier":"141"'), "B is still on disk, not truncated away");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -1336,34 +1397,34 @@ test("a file with a leaf-index GAP is refused, and an accepted tie stays consist
   const dir = mkdtempSync(join(tmpdir(), "reg-gap-"));
   const path = join(dir, "registrations.jsonl");
   try {
-    const R = (n, i) => ({ season: 1, contextHash: "c", regNullifier: n, commitment: i + "", engine: "plonk", statement: "derive", index: i });
+    const R = (n, i) => ({ season: 1, contextHash: "107", regNullifier: n, commitment: i + "", engine: "plonk", statement: "derive", index: i });
     // Append to a loaded file, then reopen, and return whether the live and restart orders agree.
     const appendAndCompare = async () => {
       const live = new FileBackend(path, null, false);
       await live.ready();
-      await live.append({ season: 1, contextHash: "c", regNullifier: "C", commitment: "9", engine: "plonk", statement: "derive" });
-      const liveOrder = (await live.forSeasonContext(1, "c")).map((r) => r.regNullifier);
+      await live.append({ season: 1, contextHash: "107", regNullifier: "101", commitment: "9", engine: "plonk", statement: "derive" });
+      const liveOrder = (await live.forSeasonContext(1, "107")).map((r) => r.regNullifier);
       const restart = new FileBackend(path, null, false);
       await restart.ready();
-      const restartOrder = (await restart.forSeasonContext(1, "c")).map((r) => r.regNullifier);
+      const restartOrder = (await restart.forSeasonContext(1, "107")).map((r) => r.regNullifier);
       return { liveOrder, restartOrder };
     };
 
     // BOUNDARY, refuse: max index length+1 (2 in a two-record bucket) is the smallest gap that reorders.
-    writeFileSync(path, [JSON.stringify(R("A", 0)), JSON.stringify(R("B", 3)), ""].join("\n"));
+    writeFileSync(path, [JSON.stringify(R("148", 0)), JSON.stringify(R("149", 3)), ""].join("\n"));
     await assert.rejects(() => new FileBackend(path, null, false).ready(), /gap an append-only store cannot produce|above that count/);
 
     // BOUNDARY, accept: max index EQUAL to the length. The stricter < refused this; it does not reorder.
-    writeFileSync(path, [JSON.stringify(R("A", 0)), JSON.stringify(R("B", 2)), ""].join("\n"));
+    writeFileSync(path, [JSON.stringify(R("148", 0)), JSON.stringify(R("149", 2)), ""].join("\n"));
     const boundary = await appendAndCompare();
     assert.deepEqual(boundary.liveOrder, boundary.restartOrder, "max==length loads and stays consistent across an append");
-    assert.deepEqual(boundary.liveOrder, ["A", "B", "C"], "and the append sorts last");
+    assert.deepEqual(boundary.liveOrder, ["148", "149", "101"], "and the append sorts last");
 
     // The tie (base-revision shape) also loads and stays consistent.
-    writeFileSync(path, [JSON.stringify(R("A", 0)), JSON.stringify(R("B", 0)), ""].join("\n"));
+    writeFileSync(path, [JSON.stringify(R("148", 0)), JSON.stringify(R("149", 0)), ""].join("\n"));
     const tie = await appendAndCompare();
     assert.deepEqual(tie.liveOrder, tie.restartOrder, "the tie's live and restart order match after an append");
-    assert.deepEqual(tie.liveOrder, ["A", "B", "C"], "and the appended record sorts after the tied pair");
+    assert.deepEqual(tie.liveOrder, ["148", "149", "101"], "and the appended record sorts after the tied pair");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -1428,11 +1489,11 @@ test("a durable record is visible during a successful close, not only after it",
       },
     });
     await backend.ready();
-    const record = { season: 1, contextHash: "c", regNullifier: "n", commitment: "1", engine: "zkvm", statement: "custody" };
+    const record = { season: 1, contextHash: "107", regNullifier: "134", commitment: "1", engine: "zkvm", statement: "custody" };
     const appending = backend.append(record).then(() => {}, () => {});
     for (let i = 0; i < 400 && !releaseClose; i += 1) await new Promise((r) => setTimeout(r, 5));
     assert.ok(releaseClose, "the append never reached close(), so the window was never open");
-    assert.ok(readFileSync(path, "utf8").includes('"regNullifier":"n"'), "the record is durable on disk during the window");
+    assert.ok(readFileSync(path, "utf8").includes('"regNullifier":"134"'), "the record is durable on disk during the window");
 
     // The record is durable, so a read during the close must not deny it.
     assert.equal(await backend.has(record), true, "has() reflects the durable record during the close");
@@ -1440,7 +1501,7 @@ test("a durable record is visible during a successful close, not only after it",
 
     releaseClose();
     await appending;
-    assert.equal((await backend.forSeasonContext(1, "c")).length, 1, "and the record is not doubled");
+    assert.equal((await backend.forSeasonContext(1, "107")).length, 1, "and the record is not doubled");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
