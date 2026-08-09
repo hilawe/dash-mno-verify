@@ -5,14 +5,19 @@ counts and supersedes everything below it. Historical sections are append-only a
 only marked superseded. Read this first when picking the project back up, then `TODO.md` for the full
 prioritized punch list.
 
-## CURRENT STATE, 2026-08-09 (converged). THIS SUPERSEDES EVERY SECTION BELOW IT
+## CURRENT STATE, 2026-08-09 (F2 done). THIS SUPERSEDES EVERY SECTION BELOW IT
 
-`main` at `7aab07c`. SIXTEEN COMMITS ARE UNPUSHED and `origin/main` is still at `66127dd`. Tree is
-clean apart from an untracked `output/` directory that has sat there since 08-04 and is not in
-`.gitignore`. Suite 622, all passing locally.
+`main` at `c813f3a`, and `origin/main` is at `0698423` (the whole store-review sequence was pushed and
+its CI went green, all three jobs including `full`). ONE COMMIT IS UNPUSHED, `c813f3a`, the F2 fix.
+Tree is clean apart from an untracked `output/` directory that has sat there since 08-04 and is not in
+`.gitignore`. Suite 623, all passing locally.
 
-CI IS NOT EVIDENCE FOR ANY OF THIS WORK. The last run was green, and it ran at `66127dd`, which is
-what origin holds. None of the sixteen commits has been through CI. Push, then read the conclusion.
+F2 IS DONE (`c813f3a`). The leaf bound could evict the NEWEST DML height when a repeated root was
+pinned across older heights; the newest height is now excluded from eviction candidates by
+construction. Reproduced, tested, mutation-checked, and an independent different-family review returned
+APPROVE with nothing to fold. Not reachable under shipped defaults (the cap does not bind at the
+current list size), fixed anyway as a real inversion of the "present is never dropped" invariant.
+F3-F6 remain open (section 5). Next recommended: F4 (field-element validation at load) or F3.
 
 THE REGISTRATION-STORE REVIEW LOOP CONVERGED, and the store work is COMPLETE. `FileBackend`'s
 durability state machine was taken off the repair treadmill with a written contract
@@ -25,8 +30,8 @@ not alter the design does not trigger another external round. One more neutral s
 cheap belt-and-braces if wanted, but the loop is done. Read the contract before ever touching the
 store again, and do not reopen it without a new finding.
 
-WHAT IS LEFT IS NOT THE STORE. The five findings from the sixth review round (F2-F6, section 5) are
-still open and untouched. After pushing, start at F2 (the root window evicting the newest height).
+WHAT IS LEFT IS NOT THE STORE. F2 is folded (`c813f3a`). F3-F6 from the sixth review round (section 5)
+are still open and untouched.
 
 IMPORTANT REVIEW-TOOLING NOTE (kept because it will recur): the external reviewer's content filter
 STOPPED a round mid-run over the crypto-heavy gateway code. The framing that worked, used for rounds
