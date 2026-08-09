@@ -5,14 +5,22 @@ counts and supersedes everything below it. Historical sections are append-only a
 only marked superseded. Read this first when picking the project back up, then `TODO.md` for the full
 prioritized punch list.
 
-## CURRENT STATE, 2026-08-09 (later). THIS SUPERSEDES EVERY SECTION BELOW IT
+## CURRENT STATE, 2026-08-09 (later still). THIS SUPERSEDES EVERY SECTION BELOW IT
 
-`main` at `5478fa7`. ELEVEN COMMITS ARE UNPUSHED and `origin/main` is still at `66127dd`. Tree is
+`main` at `2c25c60`. THIRTEEN COMMITS ARE UNPUSHED and `origin/main` is still at `66127dd`. Tree is
 clean apart from an untracked `output/` directory that has sat there since 08-04 and is not in
-`.gitignore`. Suite 617, all passing locally.
+`.gitignore`. Suite 619, all passing locally.
 
 CI IS NOT EVIDENCE FOR ANY OF THIS WORK. The last run was green, and it ran at `66127dd`, which is
-what origin holds. None of the eleven commits has been through CI. Push, then read the conclusion.
+what origin holds. None of the thirteen commits has been through CI. Push, then read the conclusion.
+
+A FIFTH round (folded in `2c25c60`) found one blocker (a multi-level directory path not fully flushed)
+and one major (a leaf-index GAP that reorders a bucket after an append), both narrow base-revision-
+compatibility edges, plus a minor resolved by making the contract precise. It CONFIRMED the fourth
+round's blocker fixes, the flag lifecycle, the single-writer concurrency, and the torn-tail offset are
+all sound, which is the convergence signal. A SIXTH round on `2c25c60` was kicked off when this was
+written; treat it as needing a re-run unless folded. Use the neutral, store-scoped framing (section
+6b's tooling note) so the reviewer's content filter does not stop it.
 
 THE REGISTRATION STORE WAS TAKEN OFF THE REPAIR TREADMILL WITH A WRITTEN SPECIFICATION.
 `FileBackend`'s state machine had been repaired six times across three review passes, the rule-7
