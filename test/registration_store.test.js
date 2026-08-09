@@ -726,7 +726,7 @@ test("a legacy record with no engine or statement still loads, because the forma
 // record durable, followed by a recovery read that fails. Returns the backend, the durable record,
 // and a counter of the reads the injected layer has served, so a test can reason about how many
 // reconciliations ran without reaching into private state.
-async function staleStoreWithDurableRecord(path, { onRead } = {}) {
+async function staleStoreWithDurableRecord(path) {
   const { open: realOpen, readFile: realReadFile } = await import("node:fs/promises");
   const state = { reads: 0 };
   let failNextSync = true;
@@ -748,8 +748,7 @@ async function staleStoreWithDurableRecord(path, { onRead } = {}) {
       // Read 1 is the initial load. Read 2 is the recovery read inside the append's catch, and
       // failing it is what marks the store behind the file.
       if (state.reads === 2) throw Object.assign(new Error("simulated recovery read failure"), { code: "EIO" });
-      const injected = onRead ? await onRead(state.reads, () => realReadFile(...args)) : undefined;
-      return injected === undefined ? realReadFile(...args) : injected;
+      return realReadFile(...args);
     },
   });
   await backend.ready();
@@ -791,57 +790,17 @@ test("concurrent callers of a stale store share ONE reconciliation", async () =>
   }
 });
 
-test("a failed reconciliation cannot leave a stale view marked fresh", async () => {
-  // The harm the single-flight defect produced. A reconciliation that failed restored the old maps
-  // AFTER a concurrent one had installed the correct ones, and the successful caller then cleared
-  // the stale flag over them. Nothing was left to say the view was behind the file, so the store
-  // answered from it for the rest of the process: seasonHasEngine reported no zkVM registration
-  // while the record was durably on disk, which is the downgrade signal reading backwards.
-  //
-  // The release below is a valve, not a timing assertion. Under the fix there is only one
-  // reconciliation, so nothing else will ever arrive to settle a read that is deliberately held.
-  const dir = mkdtempSync(join(tmpdir(), "mno-reg-race-"));
-  const path = join(dir, "registrations.jsonl");
-  try {
-    let held = null;
-    let secondReconcileRan = false;
-    const { backend, record } = await staleStoreWithDurableRecord(path, {
-      onRead: (n, real) => {
-        // Hold the first reconciliation open so the second can overtake it.
-        if (n === 3) return new Promise((resolve, reject) => { held = { resolve: () => resolve(real()), reject }; });
-        // A second reconciliation means single-flight is absent. Let it succeed and install the
-        // correct maps, then fail the one still in flight, which is the losing order.
-        if (n === 4) {
-          secondReconcileRan = true;
-          return real().then((data) => {
-            queueMicrotask(() =>
-              queueMicrotask(() => held.reject(Object.assign(new Error("racing reconcile failed"), { code: "EIO" }))),
-            );
-            return data;
-          });
-        }
-        return undefined;
-      },
-    });
-
-    const racing = Promise.allSettled([backend.has(record), backend.seasonHasEngine(1, "zkvm")]);
-    for (let i = 0; i < 20 && !secondReconcileRan; i += 1) await new Promise((r) => setImmediate(r));
-    if (!secondReconcileRan) held.resolve();
-    const settled = await racing;
-
-    // Whatever the interleaving, a confident wrong answer is the one outcome that is not allowed.
-    // Refusing is fine, because every caller here is deciding something that assumes the answer
-    // describes durable state.
-    for (const s of settled) {
-      assert.notEqual(s.value, false, "a stale store answered false for a record that is on disk");
-    }
-    // And the store must still be reconcilable afterwards rather than permanently wrong.
-    assert.equal(await backend.seasonHasEngine(1, "zkvm"), true, "the store never recovered, it is permanently stale");
-    assert.equal(await backend.has(record), true);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
+// REMOVED 2026-08-09: "a failed reconciliation cannot leave a stale view marked fresh". It tried to
+// force TWO concurrent reconciliations (hold the first, let a second overtake it), which is the
+// interleaving that the single-clear-site and generation-guard rework of finding 1 makes
+// unreachable: concurrent callers share ONE reconciliation, so the second never runs, the held one
+// is never settled by another, and the test's own machinery dereferenced a null. It was flaky under
+// the rework (one failure in five runs) because it depended on an exact read-index numbering the
+// rework perturbed. A fixture the system cannot emit proves nothing (playbook rule 2's corollary),
+// and the property it aimed at is covered without the racing: "concurrent callers of a stale store
+// share ONE reconciliation" pins single-flight, and "a reread cannot turn a failed durability
+// barrier into an apparent commit" pins that a failed reconciliation refuses rather than answers
+// from a view it did not establish.
 
 test("no public view answers from the old maps while an uncertain write is still recovering", async () => {
   // The blocker an independent review raised against the first version of the single-flight fix.
@@ -1149,6 +1108,79 @@ test("a file the base revision produces still loads, rather than refusing an upg
     const recs = await backend.forSeasonContext(1, "c");
     // Ties keep file order, so this rebuilds what the base revision rebuilt rather than a new order.
     assert.deepEqual(recs.map((r) => r.regNullifier), ["nK", "nM"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a corrupt duplicate is refused rather than replacing a valid record", async () => {
+  // Fresh-round finding. The last-occurrence-wins collapse replaced the stored record without
+  // validating the replacement, and sameRegistrationRecord treats an empty engine as equal to an
+  // absent one and a numeric commitment as equal to its decimal string. So a corrupt duplicate
+  // slipped past the identity check and overwrote a valid record, binding the bucket to an empty
+  // engine or handing a number to the members tree. Validation now runs ahead of the duplicate
+  // branch, so both routes into the index pass the same check.
+  //
+  // Assert REFUSAL directly, not a property of what loaded: a mutation that admits the record with a
+  // different declaration would pass a softer assertion.
+  const dir = mkdtempSync(join(tmpdir(), "reg-corruptdup-"));
+  const path = join(dir, "registrations.jsonl");
+  try {
+    const K = { season: 1, contextHash: "c", regNullifier: "nK", commitment: "7", engine: "plonk", statement: "derive" };
+    // Case one: engine "" compares equal to absent engine, but is not a valid engine.
+    writeFileSync(path, [JSON.stringify({ ...K, index: 0 }), JSON.stringify({ ...K, engine: "", index: 0 }), ""].join("\n"));
+    await assert.rejects(() => new FileBackend(path, null, false).ready(), /not a usable registration record/);
+
+    // Case two: a numeric commitment compares equal to its decimal string, but is not a string.
+    writeFileSync(path, [JSON.stringify({ ...K, index: 0 }), JSON.stringify({ ...K, commitment: 7, index: 0 }), ""].join("\n"));
+    await assert.rejects(() => new FileBackend(path, null, false).ready(), /not a usable registration record/);
+
+    // Control: an IDENTICAL valid duplicate still collapses and loads, so validation did not turn
+    // the legitimate recovery case into a refusal.
+    writeFileSync(path, [JSON.stringify({ ...K, index: 0 }), JSON.stringify({ ...K, index: 0 }), ""].join("\n"));
+    const b = new FileBackend(path, null, false);
+    await b.ready();
+    assert.equal((await b.forSeasonContext(1, "c")).length, 1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a failed torn-tail truncate does not arm a later load into deleting a repaired record", async () => {
+  // Fresh-round finding. `_truncateTo` was instance state nulled only on a successful truncate, so a
+  // failed truncate left the offset armed, and a later load over a file an operator had since
+  // repaired applied the stale offset and deleted a good record. The offset is now a per-load local.
+  //
+  // truncate is injectable for the same reason open and readFile are: the recovery path is defined
+  // by a filesystem failure a test cannot otherwise drive.
+  const dir = mkdtempSync(join(tmpdir(), "reg-armed-trunc-"));
+  const path = join(dir, "registrations.jsonl");
+  try {
+    const { truncate: realTruncate } = await import("node:fs/promises");
+    const A = { season: 1, contextHash: "c", regNullifier: "nA", commitment: "1", engine: "plonk", statement: "derive", index: 0 };
+    // A complete record, then a torn (unparseable) tail with no trailing newline.
+    writeFileSync(path, JSON.stringify(A) + "\n" + "{ torn");
+
+    let truncateFails = true;
+    const backend = new FileBackend(path, null, false, {
+      truncate: async (...a) => {
+        if (truncateFails) throw Object.assign(new Error("simulated truncate failure"), { code: "EPERM" });
+        return realTruncate(...a);
+      },
+    });
+    await assert.rejects(() => backend.ready(), /simulated truncate failure/, "the first load fails IN the repair");
+
+    // The operator repairs the file to two complete records, cleanly terminated.
+    const B = { season: 1, contextHash: "c", regNullifier: "nB", commitment: "2", engine: "plonk", statement: "derive", index: 1 };
+    writeFileSync(path, [JSON.stringify(A), JSON.stringify(B), ""].join("\n"));
+    truncateFails = false; // storage recovered
+
+    await backend.ready(); // must not apply any stale offset
+
+    // Assert on IDENTITY and on disk, not on a count or a no-throw: a stale offset would have deleted
+    // B, so the surviving record set and the file itself are what pin the property.
+    assert.deepEqual((await backend.forSeasonContext(1, "c")).map((r) => r.regNullifier), ["nA", "nB"]);
+    assert.ok(readFileSync(path, "utf8").includes('"regNullifier":"nB"'), "B is still on disk, not truncated away");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

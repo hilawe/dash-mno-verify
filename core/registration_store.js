@@ -22,7 +22,7 @@
 // A FileBackend is a single writer, so insertion order is total and stable across restarts. A
 // multi-gateway Platform backend must impose its own deterministic total order (for example sorted
 // by regNullifier) so every gateway rebuilds the identical tree.
-import { open, readFile, mkdir, appendFile } from "node:fs/promises";
+import { open, readFile, mkdir, appendFile, truncate } from "node:fs/promises";
 import { dirname } from "node:path";
 
 // The statement a (season, contextHash) is registered under. The registration nullifier is derived
@@ -244,19 +244,46 @@ export class FileBackend {
   // Reconciliation must run a barrier before it believes what it reads while this is set.
   #unbarriered = false;
 
+  // Bumped every time the view is marked behind the file, and captured at the start of a
+  // reconciliation. It is what makes clearing the two flags ONE decision rather than two. Three
+  // review passes chased the same defect around this unit, that #stale and #unbarriered were set in
+  // one place and cleared in two others at different moments, so a write marking them WHILE a
+  // reconciliation loaded left one flag set and one clear. The reconciliation clears both only when
+  // this counter has not advanced since it captured it, which means no newer write slipped in that
+  // its barrier and its read did not cover. See docs/REGISTRATION_STORE_DURABILITY.md.
+  #markGeneration = 0;
+
+  // THE ONE WAY TO MARK THE VIEW BEHIND THE FILE. Both flags together and the generation advanced, in
+  // one synchronous step, so there is a single site to reason about and a concurrent reconciliation
+  // always sees the counter move.
+  #mark() {
+    this.#stale = true;
+    this.#unbarriered = true;
+    this.#markGeneration += 1;
+  }
+
   // `open` is injectable for ONE reason: the uncertain write, where the bytes reach the file and the
   // sync or close still reports an error, cannot be produced from outside this class. It is the exact
   // sequence F3 describes, so a test that cannot create it can only assert the fix by reading it. The
   // default is the real thing and no production path passes anything else, the same shape the
   // verifier's injectable proof check already uses.
-  constructor(path, schedule = null, assumeSchedule = false, { open: openFile = open, readFile: readFileImpl = readFile } = {}) {
+  constructor(
+    path,
+    schedule = null,
+    assumeSchedule = false,
+    { open: openFile = open, readFile: readFileImpl = readFile, truncate: truncateImpl = truncate } = {},
+  ) {
     this.path = path;
     this.schedule = schedule;
     this.assumeSchedule = assumeSchedule;
     // Injected alongside `open` for the same reason: the recovery paths here are defined by what
     // happens when the filesystem fails, and a test cannot drive that without standing in for it.
+    // `truncate` joins them because the torn-tail repair's failure is one of those paths, and a fresh
+    // round found a real defect in it (a failed truncate arming a later load) that no test could
+    // reach while truncate was a dynamic import nothing could stand in for.
     this._readFile = readFileImpl;
     this.openFile = openFile;
+    this._truncate = truncateImpl;
     this.seen = new Set();
     this.byBucket = new Map(); // "season:contextHash" -> records[] in insertion order
     this._loading = null; // memoized load, so concurrent first-callers share one read
@@ -323,6 +350,12 @@ export class FileBackend {
   // into refusing forever over a file that does not exist, so it clears the flag and reads on, where
   // #load() already handles absence as an empty record set.
   async #barrierThenLoad() {
+    // CAPTURED BEFORE ANY AWAIT. A write that marks the view during the barrier or the load advances
+    // the generation past this value, and the success continuation compares against it to decide
+    // whether clearing the flags is still safe. It does NOT clear #unbarriered here: clearing is one
+    // decision made in #reconcile, so a barrier succeeding is not by itself permission to trust the
+    // view, only permission for the read that follows to mean what it says.
+    const generation = this.#markGeneration;
     if (this.#unbarriered) {
       try {
         const fh = await this.openFile(this.path, "r+");
@@ -334,23 +367,33 @@ export class FileBackend {
       } catch (err) {
         if (err?.code !== "ENOENT") throw err;
       }
-      this.#unbarriered = false;
     }
     await this.#load();
+    return generation;
   }
 
   #reconcile() {
     if (!this.#reconciling) {
       const attempt = this.#barrierThenLoad().then(
-        () => {
-          this.#stale = false;
+        (generation) => {
+          // BOTH FLAGS, TOGETHER, AND ONLY IF NOTHING NEWER WAS MARKED. If the generation advanced
+          // while this attempt ran, a fresh uncertain write landed that this barrier and this read
+          // did not cover, so its durability is not something this attempt can vouch for. Leaving the
+          // flags set makes the next caller reconcile against it. This is the SINGLE place either
+          // flag is cleared, which is what ends the three-round chase where they were cleared in
+          // different places at different times.
+          if (this.#markGeneration === generation) {
+            this.#stale = false;
+            this.#unbarriered = false;
+          }
         },
         (err) => {
           // THE STORE IS KNOWN TO BE BEHIND THE FILE. `#load()` left the previous maps in place, so
           // it stays as usable as it was, and the flag is what stops that view being taken for
           // current: the uncertain record may already be in the file, so a later append deciding
           // against this view assigns an index the rebuilt tree will not agree with, and the live
-          // members order diverges from the order a restart produces.
+          // members order diverges from the order a restart produces. #unbarriered is untouched here,
+          // so if it was set it stays set and the next reconcile re-runs the barrier.
           this.#stale = true;
           throw err;
         },
@@ -378,6 +421,11 @@ export class FileBackend {
     const seen = new Set();
     const byBucket = new Map();
     let duplicatesCollapsed = 0;
+    // PER-LOAD, never instance state. A fresh round showed why: when this was `this._truncateTo`, a
+    // torn-tail repair whose truncate() FAILED left the offset set, and a later load over a file an
+    // operator had since repaired applied the stale offset and deleted a good record. The offset is
+    // computed and consumed within one #load(), so a failed truncate cannot reach across loads.
+    let truncateTo = null;
     let raw = "";
     try {
       raw = await this._readFile(this.path, "utf8");
@@ -439,7 +487,7 @@ export class FileBackend {
           // permanently. Truncating to the last complete newline is what makes the recovery durable.
           // Byte offset, not string length, because a multi-byte character anywhere earlier in the
           // file would otherwise put the cut in the wrong place.
-          this._truncateTo = Buffer.byteLength(lines.slice(0, i).join("\n"), "utf8") + (i > 0 ? 1 : 0);
+          truncateTo = Buffer.byteLength(lines.slice(0, i).join("\n"), "utf8") + (i > 0 ? 1 : 0);
           break;
         }
         throw new Error(
@@ -460,6 +508,28 @@ export class FileBackend {
         }
         continue;
       }
+      // THE RECORD'S SHAPE IS CHECKED BEFORE ANYTHING ELSE READS IT, and this runs ahead of the
+      // duplicate branch ON PURPOSE. Parsing as JSON says only that the bytes were syntactically
+      // valid, and a folder-access review pointed out what that lets in: syntactically valid
+      // corruption reaching the member cache, a bucket bound to an impossible engine and statement,
+      // or a tree materialization failing later instead of the file being refused at startup.
+      //
+      // AHEAD OF THE DUPLICATE BRANCH because that branch REPLACES the stored record with this one
+      // (last occurrence wins), and a fresh full round showed the replacement was never validated. A
+      // corrupt duplicate such as `engine: ""` compares EQUAL to an absent engine under
+      // sameRegistrationRecord, and a numeric commitment compares equal to its decimal string, so
+      // the corrupt copy slipped past the identity check and overwrote a valid record, binding the
+      // bucket to an empty engine or handing a number to the members tree. Validating here means both
+      // the fresh insert and the collapse replacement pass the same check, so nothing the loader
+      // cannot vouch for reaches the index by either route.
+      const bad = registrationRecordProblem(rec);
+      if (bad) {
+        throw new Error(
+          `${this.path} line ${i + 1} is not a usable registration record (${bad}). Refusing at load ` +
+            `rather than admitting it to the members tree, where it would surface later as something ` +
+            `else entirely.`,
+        );
+      }
       // A DUPLICATE KEY IN THE FILE, which the write path can produce when a sync or close reports an
       // error after the record's bytes landed: the caller sees failure, the in-memory index never
       // learned the record, and a retry appends it again. Taking both would put the same commitment
@@ -467,9 +537,9 @@ export class FileBackend {
       // is the harm. The write path below now rereads after an uncertain write so this should not
       // arise, and this stays as the safety net for a file written by an older build.
       //
-      // IDENTICAL RECORDS COLLAPSE, DIFFERING ONES REFUSE. Keeping the first occurrence is
-      // deterministic and reproduces the same tree on every load, which is the property that matters.
-      // Two records sharing a key but disagreeing on what they say is corruption this cannot resolve,
+      // IDENTICAL RECORDS COLLAPSE, DIFFERING ONES REFUSE. Both copies are already valid records by
+      // the check above, so the only question left is whether they are the same registration. Two
+      // records sharing a key but disagreeing on an identity field is corruption this cannot resolve,
       // and picking one would be inventing an answer.
       if (rec && seen.has(keyOf(rec))) {
         const bucket = byBucket.get(bucketOf(rec)) ?? [];
@@ -493,20 +563,6 @@ export class FileBackend {
         bucket[at] = rec;
         duplicatesCollapsed += 1;
         continue;
-      }
-      // THE RECORD'S SHAPE IS CHECKED BEFORE IT ENTERS THE INDEX. Parsing as JSON says only that the
-      // bytes were syntactically valid, and a folder-access review pointed out what that lets in:
-      // syntactically valid corruption reaching the member cache, a bucket bound to an impossible
-      // engine and statement, or a tree materialization failing later instead of the file being
-      // refused at startup. The whole point of loading is to rebuild a durable index, so a record it
-      // cannot vouch for should stop the boot, where an operator can act on it.
-      const bad = registrationRecordProblem(rec);
-      if (bad) {
-        throw new Error(
-          `${this.path} line ${i + 1} is not a usable registration record (${bad}). Refusing at load ` +
-            `rather than admitting it to the members tree, where it would surface later as something ` +
-            `else entirely.`,
-        );
       }
       this.#remember(rec, seen, byBucket);
     }
@@ -533,10 +589,12 @@ export class FileBackend {
     // Case (b) keeps the record rather than discarding it: it is complete and self-consistent, and
     // the only thing missing is a delimiter this process can supply. Terminating it is the repair.
     // ready() is awaited by every writer, so neither shape survives into the next write.
-    const { truncate, appendFile } = await import("node:fs/promises");
-    if (this._truncateTo != null) {
-      await truncate(this.path, this._truncateTo);
-      this._truncateTo = null;
+    const { appendFile } = await import("node:fs/promises");
+    if (truncateTo != null) {
+      // A FAILED TRUNCATE THROWS OUT OF #load() with the maps not yet installed, so the load is a
+      // no-op and #reconcile marks the store stale, which retries the whole load next time. The
+      // offset is a local, so nothing about this attempt survives into the retry.
+      await this._truncate(this.path, truncateTo);
     } else if (raw.length > 0 && !raw.endsWith("\n")) {
       console.error(
         `[registration-store] ${this.path} ended mid-line with a COMPLETE record. An append wrote the ` +
@@ -729,9 +787,9 @@ export class FileBackend {
         // fresh pass executed it: during the awaited close a reader began reconciling, and because
         // #unbarriered was still false the reconciliation SKIPPED the barrier, then installed
         // page-cache bytes and cleared #stale. Zero barriers had succeeded, the append rejected, and
-        // the store answered that the registration was present, permanently.
-        this.#stale = true;
-        this.#unbarriered = true;
+        // the store answered that the registration was present, permanently. #mark() sets both and
+        // advances the generation in one step.
+        this.#mark();
         throw err;
       } finally {
         await fh.close();
@@ -756,16 +814,15 @@ export class FileBackend {
       // by pointing `_loading` at the in-flight reload so `ready()` blocked on it, and dropping that
       // bookkeeping reopened it. Marking the view rather than parking the readiness promise says the
       // thing that is actually true and does not depend on which promise a caller happens to await.
-      this.#stale = true;
-      // AND THE FILE ITSELF IS NOT YET TRUSTWORTHY. Set in the same synchronous step, and cleared
-      // only by a barrier that actually succeeds. Without it a reader's reconciliation could reload
-      // from the page cache, install a record no barrier ever forced to disk, and clear #stale, so
-      // an ordinary read would have converted a failed write into an apparent commit. A re-check
-      // executed exactly that: zero successful barriers, and the store then reporting the
-      // registration as present. The harm is not hypothetical, because the retry is refused as
-      // `already-registered` by the cheap read in verifier.js while season.js never appended the
-      // commitment, so the member holds a spent nullifier and is absent from the live members tree.
-      this.#unbarriered = true;
+      //
+      // AND THE FILE ITSELF IS NOT YET TRUSTWORTHY. #mark() sets #unbarriered alongside #stale, in the
+      // same synchronous step, and it is cleared only by a reconciliation whose barrier succeeded.
+      // Without it a reader's reconciliation could reload from the page cache, install a record no
+      // barrier ever forced to disk, and clear the flags, converting a failed write into an apparent
+      // commit. A re-check executed exactly that. The harm is not hypothetical, because the retry is
+      // refused as `already-registered` by the cheap read in verifier.js while season.js never
+      // appended the commitment, so the member holds a spent nullifier and is absent from the tree.
+      this.#mark();
       // AN UNCERTAIN WRITE IS RESOLVED BY RETRYING THE DURABILITY BARRIER, not by looking to see
       // whether the bytes are visible.
       //
@@ -786,14 +843,16 @@ export class FileBackend {
         const fh = await this.openFile(this.path, "r+");
         try {
           await fh.sync();
-          // The barrier held, so whatever is in the file is on stable storage and a reread may be
-          // believed again. Cleared here rather than after the close, because the sync is what
-          // establishes durability and a close that fails afterwards does not undo it.
-          this.#unbarriered = false;
         } finally {
           await fh.close();
         }
-        // The barrier held. Now find the record, and REQUIRE IT TO BE OURS. Searching by key alone
+        // The barrier held. The flag is NOT cleared here: clearing is #reconcile's single decision,
+        // gated on the generation, so this path does not become a fourth place that clears a flag.
+        // The #reconcile() below re-runs the barrier (idempotent) and clears both together if no
+        // newer write has marked the view since. One extra sync on this rare recovery path is the
+        // price of having exactly one clearing site.
+        //
+        // Now find the record, and REQUIRE IT TO BE OURS. Searching by key alone
         // accepted a record another writer had put there under the same key, and reported that
         // writer's commitment as this caller's successful write while the live tree got this
         // caller's. The file backend is documented single-writer and nothing enforces it, so the
