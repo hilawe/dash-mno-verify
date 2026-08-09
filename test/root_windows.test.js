@@ -659,6 +659,30 @@ test("pinning cannot hold the window open without limit, so the bound wins when 
   assert.equal(w.isRecent("r3"), true, "and the newest is always kept");
 });
 
+test("a REPEATED pinned root does not evict the newest height (F2)", () => {
+  // F2 FROM THE SIXTH-ROUND REVIEW. A DML root repeats across heights while the list is unchanged, so
+  // one challenge against it pins EVERY historical copy, and then the only unpinned height is the one
+  // just adopted. The old eviction chose the first unpinned height and so deleted the NEWEST, leaving
+  // the gateway serving history and locking out a newly joined masternode, the opposite of the rule
+  // that the present is never dropped. The newest height is now never an eviction target, so the
+  // oldest pinned height yields to the bound instead.
+  const pinned = new Set();
+  const w = new RootWindows(8, { maxLeaves: 250, pinnedRoots: () => pinned });
+  // The list did not change between heights 1 and 2, so both carry the SAME root.
+  w.adopt(rec({ height: 1, root: "same", ts: 1, n: 100, tag: "a" }));
+  w.adopt(rec({ height: 2, root: "same", ts: 2, n: 100, tag: "b" }));
+  // One challenge names that root, which pins both historical copies at once.
+  pinned.add("same");
+  // The oracle publishes a new block with a changed list, pushing the window over the bound.
+  w.adopt(rec({ height: 3, root: "new", ts: 3, n: 100, tag: "c" }));
+
+  assert.equal(w.maxHeight(), 3, "the newest height survived");
+  assert.equal(w.current().root, "new", "and the gateway publishes the new root, not history");
+  assert.equal(w.isRecent("new"), true, "the newly adopted root is accepted, so a new member is not locked out");
+  assert.deepEqual(w.snaps.map((s) => s.height), [2, 3], "the oldest pinned height made room, the newest was kept");
+  assert.ok(w.retainedLeaves() <= 250, "and the bound still holds");
+});
+
 test("a window given no pin source behaves exactly as it did before pinning existed", () => {
   const w = new RootWindows(8, { maxLeaves: 250 });
   for (let h = 1; h <= 3; h++) w.adopt(rec({ height: h, root: `r${h}`, ts: h, order: null, n: 100, tag: `h${h}` }));

@@ -271,18 +271,31 @@ export class RootWindows {
     // a re-adoption replaces a small snapshot with a large one at the same key) can put the window
     // several heights over at once.
     while (this.retainedLeaves() > this.maxLeaves) {
-      const heights = [...new Set(this.snaps.map((s) => s.height))];
+      const heights = [...new Set(this.snaps.map((s) => s.height))]; // ascending
       if (heights.length <= 1) break;
+      // THE NEWEST HEIGHT IS NEVER AN EVICTION TARGET, which the candidate set enforces by
+      // construction rather than by hoping the ordering below avoids it. A review found the F2 defect
+      // here: a DML root repeats across heights while the list is unchanged, so one challenge pins
+      // every historical copy, and then the ONLY unpinned height is the one just adopted. The old
+      // `heights.find((h) => !pinned.has(h))` returned that newest height and evicted it, leaving the
+      // gateway serving history and locking out a newly joined masternode, the exact opposite of the
+      // stated "THE LAST HEIGHT IS NEVER DROPPED" rule above. Excluding it here makes the two rules,
+      // "protect the present" and "prefer unpinned", stop contradicting each other.
+      const newest = heights[heights.length - 1];
+      const candidates = heights.filter((h) => h !== newest);
+      if (candidates.length === 0) break; // only the present remains; the bound yields to it
       const pinned = this.#pinnedHeights();
       // UNPINNED FIRST, oldest of those. A challenge names a root and the member is off building a
       // proof against it, so dropping that height turns a correct proof into stale-or-unknown-root
-      // for a reason the member cannot see or avoid.
-      const target = heights.find((h) => !pinned.has(h)) ?? heights[0];
-      // THE BOUND STILL WINS WHEN EVERYTHING IS PINNED, and that is deliberate. Honouring every pin
-      // unconditionally would let pending challenges hold the window open without limit, which turns
-      // a memory bound into a request-driven one. So the fallback drops the oldest height even when
-      // pinned, and those challenges fail exactly as they did before pinning existed. Pinning makes
-      // the common case correct rather than making the bound negotiable.
+      // for a reason the member cannot see or avoid. `candidates` is ascending, so find() is the
+      // oldest unpinned and the fallback is the oldest.
+      //
+      // THE BOUND STILL WINS WHEN EVERYTHING (BUT THE NEWEST) IS PINNED, and that is deliberate.
+      // Honouring every pin unconditionally would let pending challenges hold the window open without
+      // limit, which turns a memory bound into a request-driven one. So the fallback drops the oldest
+      // remaining height even when pinned, and those challenges fail exactly as they did before
+      // pinning existed. Pinning makes the common case correct rather than making the bound negotiable.
+      const target = candidates.find((h) => !pinned.has(h)) ?? candidates[0];
       this.snaps = this.snaps.filter((s) => s.height !== target);
     }
   }
