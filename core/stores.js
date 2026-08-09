@@ -187,8 +187,18 @@ export class RootWindows {
       if (Number(snapshot.height) !== Number(height)) {
         throw new Error(`RootWindows: the record is at height ${height} while its snapshot says ${snapshot.height}`);
       }
-      if (shaRoot != null && snapshot.shaRoot != null && String(snapshot.shaRoot) !== String(shaRoot)) {
-        throw new Error(`RootWindows: the record's shaRoot ${shaRoot} is not the snapshot's ${snapshot.shaRoot}`);
+      // THE TWO SHA-256 ROOTS MUST MATCH, PRESENT OR ABSENT TOGETHER. A review found F3: the old guard
+      // compared shaRoot only when BOTH the record and its snapshot were non-null, so an asymmetric
+      // record passed, a null shaRoot beside a snapshot that carries one, or the reverse. That
+      // recreates the very split this block closes: the SHA-256 view would accept a root the served
+      // snapshot does not carry, or the snapshot would serve leaves for a root the SHA-256 view does
+      // not know. Normalizing absent to null and comparing unconditionally catches the asymmetry, the
+      // same stance the root check above takes (a record and its snapshot are one thing).
+      if (String(shaRoot ?? null) !== String(snapshot.shaRoot ?? null)) {
+        throw new Error(
+          `RootWindows: the record's shaRoot ${shaRoot} is not the snapshot's ${snapshot.shaRoot}. One ` +
+            `record holds one snapshot, so their SHA-256 roots must match, present or absent together.`,
+        );
       }
     }
     // Executable invariant, not a comment. An unknown ordering means the key space is no longer

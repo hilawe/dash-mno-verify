@@ -710,6 +710,18 @@ test("a record whose snapshot is not its own is refused, which the store only ev
     () => w.adopt({ height: 5, root: "r", shaRoot: "aa", ts: 5, order: null, snapshot: withLeaves(3, "x", { height: 5, root: "r", shaRoot: "bb" }) }),
     /shaRoot aa is not the snapshot's bb/,
   );
+  // F3: the two SHA-256 roots must match PRESENT OR ABSENT together. The old guard compared them only
+  // when BOTH were non-null, so an asymmetric record passed, recreating the split. A null record
+  // shaRoot beside a snapshot that carries one:
+  assert.throws(
+    () => w.adopt({ height: 5, root: "r", shaRoot: null, ts: 5, order: null, snapshot: withLeaves(3, "x", { height: 5, root: "r", shaRoot: "aa" }) }),
+    /is not the snapshot's aa/,
+  );
+  // and the reverse, a record that carries a shaRoot beside a snapshot that does not:
+  assert.throws(
+    () => w.adopt({ height: 5, root: "r", shaRoot: "aa", ts: 5, order: null, snapshot: withLeaves(3, "x", { height: 5, root: "r", shaRoot: null }) }),
+    /shaRoot aa is not the snapshot's/,
+  );
   assert.equal(w.snaps.length, 0, "and nothing was stored on the way to refusing");
 
   // The exit ordinary operation takes: a record built from one snapshot is accepted.
