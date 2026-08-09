@@ -5,42 +5,40 @@ counts and supersedes everything below it. Historical sections are append-only a
 only marked superseded. Read this first when picking the project back up, then `TODO.md` for the full
 prioritized punch list.
 
-## CURRENT STATE, 2026-08-09 (later still). THIS SUPERSEDES EVERY SECTION BELOW IT
+## CURRENT STATE, 2026-08-09 (converged). THIS SUPERSEDES EVERY SECTION BELOW IT
 
-`main` at `2c25c60`. THIRTEEN COMMITS ARE UNPUSHED and `origin/main` is still at `66127dd`. Tree is
+`main` at `7aab07c`. SIXTEEN COMMITS ARE UNPUSHED and `origin/main` is still at `66127dd`. Tree is
 clean apart from an untracked `output/` directory that has sat there since 08-04 and is not in
-`.gitignore`. Suite 619, all passing locally.
+`.gitignore`. Suite 622, all passing locally.
 
 CI IS NOT EVIDENCE FOR ANY OF THIS WORK. The last run was green, and it ran at `66127dd`, which is
-what origin holds. None of the thirteen commits has been through CI. Push, then read the conclusion.
+what origin holds. None of the sixteen commits has been through CI. Push, then read the conclusion.
 
-A FIFTH round (folded in `2c25c60`) found one blocker (a multi-level directory path not fully flushed)
-and one major (a leaf-index GAP that reorders a bucket after an append), both narrow base-revision-
-compatibility edges, plus a minor resolved by making the contract precise. It CONFIRMED the fourth
-round's blocker fixes, the flag lifecycle, the single-writer concurrency, and the torn-tail offset are
-all sound, which is the convergence signal. A SIXTH round on `2c25c60` was kicked off when this was
-written; treat it as needing a re-run unless folded. Use the neutral, store-scoped framing (section
-6b's tooling note) so the reviewer's content filter does not stop it.
+THE REGISTRATION-STORE REVIEW LOOP CONVERGED, and the store work is COMPLETE. `FileBackend`'s
+durability state machine was taken off the repair treadmill with a written contract
+(`docs/REGISTRATION_STORE_DURABILITY.md`, rule-7) and then run through SEVEN fresh full rounds against
+it. Rounds three through six found blockers or majors and were folded (`450d25f`, `5478fa7`, `2c25c60`,
+`0d55cf6`). The SEVENTH round returned APPROVE-WITH-FIXES with NO blockers and NO majors, only a
+one-operator precision fix (the leaf-index bound was `>= length`; the exact condition is `> length`)
+and test strengthening, folded in `7aab07c`. That is the stopping point: a one-operator fix that does
+not alter the design does not trigger another external round. One more neutral store-scoped round is
+cheap belt-and-braces if wanted, but the loop is done. Read the contract before ever touching the
+store again, and do not reopen it without a new finding.
 
-THE REGISTRATION STORE WAS TAKEN OFF THE REPAIR TREADMILL WITH A WRITTEN SPECIFICATION.
-`FileBackend`'s state machine had been repaired six times across three review passes, the rule-7
-trigger. `450d25f` wrote the contract at `docs/REGISTRATION_STORE_DURABILITY.md` and landed three
-findings as divergences. A FOURTH round (section 6b) then found two durability BLOCKERS and a false
-downgrade signal, all PRE-EXISTING, folded in `5478fa7`, and it removed the generation guard the third
-round's fix had added, having proved it unreachable. Read the contract before touching the store.
+WHAT IS LEFT IS NOT THE STORE. The five findings from the sixth review round (F2-F6, section 5) are
+still open and untouched. After pushing, start at F2 (the root window evicting the newest height).
 
-A FIFTH FRESH FULL ROUND on `5478fa7` was kicked off when this was written. Treat it as needing a
-re-run unless its findings are folded. IMPORTANT REVIEW-TOOLING NOTE: the external reviewer's content
-filter STOPPED the fourth round mid-run over the crypto-heavy gateway code. The re-run that worked was
-scoped to the store, its tests, and the spec, and framed as plain crash-durability with no
+IMPORTANT REVIEW-TOOLING NOTE (kept because it will recur): the external reviewer's content filter
+STOPPED a round mid-run over the crypto-heavy gateway code. The framing that worked, used for rounds
+five through seven, was scoped to the store, its tests, and the spec, and written as plain crash-
+durability with no
 security-review language. Use that neutral, tightly-scoped framing for store reviews.
 
 ### 1. WHERE TO START
 
-If the fifth round returned findings, fold them, then run ANOTHER fresh full round, because on this
-unit every round so far has found its defect inside the previous round's fix. The loop ends only when
-a fresh full round returns APPROVE with nothing to fold. Then push (section 8). Sections 6a and 6b are
-the record of rounds three and four.
+Push the sixteen commits (section 8), confirm CI goes green, then take F2 (the root window evicting the
+newest height, section 5). The store work is complete and converged; do not reopen it without a new
+finding. Sections 6a and 6b are the record of the earlier store rounds.
 
 ### 2. THE SIXTH REVIEW ROUND, AND WHY F1 TOOK FIVE COMMITS
 
