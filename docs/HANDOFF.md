@@ -23,8 +23,18 @@ the verifier applies on the write path, so a non-canonical value is refused at b
 throwing later at tree materialization. The user chose to validate all three fields. This REVERSED the
 store-review narrowing that had said the store checks only structure; the spec is re-widened. Required
 a consistent fixture rename to canonical decimals across three test files. Reviewed APPROVE-WITH-FIXES,
-both minors (append-path symmetry, test breadth) folded. F3, F5, F6 remain open (section 5). Next
-recommended: F3 (the shaRoot asymmetry).
+both minors (append-path symmetry, test breadth) folded.
+
+F3 IS DONE (`61688d3`, UNPUSHED). The RootWindows snapshot guard compared a record's SHA-256 root to
+its snapshot's only when BOTH were non-null, so an asymmetric record (one carries a shaRoot, the other
+does not) passed, recreating the split the guard closes. It now null-normalizes both sides and compares
+unconditionally. Latent (the gateway passes matching values), fixed as a real invariant hole. Reviewed
+APPROVE, nothing to fold. F5 and F6 remain open (section 5). Next recommended: F5 (the IPv6 parser
+collision) or F6 (the X11 reference-image cache key), both low.
+
+A FLAKY test is being fixed in a separate session: `a second process is refused while the first holds
+the ledger` (`test/adapter_grant_expiry.test.js`), a Discord adapter SQLite lock race that reddened
+CI's `full` job on the F4 push and cleared on a plain re-run. It is unrelated to the findings work.
 
 THE REGISTRATION-STORE REVIEW LOOP CONVERGED, and the store work is COMPLETE. `FileBackend`'s
 durability state machine was taken off the repair treadmill with a written contract
@@ -37,8 +47,8 @@ not alter the design does not trigger another external round. One more neutral s
 cheap belt-and-braces if wanted, but the loop is done. Read the contract before ever touching the
 store again, and do not reopen it without a new finding.
 
-WHAT IS LEFT IS NOT THE STORE. F2 and F4 are folded (`c813f3a`, `5bd0f47`). F3, F5, F6 from the sixth
-review round (section 5) are still open and untouched.
+WHAT IS LEFT IS NOT THE STORE. F2, F4, and F3 are folded (`c813f3a`, `5bd0f47`, `61688d3`). F5 and F6
+from the sixth review round (section 5) are still open and untouched.
 
 IMPORTANT REVIEW-TOOLING NOTE (kept because it will recur): the external reviewer's content filter
 STOPPED a round mid-run over the crypto-heavy gateway code. The framing that worked, used for rounds
