@@ -22,7 +22,7 @@
 // A FileBackend is a single writer, so insertion order is total and stable across restarts. A
 // multi-gateway Platform backend must impose its own deterministic total order (for example sorted
 // by regNullifier) so every gateway rebuilds the identical tree.
-import { open, readFile, mkdir, appendFile, truncate } from "node:fs/promises";
+import { open, readFile, mkdir, truncate } from "node:fs/promises";
 import { dirname } from "node:path";
 
 // The statement a (season, contextHash) is registered under. The registration nullifier is derived
@@ -122,6 +122,15 @@ function declarationOfRecord(record) {
 function registrationRecordProblem(rec) {
   if (rec === null || typeof rec !== "object" || Array.isArray(rec)) return "not an object";
   if (!Number.isInteger(rec.season) || rec.season < 0) return `season ${JSON.stringify(rec.season)} is not a non-negative integer`;
+  // A NON-EMPTY STRING, which is the STRUCTURAL check the store owns. All three are BN254 field
+  // elements, but their CANONICAL validity is the verifier's responsibility on the write path, where
+  // isCanonicalField rejects a non-canonical signal before any record is written (core/verifier.js).
+  // The store does not re-run that cryptographic check on load: it is not the store's contract (see
+  // docs/REGISTRATION_STORE_DURABILITY.md), and requiring a string here already rejects the corruption
+  // the store must catch, a number or an array that would otherwise reach the members tree or compare
+  // equal to a valid string under sameRegistrationRecord. A hand-corrupted non-canonical STRING is an
+  // operational edge case that surfaces at tree materialization with a clear error rather than a
+  // silent wrong root, which is an acceptable boundary for a file only an operator can corrupt.
   for (const f of ["contextHash", "regNullifier", "commitment"]) {
     if (typeof rec[f] !== "string" || rec[f].length === 0) return `${f} is not a non-empty string`;
   }
@@ -244,22 +253,19 @@ export class FileBackend {
   // Reconciliation must run a barrier before it believes what it reads while this is set.
   #unbarriered = false;
 
-  // Bumped every time the view is marked behind the file, and captured at the start of a
-  // reconciliation. It is what makes clearing the two flags ONE decision rather than two. Three
-  // review passes chased the same defect around this unit, that #stale and #unbarriered were set in
-  // one place and cleared in two others at different moments, so a write marking them WHILE a
-  // reconciliation loaded left one flag set and one clear. The reconciliation clears both only when
-  // this counter has not advanced since it captured it, which means no newer write slipped in that
-  // its barrier and its read did not cover. See docs/REGISTRATION_STORE_DURABILITY.md.
-  #markGeneration = 0;
+  // Set once, after this process has forced the file's DIRECTORY ENTRY to stable storage. fsync of
+  // the file does not make its directory entry durable, so a crash after an append returned success
+  // could otherwise leave the next process seeing no file at all. Ensured once per process in
+  // #load(), before any append can run, and only set on success so a failed flush is retried.
+  #dirEnsured = false;
 
-  // THE ONE WAY TO MARK THE VIEW BEHIND THE FILE. Both flags together and the generation advanced, in
-  // one synchronous step, so there is a single site to reason about and a concurrent reconciliation
-  // always sees the counter move.
+  // THE ONE WAY TO MARK THE VIEW BEHIND THE FILE. Both flags together, in one synchronous step, so
+  // there is a single site to reason about. Clearing is likewise the single continuation of
+  // #reconcile, which is what closes the three-round chase where the two flags were set in one place
+  // and cleared in others at different moments. See docs/REGISTRATION_STORE_DURABILITY.md.
   #mark() {
     this.#stale = true;
     this.#unbarriered = true;
-    this.#markGeneration += 1;
   }
 
   // `open` is injectable for ONE reason: the uncertain write, where the bytes reach the file and the
@@ -350,12 +356,20 @@ export class FileBackend {
   // into refusing forever over a file that does not exist, so it clears the flag and reads on, where
   // #load() already handles absence as an empty record set.
   async #barrierThenLoad() {
-    // CAPTURED BEFORE ANY AWAIT. A write that marks the view during the barrier or the load advances
-    // the generation past this value, and the success continuation compares against it to decide
-    // whether clearing the flags is still safe. It does NOT clear #unbarriered here: clearing is one
-    // decision made in #reconcile, so a barrier succeeding is not by itself permission to trust the
-    // view, only permission for the read that follows to mean what it says.
-    const generation = this.#markGeneration;
+    // It does NOT clear #unbarriered here: clearing is one decision made in #reconcile, so a barrier
+    // succeeding is not by itself permission to trust the view, only permission for the read that
+    // follows to mean what it says.
+    //
+    // NO GENERATION GUARD. An earlier version captured a counter here and had #reconcile decline to
+    // clear the flags if a write had marked the view during the load, defending against a newer
+    // append landing mid-reload. A different-family round showed that state is UNREACHABLE in this
+    // single-writer store: `_tail` serializes appends, and a queued append must pass #ready() and
+    // join the in-flight reconciliation before it can write, so no genuinely newer append marks
+    // during a reload. Removing the guard changed no reachable query result, and keeping untested,
+    // unreachable defence with a comment claiming it fixed a live bug was the kind of
+    // addition-beyond-the-repair this unit has been bitten by before. The single clear site relies on
+    // that serialization; if appends ever stop being serialized on one writer (a multi-gateway
+    // Platform backend), a generation guard returns with a test that reaches it. Recorded in the spec.
     if (this.#unbarriered) {
       try {
         const fh = await this.openFile(this.path, "r+");
@@ -369,23 +383,18 @@ export class FileBackend {
       }
     }
     await this.#load();
-    return generation;
   }
 
   #reconcile() {
     if (!this.#reconciling) {
       const attempt = this.#barrierThenLoad().then(
-        (generation) => {
-          // BOTH FLAGS, TOGETHER, AND ONLY IF NOTHING NEWER WAS MARKED. If the generation advanced
-          // while this attempt ran, a fresh uncertain write landed that this barrier and this read
-          // did not cover, so its durability is not something this attempt can vouch for. Leaving the
-          // flags set makes the next caller reconcile against it. This is the SINGLE place either
-          // flag is cleared, which is what ends the three-round chase where they were cleared in
-          // different places at different times.
-          if (this.#markGeneration === generation) {
-            this.#stale = false;
-            this.#unbarriered = false;
-          }
+        () => {
+          // BOTH FLAGS, TOGETHER, in the SINGLE place either flag is cleared. That is the finding-1
+          // fix: the flags used to be cleared in different places at different moments, so a write
+          // marking them between two clears left one set and one clear. One clear site, reached only
+          // when the barrier and the load both succeeded, removes that split.
+          this.#stale = false;
+          this.#unbarriered = false;
         },
         (err) => {
           // THE STORE IS KNOWN TO BE BEHIND THE FILE. `#load()` left the previous maps in place, so
@@ -564,6 +573,24 @@ export class FileBackend {
         duplicatesCollapsed += 1;
         continue;
       }
+      // ONE DECLARATION PER BUCKET, enforced at load the same way the append path enforces it at
+      // write. A fresh round found that the loader validated each record's engine/statement pair on
+      // its own but never checked that a bucket's records AGREE, so a file mixing a PLONK record and
+      // a zkVM record in one (season, contextHash) loaded, and every query reads only the bucket's
+      // first record: declarationFor returned PLONK and seasonHasEngine("zkvm") returned false while
+      // the file durably held a zkVM registration, which is the downgrade signal reading backwards.
+      // The append path already refuses a second registration whose declaration differs from the
+      // bucket's first, so a file this incoherent was written by an older build or edited by hand,
+      // and refusing at load puts it where an operator can act rather than letting a query lie.
+      const existing = byBucket.get(bucketOf(rec));
+      if (existing && existing.length > 0 && !sameDeclaration(declarationOfRecord(existing[0]), declarationOfRecord(rec))) {
+        throw new Error(
+          `${this.path} line ${i + 1} declares engine/statement ` +
+            `${JSON.stringify(declarationOfRecord(rec))} in a (season, contextHash) bucket already ` +
+            `declared ${JSON.stringify(declarationOfRecord(existing[0]))}. One bucket holds one ` +
+            `declaration, so a query reading the first record would misreport the rest. Repair the file.`,
+        );
+      }
       this.#remember(rec, seen, byBucket);
     }
     if (duplicatesCollapsed > 0) {
@@ -589,7 +616,6 @@ export class FileBackend {
     // Case (b) keeps the record rather than discarding it: it is complete and self-consistent, and
     // the only thing missing is a delimiter this process can supply. Terminating it is the repair.
     // ready() is awaited by every writer, so neither shape survives into the next write.
-    const { appendFile } = await import("node:fs/promises");
     if (truncateTo != null) {
       // A FAILED TRUNCATE THROWS OUT OF #load() with the maps not yet installed, so the load is a
       // no-op and #reconcile marks the store stale, which retries the whole load next time. The
@@ -602,7 +628,22 @@ export class FileBackend {
           `terminated. Without this the next append would concatenate onto it and the boot after ` +
           `that would refuse.`,
       );
-      await appendFile(this.path, "\n");
+      // BARRIER THE RECORD BEFORE IT IS TRUSTED. Its bytes were written by a process that died before
+      // its own newline, so they can sit in the page cache with no successful fsync behind them, and
+      // this load is about to treat the record as committed: it is already in the maps about to be
+      // installed, and has() will answer true. A fresh round found the missing barrier here, the same
+      // visibility-is-not-durability defect this file argues against on the write path, arriving on
+      // the repair path. So force the existing bytes to disk, add the delimiter, and force again. If
+      // either barrier fails, #load throws before installing the maps, so the record is not trusted
+      // and the next reconcile retries.
+      const fh = await this.openFile(this.path, "a");
+      try {
+        await fh.sync(); // the record's own bytes, written by the interrupted process
+        await fh.appendFile("\n");
+        await fh.sync(); // the delimiter this process supplied
+      } finally {
+        await fh.close();
+      }
       this.tornTailTerminated = true;
     }
     // A store that predates the header cannot be checked retroactively: stamping it ASSERTS that its
@@ -631,12 +672,26 @@ export class FileBackend {
       } finally {
         await fh.close();
       }
-      const dirHandle = await open(dirname(this.path), "r");
+    }
+    // THE DIRECTORY ENTRY, flushed once per process, SEPARATELY from the header write above so a
+    // retry re-runs it. fsync of the FILE forces its data blocks, not its directory entry, so a crash
+    // after an append returned success could leave the next process seeing no file at all and losing
+    // an acknowledged registration. A different-family round found the second half of this: when the
+    // header write's own directory flush FAILED, ready() rejected and the retry saw the header, so it
+    // skipped the whole creation block and never flushed the directory again. Gating on #dirEnsured,
+    // set only on success, and standing OUTSIDE the !seenHeader block is what makes the retry redo it.
+    // The gateway always configures a schedule (core/gateway.js), so this runs on every real
+    // deployment; a null-schedule store (tests, MemoryBackend's peers) does not create a file in
+    // #load and has no durable-directory contract to keep, which is also why this does not disturb the
+    // filesystem sequence the recovery tests drive.
+    if (this.schedule != null && !this.#dirEnsured) {
+      const dirHandle = await this.openFile(dirname(this.path), "r");
       try {
         await dirHandle.sync();
       } finally {
         await dirHandle.close();
       }
+      this.#dirEnsured = true;
     }
     // ORDERED BY THE INDEX EACH RECORD CARRIES, not by where it happens to sit in the file. For a
     // file with no duplicates these are the same thing, since appends assign 0, 1, 2 in the order
@@ -787,8 +842,8 @@ export class FileBackend {
         // fresh pass executed it: during the awaited close a reader began reconciling, and because
         // #unbarriered was still false the reconciliation SKIPPED the barrier, then installed
         // page-cache bytes and cleared #stale. Zero barriers had succeeded, the append rejected, and
-        // the store answered that the registration was present, permanently. #mark() sets both and
-        // advances the generation in one step.
+        // the store answered that the registration was present, permanently. #mark() sets both flags
+        // in one step.
         this.#mark();
         throw err;
       } finally {
@@ -847,10 +902,9 @@ export class FileBackend {
           await fh.close();
         }
         // The barrier held. The flag is NOT cleared here: clearing is #reconcile's single decision,
-        // gated on the generation, so this path does not become a fourth place that clears a flag.
-        // The #reconcile() below re-runs the barrier (idempotent) and clears both together if no
-        // newer write has marked the view since. One extra sync on this rare recovery path is the
-        // price of having exactly one clearing site.
+        // so this path does not become another place that clears a flag. The #reconcile() below
+        // re-runs the barrier (idempotent) and clears both together on success. One extra sync on
+        // this rare recovery path is the price of having exactly one clearing site.
         //
         // Now find the record, and REQUIRE IT TO BE OURS. Searching by key alone
         // accepted a record another writer had put there under the same key, and reported that

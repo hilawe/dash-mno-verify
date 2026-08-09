@@ -31,8 +31,8 @@ means forced to stable storage by a barrier that returned success, not merely vi
   that define this unit. Production passes nothing and gets the real thing.
 - The record `d` passed to `append()`. Owed by the caller (`RegistrationStore`), already normalized
   to `{season:Number, contextHash, regNullifier, commitment, engine, statement}` strings.
-- The private reconciliation state: `#stale`, `#unbarriered`, the `#reconciling` memo, and the mark
-  generation counter. Owed entirely by this unit and never touched from outside.
+- The private reconciliation state: `#stale`, `#unbarriered`, the `#reconciling` memo, and the
+  `#dirEnsured` flag. Owed entirely by this unit and never touched from outside.
 
 ## Behaviour for every way each input can be absent, malformed, or incoherent
 
@@ -44,16 +44,32 @@ File-shaped inputs, resolved by `#load()`:
 - File absent (`ENOENT`): an empty record set, not an error.
 - Torn final line that fails to parse, no trailing newline: discarded and the file truncated to the
   last record boundary. Interruption matrix row 4.
-- A complete final record with no trailing newline: kept, and the newline appended, so the next
-  append does not concatenate onto it. Interruption matrix rows 4 and 5.
 - A malformed line anywhere but the end: refuse the load. Silently skipping it would drop a member
   who WAS promised a registration.
 - A schedule header naming a different schedule: refuse.
-- A syntactically valid record whose fields are not usable (a `commitment` that is not a field
-  element, a negative index, an impossible engine/statement pair): refuse at load, by
-  `registrationRecordProblem`, so the failure lands at boot where an operator can act rather than
-  later at tree materialization. DIVERGENCE (finding 4): the last-occurrence-wins collapse replaced a
-  stored record WITHOUT re-validating the replacement, so a corrupt duplicate bypassed the check.
+- A record whose fields are STRUCTURALLY wrong (a non-string or empty `contextHash`, `regNullifier`,
+  or `commitment`, a negative index, an impossible engine/statement pair): refuse at load, by
+  `registrationRecordProblem`, so the failure lands at boot where an operator can act. DIVERGENCE
+  (finding 4): the last-occurrence-wins collapse replaced a stored record WITHOUT re-validating the
+  replacement, so a corrupt duplicate bypassed the check; validation now runs ahead of the duplicate
+  branch. NOT the store's job: the CANONICAL field-element validity of those three strings. They are
+  BN254 field elements, but the verifier canonical-checks them on the write path before any record is
+  written, so the store checks structure (a non-empty string, which already rejects a number or array)
+  and leaves cryptographic canonicality to the verifier. A hand-corrupted non-canonical string
+  surfaces at tree materialization with a clear error, an accepted boundary for a file only an
+  operator can corrupt.
+- Records in one (season, contextHash) bucket that disagree on their engine/statement DECLARATION:
+  refuse at load. Each record's declaration is individually valid, but a query reads only the bucket's
+  first record, so a bucket mixing a PLONK and a zkVM registration would make `seasonHasEngine` report
+  the wrong downgrade signal. The append path already refuses a second registration whose declaration
+  differs from the bucket's first; the loader now enforces the same coherence, so a file that violates
+  it (an older build, or hand-editing) is refused where an operator can act rather than answered
+  wrongly.
+- The last complete record with no trailing newline: kept AND barriered before it is trusted. Its
+  bytes were written by a process that died before its own newline, so no successful fsync need sit
+  behind them, and the load is about to treat the record as committed. The repair forces the existing
+  bytes to disk, adds the delimiter, and forces again; if either barrier fails the load throws before
+  installing the maps, so the record is not trusted and the next reconcile retries.
 - A duplicate key whose record is identical to the one already loaded: collapse to one, keeping the
   LAST occurrence, because it carries the index the writer finally assigned.
 - A duplicate key whose record differs on an identity field: refuse. Two records for one key cannot
@@ -72,13 +88,19 @@ The durability and reconciliation state:
 - A reconciliation that reads bytes no barrier forced to disk: refused, because `#barrierThenLoad`
   runs a barrier before the read whenever `#unbarriered` is set. A reread cannot turn visibility into
   durability.
-- A newer uncertain write that marks the flags WHILE a reconciliation is loading: the reconciliation
-  must not clear the flags, because its barrier and its read both predate that write. DIVERGENCE
-  (finding 1): `#barrierThenLoad` cleared `#unbarriered` and `#reconcile` cleared `#stale` at
-  DIFFERENT moments, so a write landing between them left `#unbarriered` set and `#stale` clear, a
-  state a briefly-added assertion then made permanent. The fix is a generation counter bumped by
-  every mark and captured at the start of a reconciliation, so the success continuation clears BOTH
-  flags together and ONLY when nothing newer has been marked.
+- The flags are cleared in ONE place, `#reconcile`'s success continuation, and set in one place,
+  `#mark()`. DIVERGENCE (finding 1): they used to be cleared at DIFFERENT moments, `#barrierThenLoad`
+  clearing `#unbarriered` and `#reconcile` clearing `#stale`, so a write landing between the two
+  clears left one set and one clear, a state a briefly-added assertion then made permanent. One clear
+  site, reached only when the barrier and the load both succeeded, removes the split.
+
+  ASSUMPTION THIS RESTS ON, stated because it is load-bearing: appends are serialized on `#_tail`, so
+  no genuinely newer append can mark the view during a reconciliation's load (a queued append must
+  pass `#ready()` and join the in-flight reconciliation before it writes). A generation counter that
+  declined to clear when a mark landed mid-load was written and then REMOVED, because a different-
+  family round proved that state unreachable in this single-writer store and the guard shipped
+  untested with a comment claiming it fixed a live bug. If appends ever stop being serialized on one
+  writer (a multi-gateway Platform backend), that guard returns with a test that reaches it.
 
 The torn-tail repair offset:
 
@@ -87,6 +109,21 @@ The torn-tail repair offset:
   truncate left it armed and a later load over a file an operator had since repaired applied the
   stale offset and deleted a good record. The fix makes the offset a per-load local, computed and
   consumed within one `#load()` and never carried across loads.
+
+Directory durability:
+
+- The file's DIRECTORY ENTRY must be on stable storage before the first record is acknowledged.
+  `fsync` of the file forces its data blocks, not its directory entry, so a crash after an append
+  returned success could leave the next process seeing no file at all. The gateway ALWAYS configures a
+  schedule (`core/gateway.js`), so on every real deployment `#load` writes the schedule header, which
+  creates the file, and then flushes the directory. That flush stands OUTSIDE the header-write block,
+  gated on `#dirEnsured` (set only on success), so a load whose flush fails is retried by the next
+  load rather than skipped once the header exists. A different-family round found both halves: the
+  flush was previously inside the header block, so a failed flush was skipped on retry, and it did not
+  exist at all for a null-schedule store. A null-schedule `FileBackend` (tests, and the peer of the
+  in-memory backend) does not create a file in `#load` and carries no durable-directory contract, which
+  is why the flush is confined to the schedule path and does not perturb the filesystem sequence the
+  recovery tests drive.
 
 ## Output, and which fields a consumer may read
 
@@ -103,17 +140,12 @@ The torn-tail repair offset:
 Every one of these awaits `#ready()` first, which refuses unless both flags are clear or a
 reconciliation establishes the view.
 
-## Test coverage of the flag machinery, stated honestly
+## Test coverage of the flag machinery
 
-The finding-1 fix has two parts. The first, that both flags are set together by `#mark()` and cleared
-together in the single continuation of `#reconcile`, is covered by the deterministic durability tests
-(`a reread cannot turn a failed durability barrier into an apparent commit`, `an unbarriered write
-cannot be laundered into a commit during the awaited close`, `no public view answers from the old maps
-while an uncertain write is still recovering`). The second, the generation guard that declines to
-clear when a newer mark landed DURING a reconcile, resists a deterministic local test: exercising it
-needs a mark to land inside another reconcile's held load, and driving that through the filesystem
-hooks was non-deterministic in two attempts, which is the fragile-timing-test shape the pre-commit
-playbook warns against. The guard is kept because the specification requires it and because it is
-fail-safe by construction, a wrong decision only declines to clear and costs one extra reconcile with
-no wrong answer, and its specific race is handed to the different-family fresh-full review round rather
-than pinned by a flaky local test. This is a rule-4 recorded reason, not an omission.
+The finding-1 fix, that both flags are set together by `#mark()` and cleared together in the single
+continuation of `#reconcile`, is covered by the deterministic durability tests: `a reread cannot turn
+a failed durability barrier into an apparent commit`, `an unbarriered write cannot be laundered into a
+commit during the awaited close`, and `no public view answers from the old maps while an uncertain
+write is still recovering`. The generation guard that once sat on top of this is gone, so there is no
+untested branch left here (an earlier draft of this document recorded the guard as an untested
+rule-4 reason; it was removed in the same change that removed the guard).

@@ -1185,3 +1185,116 @@ test("a failed torn-tail truncate does not arm a later load into deleting a repa
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("a bucket that mixes engine/statement declarations is refused at load", async () => {
+  // Fresh-round finding. The loader validated each record's engine/statement pair individually but
+  // never checked that a (season, contextHash) bucket's records AGREE. A query reads only the first
+  // record, so a bucket mixing PLONK and zkVM made seasonHasEngine report the wrong downgrade signal
+  // while the file durably held a zkVM registration. The append path already refuses a second
+  // declaration; the loader now enforces the same coherence.
+  const dir = mkdtempSync(join(tmpdir(), "reg-mixeddecl-"));
+  const path = join(dir, "registrations.jsonl");
+  try {
+    writeFileSync(path, [
+      JSON.stringify({ season: 1, contextHash: "1", regNullifier: "1", commitment: "1", engine: "plonk", statement: "derive", index: 0 }),
+      JSON.stringify({ season: 1, contextHash: "1", regNullifier: "2", commitment: "2", engine: "zkvm", statement: "custody", index: 1 }),
+      "",
+    ].join("\n"));
+    await assert.rejects(() => new FileBackend(path, null, false).ready(), /already declared|One bucket holds one declaration/);
+
+    // Control: one declaration across the bucket loads, and seasonHasEngine reports it correctly.
+    writeFileSync(path, [
+      JSON.stringify({ season: 1, contextHash: "1", regNullifier: "1", commitment: "1", engine: "zkvm", statement: "custody", index: 0 }),
+      JSON.stringify({ season: 1, contextHash: "1", regNullifier: "2", commitment: "2", engine: "zkvm", statement: "custody", index: 1 }),
+      "",
+    ].join("\n"));
+    const b = new FileBackend(path, null, false);
+    await b.ready();
+    assert.equal(await b.seasonHasEngine(1, "zkvm"), true, "the durable zkVM registration is reported");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a complete unterminated record is barriered before the store treats it as committed", async () => {
+  // Fresh-round finding. The case-b repair (a complete record with no trailing newline) added the
+  // newline with a plain appendFile and never synchronized, then installed the record and answered
+  // has() true. Its bytes were written by a process that died before its own newline, so no
+  // successful fsync need sit behind them, and a power failure before a later sync could lose a
+  // record the store had treated as committed. The repair now forces the bytes to disk, adds the
+  // delimiter, and forces again.
+  const dir = mkdtempSync(join(tmpdir(), "reg-repairbarrier-"));
+  const path = join(dir, "registrations.jsonl");
+  try {
+    const { open: realOpen } = await import("node:fs/promises");
+    const A = { season: 1, contextHash: "1", regNullifier: "1", commitment: "1", engine: "plonk", statement: "derive", index: 0 };
+    writeFileSync(path, JSON.stringify(A)); // complete record, NO trailing newline
+
+    let barriers = 0;
+    const backend = new FileBackend(path, null, false, {
+      open: async (...args) => {
+        const fh = await realOpen(...args);
+        return new Proxy(fh, {
+          get(target, prop) {
+            if (prop === "sync") return async () => { barriers += 1; return target.sync(); };
+            const v = target[prop];
+            return typeof v === "function" ? v.bind(target) : v;
+          },
+        });
+      },
+    });
+    await backend.ready();
+    // The repair opened the file and synchronized it, both before and after adding the delimiter.
+    assert.ok(barriers >= 2, "the repair forces the record bytes AND the delimiter, two barriers, not just an appended newline");
+    assert.equal(await backend.has(A), true, "and the record is present after the barriered repair");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a header write whose directory flush fails re-runs the flush on the next load", async () => {
+  // Fresh-round finding, the second half of the directory-durability defect. fsync of the file does
+  // not force its directory entry, and when the header write's directory flush FAILED, ready()
+  // rejected and the retry saw the header, so it skipped the whole creation block and never flushed
+  // the directory again. The flush now stands outside the header block, gated on a flag set only on
+  // success, so a retry redoes it. Only the schedule path has a durable-directory contract, so this
+  // uses a schedule and injects the directory open.
+  const dir = mkdtempSync(join(tmpdir(), "reg-dirflush-"));
+  const path = join(dir, "registrations.jsonl");
+  try {
+    const { open: realOpen } = await import("node:fs/promises");
+    let failDirSync = true;
+    let dirSyncs = 0;
+    const inject = {
+      open: async (...args) => {
+        const fh = await realOpen(...args);
+        // The directory is opened read-only; that is the handle whose sync we drive.
+        if (args[1] === "r") {
+          return new Proxy(fh, {
+            get(target, prop) {
+              if (prop === "sync") {
+                return async () => {
+                  dirSyncs += 1;
+                  if (failDirSync) throw Object.assign(new Error("simulated directory flush failure"), { code: "EIO" });
+                  return target.sync();
+                };
+              }
+              const v = target[prop];
+              return typeof v === "function" ? v.bind(target) : v;
+            },
+          });
+        }
+        return fh;
+      },
+    };
+    const backend = new FileBackend(path, "sched-1", false, inject);
+    // First load writes the header, then the directory flush fails, so the whole load rejects.
+    await assert.rejects(() => backend.ready(), /simulated directory flush failure/);
+    // The header is now on disk. A naive retry would skip creation and never flush the directory.
+    failDirSync = false;
+    await backend.ready(); // must re-run the flush rather than skip it
+    assert.ok(dirSyncs >= 2, "the directory flush was retried on the next load, not skipped");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
