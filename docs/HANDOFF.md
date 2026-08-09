@@ -12,12 +12,19 @@ its CI went green, all three jobs including `full`). ONE COMMIT IS UNPUSHED, `c8
 Tree is clean apart from an untracked `output/` directory that has sat there since 08-04 and is not in
 `.gitignore`. Suite 623, all passing locally.
 
-F2 IS DONE (`c813f3a`). The leaf bound could evict the NEWEST DML height when a repeated root was
-pinned across older heights; the newest height is now excluded from eviction candidates by
-construction. Reproduced, tested, mutation-checked, and an independent different-family review returned
-APPROVE with nothing to fold. Not reachable under shipped defaults (the cap does not bind at the
-current list size), fixed anyway as a real inversion of the "present is never dropped" invariant.
-F3-F6 remain open (section 5). Next recommended: F4 (field-element validation at load) or F3.
+F2 IS DONE (`c813f3a`, pushed, CI green). The leaf bound could evict the NEWEST DML height when a
+repeated root was pinned across older heights; the newest is now excluded from eviction candidates by
+construction. Reviewed APPROVE. Not reachable under shipped defaults, fixed as a real inversion of the
+"present is never dropped" invariant.
+
+F4 IS DONE (`5bd0f47`, UNPUSHED). The loader (and now the append path) validate contextHash,
+regNullifier, and commitment as canonical BN254 field elements via `isCanonicalField`, the same check
+the verifier applies on the write path, so a non-canonical value is refused at boot rather than
+throwing later at tree materialization. The user chose to validate all three fields. This REVERSED the
+store-review narrowing that had said the store checks only structure; the spec is re-widened. Required
+a consistent fixture rename to canonical decimals across three test files. Reviewed APPROVE-WITH-FIXES,
+both minors (append-path symmetry, test breadth) folded. F3, F5, F6 remain open (section 5). Next
+recommended: F3 (the shaRoot asymmetry).
 
 THE REGISTRATION-STORE REVIEW LOOP CONVERGED, and the store work is COMPLETE. `FileBackend`'s
 durability state machine was taken off the repair treadmill with a written contract
@@ -30,8 +37,8 @@ not alter the design does not trigger another external round. One more neutral s
 cheap belt-and-braces if wanted, but the loop is done. Read the contract before ever touching the
 store again, and do not reopen it without a new finding.
 
-WHAT IS LEFT IS NOT THE STORE. F2 is folded (`c813f3a`). F3-F6 from the sixth review round (section 5)
-are still open and untouched.
+WHAT IS LEFT IS NOT THE STORE. F2 and F4 are folded (`c813f3a`, `5bd0f47`). F3, F5, F6 from the sixth
+review round (section 5) are still open and untouched.
 
 IMPORTANT REVIEW-TOOLING NOTE (kept because it will recur): the external reviewer's content filter
 STOPPED a round mid-run over the crypto-heavy gateway code. The framing that worked, used for rounds
