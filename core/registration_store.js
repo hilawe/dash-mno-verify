@@ -426,7 +426,12 @@ export class FileBackend {
   // collapse below fired on in-memory state and warned an operator that their file held duplicate
   // records when it held one of each. Building locally means a failed load changes nothing at all.
   async #load() {
-    await mkdir(dirname(this.path), { recursive: true });
+    // The path of the FIRST directory this call created, or undefined if the parent already existed.
+    // Recursive mkdir can create several levels, and each new level added an entry to its own parent,
+    // so flushing only the file's immediate directory (below) leaves the entries NAMING the new
+    // directories un-flushed. This is threaded to the directory-durability step so it flushes the
+    // whole chain from the file's directory up to the first pre-existing ancestor.
+    const firstCreatedDir = await mkdir(dirname(this.path), { recursive: true });
     const seen = new Set();
     const byBucket = new Map();
     let duplicatesCollapsed = 0;
@@ -685,11 +690,24 @@ export class FileBackend {
     // #load and has no durable-directory contract to keep, which is also why this does not disturb the
     // filesystem sequence the recovery tests drive.
     if (this.schedule != null && !this.#dirEnsured) {
-      const dirHandle = await this.openFile(dirname(this.path), "r");
-      try {
-        await dirHandle.sync();
-      } finally {
-        await dirHandle.close();
+      // FLUSH THE WHOLE CHAIN OF NEW DIRECTORIES, not just the file's own. A fresh round found that
+      // recursive mkdir can create several levels and flushing only `dirname(path)` covers the entries
+      // INSIDE it, not the entry naming it in its parent, so a crash could still lose the whole path
+      // and an acknowledged registration with it. Walk from the file's directory up to the first
+      // pre-existing ancestor (the parent of the first directory this load created), flushing each.
+      // When nothing was created the loop flushes only `dirname(path)`, which is where the file's own
+      // entry lives.
+      const stopAt = firstCreatedDir == null ? dirname(this.path) : dirname(firstCreatedDir);
+      let d = dirname(this.path);
+      for (;;) {
+        const dirHandle = await this.openFile(d, "r");
+        try {
+          await dirHandle.sync();
+        } finally {
+          await dirHandle.close();
+        }
+        if (d === stopAt || dirname(d) === d) break;
+        d = dirname(d);
       }
       this.#dirEnsured = true;
     }
@@ -715,7 +733,28 @@ export class FileBackend {
     // A stable sort handles both shapes without refusing either. Equal positions keep the order the
     // file already implies, which is what the base revision would have rebuilt, and the collapsed
     // duplicate case orders correctly because the surviving record carries the later index.
-    for (const recs of byBucket.values()) recs.sort((a, b) => a.index - b.index);
+    //
+    // BUT THE POSITIONS MUST STILL FIT THE BUCKET, and a fresh round found the gap the pure stable
+    // sort left. A file holding a GAP, a stored index at or above the bucket length (say A@0, B@5 in a
+    // two-record bucket), sorts to [A, B] on load, but the next append takes index recs.length (2) and
+    // pushes to the end, so the live order is [A, B, C@2] while a restart re-sorts to [A, C@2, B@5].
+    // Live and restart disagree, so the members root the gateway served stops matching the one a
+    // restart rebuilds, and every member's path breaks. Ties from the uncertain-write case are always
+    // BELOW the length (two records at index 0 is max 0 < length 2), so requiring max < length accepts
+    // every file the base revision can produce and refuses only the gap, which an append-only store
+    // cannot legitimately create and which no restart can serve consistently.
+    for (const [bucket, recs] of byBucket) {
+      recs.sort((a, b) => a.index - b.index);
+      const maxIndex = recs.length === 0 ? -1 : recs[recs.length - 1].index;
+      if (maxIndex >= recs.length) {
+        throw new Error(
+          `${this.path} bucket ${bucket} holds ${recs.length} record(s) but a stored leaf index ` +
+            `${maxIndex} at or above that count, a gap an append-only store cannot produce. A later ` +
+            `append would assign index ${recs.length} and reorder the bucket at the next restart, so ` +
+            `the live members root would stop matching the rebuilt one. Repair the file.`,
+        );
+      }
+    }
     // INSTALLED LAST, after every step that can throw. Until this line the store is still serving
     // whatever it had, which is what makes a failed load a no-op rather than something to undo.
     this.seen = seen;

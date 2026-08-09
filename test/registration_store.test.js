@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { writeFile, readFile } from "node:fs/promises";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import {
@@ -1230,13 +1230,17 @@ test("a complete unterminated record is barriered before the store treats it as 
     const A = { season: 1, contextHash: "1", regNullifier: "1", commitment: "1", engine: "plonk", statement: "derive", index: 0 };
     writeFileSync(path, JSON.stringify(A)); // complete record, NO trailing newline
 
-    let barriers = 0;
+    // Record the ORDER of operations, not just a count. A round noted that `sync(); sync();
+    // appendFile()` would satisfy a bare count while forcing nothing before the newline, so the
+    // sequence must show a barrier BEFORE the delimiter is written and one AFTER.
+    const ops = [];
     const backend = new FileBackend(path, null, false, {
       open: async (...args) => {
         const fh = await realOpen(...args);
         return new Proxy(fh, {
           get(target, prop) {
-            if (prop === "sync") return async () => { barriers += 1; return target.sync(); };
+            if (prop === "sync") return async () => { ops.push("sync"); return target.sync(); };
+            if (prop === "appendFile") return async (...a) => { ops.push("append"); return target.appendFile(...a); };
             const v = target[prop];
             return typeof v === "function" ? v.bind(target) : v;
           },
@@ -1244,8 +1248,8 @@ test("a complete unterminated record is barriered before the store treats it as 
       },
     });
     await backend.ready();
-    // The repair opened the file and synchronized it, both before and after adding the delimiter.
-    assert.ok(barriers >= 2, "the repair forces the record bytes AND the delimiter, two barriers, not just an appended newline");
+    // The existing bytes are forced BEFORE the delimiter is appended, and the delimiter is forced AFTER.
+    assert.deepEqual(ops, ["sync", "append", "sync"], "the repair barriers the record, appends the newline, then barriers again");
     assert.equal(await backend.has(A), true, "and the record is present after the barriered repair");
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -1264,17 +1268,19 @@ test("a header write whose directory flush fails re-runs the flush on the next l
   try {
     const { open: realOpen } = await import("node:fs/promises");
     let failDirSync = true;
-    let dirSyncs = 0;
+    const dirSyncTargets = [];
     const inject = {
       open: async (...args) => {
         const fh = await realOpen(...args);
-        // The directory is opened read-only; that is the handle whose sync we drive.
+        // The directory is opened read-only; that is the handle whose sync we drive. Record the PATH
+        // synced, not just a count, because a round noted a count-only assertion passes even if the
+        // code syncs the FILE twice instead of the directory.
         if (args[1] === "r") {
           return new Proxy(fh, {
             get(target, prop) {
               if (prop === "sync") {
                 return async () => {
-                  dirSyncs += 1;
+                  dirSyncTargets.push(args[0]);
                   if (failDirSync) throw Object.assign(new Error("simulated directory flush failure"), { code: "EIO" });
                   return target.sync();
                 };
@@ -1293,8 +1299,75 @@ test("a header write whose directory flush fails re-runs the flush on the next l
     // The header is now on disk. A naive retry would skip creation and never flush the directory.
     failDirSync = false;
     await backend.ready(); // must re-run the flush rather than skip it
-    assert.ok(dirSyncs >= 2, "the directory flush was retried on the next load, not skipped");
+    // Retried at least twice (once failing, once succeeding), and every target was the DIRECTORY, not
+    // the file, so syncing the file twice cannot satisfy this.
+    assert.ok(dirSyncTargets.length >= 2, "the directory flush was retried on the next load, not skipped");
+    for (const t of dirSyncTargets) {
+      assert.equal(t, dirname(path), `the flush target must be the directory ${dirname(path)}, not ${t}`);
+    }
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a file with a leaf-index GAP is refused, and an accepted tie stays consistent across an append", async () => {
+  // Fresh-round finding. The base-revision compatibility fix accepts non-contiguous stored indexes
+  // and sorts by them, which is right for a TIE (two records at index 0 from an uncertain-write
+  // retry) but wrong for a GAP. A file holding A@0, B@5 in a two-record bucket loads as [A, B], but
+  // the next append takes index 2 and pushes to the end, so the live order is [A, B, C@2] while a
+  // restart re-sorts to [A, C@2, B@5]. Live and restart disagree, so the served members root stops
+  // matching the rebuilt one. A gap has max index >= bucket length; a tie never does, so the loader
+  // refuses the gap and keeps the tie.
+  const dir = mkdtempSync(join(tmpdir(), "reg-gap-"));
+  const path = join(dir, "registrations.jsonl");
+  try {
+    const R = (n, i) => ({ season: 1, contextHash: "c", regNullifier: n, commitment: i + "", engine: "plonk", statement: "derive", index: i });
+
+    // The gap is refused at load.
+    writeFileSync(path, [JSON.stringify(R("A", 0)), JSON.stringify(R("B", 5)), ""].join("\n"));
+    await assert.rejects(() => new FileBackend(path, null, false).ready(), /gap an append-only store cannot produce|at or above/);
+
+    // The accepted tie (base-revision shape) loads, and crucially the live order after an append
+    // equals the order a restart rebuilds, which is the property the gap violated.
+    writeFileSync(path, [JSON.stringify(R("A", 0)), JSON.stringify(R("B", 0)), ""].join("\n"));
+    const live = new FileBackend(path, null, false);
+    await live.ready();
+    await live.append({ season: 1, contextHash: "c", regNullifier: "C", commitment: "9", engine: "plonk", statement: "derive" });
+    const liveOrder = (await live.forSeasonContext(1, "c")).map((r) => r.regNullifier);
+
+    const restart = new FileBackend(path, null, false);
+    await restart.ready();
+    const restartOrder = (await restart.forSeasonContext(1, "c")).map((r) => r.regNullifier);
+
+    assert.deepEqual(liveOrder, restartOrder, "the live bucket order and the restart order must match");
+    assert.deepEqual(liveOrder, ["A", "B", "C"], "and the appended record sorts after the tied pair");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a fresh multi-level directory path forces every new ancestor durable", async () => {
+  // Fresh-round finding. Recursive mkdir can create several directory levels, and flushing only the
+  // file's immediate directory covers the entries INSIDE it, not the entry naming it in its parent,
+  // so a crash could lose the whole path and an acknowledged registration with it. The flush now
+  // walks from the file's directory up to the first pre-existing ancestor.
+  const base = mkdtempSync(join(tmpdir(), "reg-chain-"));
+  const path = join(base, "new-a", "new-b", "registrations.jsonl"); // two missing levels
+  const syncedDirs = [];
+  try {
+    const { open: realOpen } = await import("node:fs/promises");
+    const backend = new FileBackend(path, "sched-1", false, {
+      open: async (...args) => {
+        if (args[1] === "r") syncedDirs.push(args[0]);
+        return realOpen(...args);
+      },
+    });
+    await backend.ready();
+    // Every newly created level, plus the pre-existing ancestor that names the first new level.
+    assert.ok(syncedDirs.includes(join(base, "new-a", "new-b")), "the file's own directory is flushed");
+    assert.ok(syncedDirs.includes(join(base, "new-a")), "the intermediate new directory is flushed");
+    assert.ok(syncedDirs.includes(base), "the pre-existing ancestor that names the first new directory is flushed");
+  } finally {
+    rmSync(base, { recursive: true, force: true });
   }
 });

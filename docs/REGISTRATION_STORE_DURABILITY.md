@@ -65,18 +65,32 @@ File-shaped inputs, resolved by `#load()`:
   differs from the bucket's first; the loader now enforces the same coherence, so a file that violates
   it (an older build, or hand-editing) is refused where an operator can act rather than answered
   wrongly.
-- The last complete record with no trailing newline: kept AND barriered before it is trusted. Its
-  bytes were written by a process that died before its own newline, so no successful fsync need sit
-  behind them, and the load is about to treat the record as committed. The repair forces the existing
-  bytes to disk, adds the delimiter, and forces again; if either barrier fails the load throws before
-  installing the maps, so the record is not trusted and the next reconcile retries.
+- The last complete record with no trailing newline: kept AND its bytes barriered before it is
+  trusted. Written by a process that died before its own newline, they may have no fsync behind them,
+  and the load is about to treat the record as committed. The repair forces the existing bytes to
+  disk (barrier one), adds the delimiter, and forces again (barrier two). The TWO barriers cover
+  different things and fail differently. If barrier one fails, the record's own bytes are not durable,
+  the load throws before installing the maps, the record is not trusted, and the next load retries the
+  whole repair. If barrier two fails, the record's bytes are ALREADY durable (barrier one succeeded)
+  and only the delimiter's durability is deferred: the load throws, but the next load sees a
+  newline-terminated file, skips the repair, and trusts the record, which is safe because a crash that
+  loses the un-synced newline returns the file to the unterminated state and the repair runs again. So
+  "the repair is retried" holds for the record's durability; the delimiter's own barrier is
+  best-effort, and it costs nothing because losing it is self-healing.
 - A duplicate key whose record is identical to the one already loaded: collapse to one, keeping the
   LAST occurrence, because it carries the index the writer finally assigned.
 - A duplicate key whose record differs on an identity field: refuse. Two records for one key cannot
   both be right and this cannot choose.
-- Bucket leaf positions that are not a contiguous `0..n-1` set: sorted stably by index, ties keeping
-  file order, NOT refused. The base revision legitimately produces a file holding two distinct
-  records at index 0, and refusing it turned an upgrade into an outage (`687a026`).
+- Bucket leaf positions that repeat (a TIE, two records at the same index): accepted, sorted stably
+  by index with ties keeping file order. The base revision legitimately produces a file holding two
+  distinct records at index 0 (an uncertain-write retry), and refusing it turned an upgrade into an
+  outage (`687a026`).
+- Bucket leaf positions with a GAP (a stored index at or above the bucket length): refused. A gap is
+  something an append-only store cannot produce, and it is not harmless like a tie: the next append
+  assigns `recs.length` and pushes to the end, so a bucket holding `A@0, B@5` serves `[A, B, C@2]`
+  live but rebuilds `[A, C@2, B@5]` on restart, and the served members root stops matching the
+  rebuilt one. A tie always sits below the length, so `max index < length` accepts every tie and
+  refuses every gap (a fresh round found the gap the pure stable sort left open).
 
 The durability and reconciliation state:
 
