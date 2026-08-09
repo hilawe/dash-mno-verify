@@ -1371,3 +1371,119 @@ test("a fresh multi-level directory path forces every new ancestor durable", asy
     rmSync(base, { recursive: true, force: true });
   }
 });
+
+test("a durable record is visible during a successful close, not only after it", async () => {
+  // Fresh-round finding. On the SUCCESS path the record was durable after sync() but #remember ran
+  // only after the outer try, so during `await fh.close()` a concurrent read answered from the old
+  // maps and denied a registration that was on disk. The existing close-window test covers the
+  // FAILURE path (a sync that throws); this covers the success path, where sync succeeds and only the
+  // close is held. #remember now runs the moment the record is durable.
+  const dir = mkdtempSync(join(tmpdir(), "reg-closevis-"));
+  const path = join(dir, "registrations.jsonl");
+  try {
+    const { open: realOpen } = await import("node:fs/promises");
+    let releaseClose;
+    const backend = new FileBackend(path, null, false, {
+      open: async (...args) => {
+        const fh = await realOpen(...args);
+        return new Proxy(fh, {
+          get(target, prop) {
+            // Real appendFile and a REAL successful sync, then hold the close.
+            if (prop === "close" && !releaseClose) {
+              return () => new Promise((resolve) => { releaseClose = () => resolve(target.close()); });
+            }
+            const v = target[prop];
+            return typeof v === "function" ? v.bind(target) : v;
+          },
+        });
+      },
+    });
+    await backend.ready();
+    const record = { season: 1, contextHash: "c", regNullifier: "n", commitment: "1", engine: "zkvm", statement: "custody" };
+    const appending = backend.append(record).then(() => {}, () => {});
+    for (let i = 0; i < 400 && !releaseClose; i += 1) await new Promise((r) => setTimeout(r, 5));
+    assert.ok(releaseClose, "the append never reached close(), so the window was never open");
+    assert.ok(readFileSync(path, "utf8").includes('"regNullifier":"n"'), "the record is durable on disk during the window");
+
+    // The record is durable, so a read during the close must not deny it.
+    assert.equal(await backend.has(record), true, "has() reflects the durable record during the close");
+    assert.equal(await backend.seasonHasEngine(1, "zkvm"), true, "and so does the downgrade signal");
+
+    releaseClose();
+    await appending;
+    assert.equal((await backend.forSeasonContext(1, "c")).length, 1, "and the record is not doubled");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a multi-level directory flush that fails partway is fully retried, not just the leaf", async () => {
+  // Fresh-round finding. `#createdDirBoundary` used to be local to one load, so a retry after a
+  // partial flush failure saw no newly created directories (they now exist) and flushed only the leaf,
+  // losing the ancestor boundary. The boundary is now sticky, so the retry re-flushes the whole chain.
+  const base = mkdtempSync(join(tmpdir(), "reg-chainretry-"));
+  const path = join(base, "new-a", "new-b", "registrations.jsonl");
+  const flushed = [];
+  try {
+    const { open: realOpen } = await import("node:fs/promises");
+    let failTarget = join(base, "new-a"); // fail the flush of the intermediate directory once
+    const backend = new FileBackend(path, "sched-1", false, {
+      open: async (...args) => {
+        const fh = await realOpen(...args);
+        if (args[1] === "r") {
+          return new Proxy(fh, {
+            get(target, prop) {
+              if (prop === "sync") {
+                return async () => {
+                  flushed.push(args[0]);
+                  if (args[0] === failTarget) { failTarget = null; throw Object.assign(new Error("flush fail"), { code: "EIO" }); }
+                  return target.sync();
+                };
+              }
+              const v = target[prop];
+              return typeof v === "function" ? v.bind(target) : v;
+            },
+          });
+        }
+        return fh;
+      },
+    });
+    await assert.rejects(() => backend.ready(), /flush fail/);
+    flushed.length = 0; // watch only the retry
+    await backend.ready();
+    // The retry re-flushes the WHOLE chain up to the pre-existing ancestor, not just the leaf.
+    assert.ok(flushed.includes(join(base, "new-a", "new-b")), "leaf directory re-flushed");
+    assert.ok(flushed.includes(join(base, "new-a")), "intermediate directory re-flushed on retry");
+    assert.ok(flushed.includes(base), "the pre-existing ancestor is flushed on retry, not skipped");
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("a repair whose first barrier fails refuses the record rather than trusting it", async () => {
+  // Strengthens the repair-barrier coverage the round called weak: an order-only assertion passes a
+  // mutation that catches and ignores the sync failures. This drives the FIRST barrier to fail and
+  // requires the load to reject, so the unterminated record is not trusted without a durable barrier.
+  const dir = mkdtempSync(join(tmpdir(), "reg-repairfail-"));
+  const path = join(dir, "registrations.jsonl");
+  try {
+    const { open: realOpen } = await import("node:fs/promises");
+    const A = { season: 1, contextHash: "1", regNullifier: "1", commitment: "1", engine: "plonk", statement: "derive", index: 0 };
+    writeFileSync(path, JSON.stringify(A)); // complete record, no trailing newline
+    const backend = new FileBackend(path, null, false, {
+      open: async (...args) => {
+        const fh = await realOpen(...args);
+        return new Proxy(fh, {
+          get(target, prop) {
+            if (prop === "sync") return async () => { throw Object.assign(new Error("repair barrier failed"), { code: "EIO" }); };
+            const v = target[prop];
+            return typeof v === "function" ? v.bind(target) : v;
+          },
+        });
+      },
+    });
+    await assert.rejects(() => backend.ready(), /repair barrier failed/, "the load refuses when the record cannot be barriered");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

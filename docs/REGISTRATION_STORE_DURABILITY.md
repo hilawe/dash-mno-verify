@@ -137,7 +137,11 @@ Directory durability:
   exist at all for a null-schedule store. A null-schedule `FileBackend` (tests, and the peer of the
   in-memory backend) does not create a file in `#load` and carries no durable-directory contract, which
   is why the flush is confined to the schedule path and does not perturb the filesystem sequence the
-  recovery tests drive.
+  recovery tests drive. When the path spans SEVERAL new levels, the flush walks the whole chain from
+  the file's directory up to the first pre-existing ancestor, because the entry naming each new
+  directory lives in its parent. The new/pre-existing boundary is remembered stickily
+  (`#createdDirBoundary`), since recursive mkdir reports what it created only on the creating load, and
+  a retry after a partial flush failure would otherwise flush only the leaf, a later round's finding.
 
 ## Output, and which fields a consumer may read
 
@@ -153,6 +157,13 @@ Directory durability:
 
 Every one of these awaits `#ready()` first, which refuses unless both flags are clear or a
 reconciliation establishes the view.
+
+VISIBILITY IS BOUND TO DURABILITY on the append success path. The record is added to the index by
+`#remember` the moment its `sync()` succeeds, INSIDE the write's try, before the `close()` is awaited.
+A later round found that remembering it only after the close left a window where the record was durable
+on disk but a concurrent read answered from the old maps and denied it, `seasonHasEngine` among them.
+If the close then fails, the outer catch's reconciliation rebuilds the index from the file, so the
+early `#remember` is not doubled and the durable write is still reported as success.
 
 ## Test coverage of the flag machinery
 

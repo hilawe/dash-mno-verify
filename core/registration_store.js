@@ -259,6 +259,14 @@ export class FileBackend {
   // #load(), before any append can run, and only set on success so a failed flush is retried.
   #dirEnsured = false;
 
+  // The topmost directory THIS process created, remembered STICKILY across load retries. Recursive
+  // mkdir returns the first directory it created, but only on the load that created it; a retry after
+  // a partial flush failure gets undefined because the directories now exist. A fresh round found that
+  // the retry then flushed only the leaf and lost the ancestor boundary, so the entry naming an
+  // intermediate directory could still be lost to a crash. Holding the boundary here keeps the flush
+  // walk covering the whole chain on every retry until it succeeds. Null means nothing was created.
+  #createdDirBoundary = null;
+
   // THE ONE WAY TO MARK THE VIEW BEHIND THE FILE. Both flags together, in one synchronous step, so
   // there is a single site to reason about. Clearing is likewise the single continuation of
   // #reconcile, which is what closes the three-round chase where the two flags were set in one place
@@ -426,12 +434,14 @@ export class FileBackend {
   // collapse below fired on in-memory state and warned an operator that their file held duplicate
   // records when it held one of each. Building locally means a failed load changes nothing at all.
   async #load() {
-    // The path of the FIRST directory this call created, or undefined if the parent already existed.
     // Recursive mkdir can create several levels, and each new level added an entry to its own parent,
     // so flushing only the file's immediate directory (below) leaves the entries NAMING the new
-    // directories un-flushed. This is threaded to the directory-durability step so it flushes the
-    // whole chain from the file's directory up to the first pre-existing ancestor.
-    const firstCreatedDir = await mkdir(dirname(this.path), { recursive: true });
+    // directories un-flushed. mkdir returns the first directory it created, but ONLY on the load that
+    // created it, so a retry after a partial flush failure would see undefined and forget the chain.
+    // Record it stickily the first time it is non-null and never overwrite it, so the flush walk below
+    // covers the same chain on every retry until it succeeds.
+    const createdNow = await mkdir(dirname(this.path), { recursive: true });
+    if (createdNow != null && this.#createdDirBoundary == null) this.#createdDirBoundary = createdNow;
     const seen = new Set();
     const byBucket = new Map();
     let duplicatesCollapsed = 0;
@@ -697,7 +707,7 @@ export class FileBackend {
       // pre-existing ancestor (the parent of the first directory this load created), flushing each.
       // When nothing was created the loop flushes only `dirname(path)`, which is where the file's own
       // entry lives.
-      const stopAt = firstCreatedDir == null ? dirname(this.path) : dirname(firstCreatedDir);
+      const stopAt = this.#createdDirBoundary == null ? dirname(this.path) : dirname(this.#createdDirBoundary);
       let d = dirname(this.path);
       for (;;) {
         const dirHandle = await this.openFile(d, "r");
@@ -867,6 +877,14 @@ export class FileBackend {
       try {
         await fh.appendFile(JSON.stringify(record) + "\n");
         await fh.sync(); // the record is on disk before we report success
+        // VISIBLE THE MOMENT IT IS DURABLE, before the close is even awaited. A fresh round found the
+        // window this closes: the record was durable after sync but #remember ran only after the outer
+        // try, so during `await fh.close()` a concurrent read answered from the old maps and denied a
+        // registration that was on disk, seasonHasEngine among them. Remembering here binds visibility
+        // to durability. If close then fails, the outer catch's reconciliation rebuilds the maps from
+        // the file (which holds this record), so this insert is not doubled, and the append still
+        // reports the durable write as success.
+        this.#remember(record);
       } catch (err) {
         // MARKED HERE RATHER THAN IN THE OUTER CATCH, and the difference is one await. A `finally`
         // runs before the catch that follows it, so a sync failure reaches `await fh.close()` first
@@ -890,9 +908,12 @@ export class FileBackend {
       }
     } catch (err) {
       // ALSO MARKED HERE, for the one arrival the inner catch does not cover: appendFile and sync
-      // both succeeded and close() threw. The record is durable, the index has not learned it
-      // because #remember() is past this point, so the view is behind the file exactly as it is on
-      // the sync-failure path. Setting it twice on that path is free.
+      // both succeeded, #remember ran, and close() threw. The record is durable AND in the index, but
+      // a close that failed is still a signal the write did not complete cleanly, so the store marks
+      // itself and reconciles below, which rebuilds the index from the file and confirms the record.
+      // Marking a view that is actually current is conservative, not wrong: the reconciliation clears
+      // the flags again once its barrier and read succeed. On the sync-failure arrival the record is
+      // NOT in the index, and the mark is what stops a reader answering from a view behind the file.
       //
       // MARKED BEHIND THE FILE SYNCHRONOUSLY, before this path yields to anything. The bytes may
       // already be on disk, so from this instant the in-memory index is a view that can be missing a
@@ -965,7 +986,8 @@ export class FileBackend {
       if (landed) return { duplicate: false, index: landed.index };
       throw err;
     }
-    this.#remember(record);
+    // #remember already ran inside the inner try, the moment the record became durable, so the
+    // success path only returns here.
     return { duplicate: false, index };
   }
 
