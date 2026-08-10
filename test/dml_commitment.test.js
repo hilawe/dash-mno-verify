@@ -125,6 +125,21 @@ test("a coinbase that is not the one the branch marks, or a header the branch do
   );
 });
 
+test("A11: a coinbase with trailing bytes after its payload is refused, not parsed as canonical", () => {
+  // A review found that appending a byte to a valid cbTx parsed to the same height and masternode root
+  // and was accepted, because the parser never checked it had consumed the whole transaction. The parser
+  // now refuses trailing bytes, matching partialMerkleTree.
+  const valid = cbTxCommitment(BLOCK.cbTx);
+  assert.equal(valid.merkleRootMNList, BLOCK.merkleRootMNList, "the untampered coinbase still parses");
+
+  const withTrailer = BLOCK.cbTx + "00";
+  assert.throws(
+    () => cbTxCommitment(withTrailer),
+    /trailing byte\(s\) after its payload/,
+    "a trailing byte is refused rather than ignored",
+  );
+});
+
 test("every entry shape the tip contains serializes to the bytes it did when the tip was verified", () => {
   // Version 1, version 2, an evo node with its Platform fields, and an IPv6 service. The committed
   // 14-entry block is all version 1 and IPv4, so without these the version 2 and evo branches of the

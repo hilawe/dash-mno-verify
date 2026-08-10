@@ -253,22 +253,32 @@ for (const [roomId, room] of Object.entries(init.rooms?.join ?? {})) {
 let since = init.next_batch;
 
 for (;;) {
-  const res = await api(`/sync?since=${since}&timeout=30000`);
-  if (!res.ok) {
-    await new Promise((r) => setTimeout(r, 3000));
-    continue;
-  }
-  const data = await res.json();
-  since = data.next_batch;
-  for (const [roomId, room] of Object.entries(data.rooms?.join ?? {})) {
-    rooms.applyEvents(roomId, room.state?.events); // catch-up state before the timeline window
-    for (const ev of room.timeline?.events ?? []) {
-      rooms.applyEvent(roomId, ev); // a no-op unless ev is a tracked state event
-      if (ev.type === "m.room.message" && ev.content?.msgtype === "m.text") {
-        // Snapshot now reflects every state event up to and including ones before this message.
-        await handle(roomId, ev.sender, ev.content.body, rooms.snapshot(roomId)).catch((e) => console.error("[matrix]", e.message));
+  // A TRANSIENT HOMESERVER FAILURE MUST NOT CRASH THE BOT. The !res.ok branch below already backs off
+  // and retries, but a THROWN fetch (a dropped connection, ECONNRESET) or a non-JSON 200 body reaching
+  // res.json() escaped this top-level loop as an unhandled rejection and terminated the process, which a
+  // review found. `since` is only advanced after a successful parse, so a failed poll retries from the
+  // same point and loses no events. Log, back off, and continue, matching the !res.ok path.
+  try {
+    const res = await api(`/sync?since=${since}&timeout=30000`);
+    if (!res.ok) {
+      await new Promise((r) => setTimeout(r, 3000));
+      continue;
+    }
+    const data = await res.json();
+    since = data.next_batch;
+    for (const [roomId, room] of Object.entries(data.rooms?.join ?? {})) {
+      rooms.applyEvents(roomId, room.state?.events); // catch-up state before the timeline window
+      for (const ev of room.timeline?.events ?? []) {
+        rooms.applyEvent(roomId, ev); // a no-op unless ev is a tracked state event
+        if (ev.type === "m.room.message" && ev.content?.msgtype === "m.text") {
+          // Snapshot now reflects every state event up to and including ones before this message.
+          await handle(roomId, ev.sender, ev.content.body, rooms.snapshot(roomId)).catch((e) => console.error("[matrix]", e.message));
+        }
       }
     }
+    for (const roomId of Object.keys(data.rooms?.leave ?? {})) rooms.forget(roomId);
+  } catch (e) {
+    console.error("[matrix] sync error, retrying:", e.message);
+    await new Promise((r) => setTimeout(r, 3000));
   }
-  for (const roomId of Object.keys(data.rooms?.leave ?? {})) rooms.forget(roomId);
 }

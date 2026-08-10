@@ -117,15 +117,31 @@ export async function verifyMembership({
     return reason.length > 0 ? reason : "period-changed";
   };
 
+  // A NULLIFIER-STORE READ BEFORE THE IRREVERSIBLE SPEND. If it throws (a transient backend failure, a
+  // SQLite read error or a Platform round-trip blip), tag the error so the caller can RESTORE the
+  // one-time challenge rather than burn it: these reads all run before nullifiers.add(), so no spend has
+  // happened and restoring is safe. A review found that such a transient failure reached the gateway's
+  // generic catch and returned a client error with the nonce already consumed, forcing a full re-prove.
+  // The spend itself (nullifiers.add below) is NOT wrapped, so an uncertain write keeps the nonce
+  // consumed and fails closed, since restoring it could hand out a second grant for a tag that landed.
+  const readBeforeSpend = async (fn) => {
+    try {
+      return await fn();
+    } catch (err) {
+      if (err && typeof err === "object") err.beforeSpend = true;
+      throw err;
+    }
+  };
+
   const claimedBySameAccount = async () => {
-    const prior = await nullifiers.get(s.epoch, s.contextHash, s.nullifier);
+    const prior = await readBeforeSpend(() => nullifiers.get(s.epoch, s.contextHash, s.nullifier));
     return prior != null && String(prior.account) === String(expected.account);
   };
 
   // 5) one voting key, one membership per epoch and context. An already-spent tag is only let through
   //    as an idempotent re-grant for the account that first claimed it, and only with a fresh valid
   //    proof. The has() check rejects an ordinary replay before the expensive proof verify.
-  if (await nullifiers.has(s.epoch, s.contextHash, s.nullifier)) {
+  if (await readBeforeSpend(() => nullifiers.has(s.epoch, s.contextHash, s.nullifier))) {
     if (!(await claimedBySameAccount())) return { ok: false, reason: "already-used" };
     if (!(await gate(() => verifyProof(vkey, publicSignals, proof)))) return { ok: false, reason: "invalid-proof" };
     // Re-grants are period-checked too. Handing back a grant whose epoch ended is the same defect as

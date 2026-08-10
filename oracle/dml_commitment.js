@@ -352,7 +352,21 @@ export function cbTxCommitment(cbTxHex) {
     r.take(r.varint()); // script
   }
   r.u32(); // lock time
-  const payload = new Reader(Buffer.from(r.take(r.varint())));
+  const payloadBytes = Buffer.from(r.take(r.varint()));
+  // THE WHOLE TRANSACTION MUST BE CONSUMED. The parser reads every field of the coinbase, so a
+  // well-formed cbTx ends exactly here. Trailing bytes mean the blob is not the canonical transaction:
+  // a review found that without this check, appending a byte to a valid cbTx parsed to the same height
+  // and masternode root and was accepted. The sibling partialMerkleTree already refuses trailing bytes,
+  // and this brings the coinbase parser to the same strictness. End-to-end forgery is separately closed
+  // by the X11 block-hash and proof-of-work checks in oracle/diff_snapshot.js, but the parser must not
+  // accept a non-canonical transaction as canonical.
+  if (r.at !== r.buf.length) {
+    throw new Error(
+      `coinbase transaction has ${r.buf.length - r.at} trailing byte(s) after its payload; ` +
+        `the parser must consume the whole transaction`,
+    );
+  }
+  const payload = new Reader(payloadBytes);
   const payloadVersion = payload.u16();
   const height = payload.u32();
   const merkleRootMNList = reversed(Buffer.from(payload.take(32))).toString("hex");

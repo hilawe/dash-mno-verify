@@ -35,12 +35,13 @@ function listEnv(env, name) {
 // Read an integer setting from the environment, failing loud at boot on a malformed value rather
 // than letting a silent NaN through. A NaN here is not harmless: NaN as a cap or limit makes every
 // `size >= cap` comparison false, which would quietly disable the very guard the setting controls.
-function intEnv(env, name, defaultValue, { min = 1 } = {}) {
+function intEnv(env, name, defaultValue, { min = 1, max = Infinity } = {}) {
   const raw = env[name];
   if (raw === undefined || raw === "") return defaultValue;
   const n = Number(raw);
-  if (!Number.isInteger(n) || n < min) {
-    throw new Error(`config: ${name} must be an integer >= ${min}, got "${raw}"`);
+  if (!Number.isInteger(n) || n < min || n > max) {
+    const bound = max === Infinity ? `>= ${min}` : `in [${min}, ${max}]`;
+    throw new Error(`config: ${name} must be an integer ${bound}, got "${raw}"`);
   }
   return n;
 }
@@ -96,7 +97,11 @@ export function buildConfig(env = process.env) {
     // Where to read freshly published roots from. Either a URL serving the oracle JSON
     // or a local file path.
     oracleSource: env.MNO_ORACLE_SOURCE ?? "oracle/root.json",
-    oracleRefreshSeconds: intEnv(env, "MNO_ORACLE_REFRESH", 30),
+    // Capped so `oracleRefreshSeconds * 1000` (the setInterval argument in core/gateway.js) fits a signed
+    // 32-bit integer. Without the cap a large value overflows and Node silently clamps the interval to
+    // 1 ms, turning "refresh rarely" into fastest-possible refresh, which a review reproduced. 2,147,483
+    // seconds is about 24 days, well past any real refresh cadence.
+    oracleRefreshSeconds: intEnv(env, "MNO_ORACLE_REFRESH", 30, { max: 2147483 }),
 
     // Permit a plain-HTTP oracle URL to a non-loopback host. Off by default, because the snapshot
     // authenticates the membership set and an unencrypted fetch hands a network position the ability
@@ -368,6 +373,22 @@ export function buildConfig(env = process.env) {
     throw new Error(
       `MNO_MODE must be one of ${[...MODES].join(", ")}, got ${JSON.stringify(config.mode)}. Refusing ` +
         `rather than defaulting, because the default would be the other implementation.`,
+    );
+  }
+
+  // A POSITIVE MAX-AGE AT OR BELOW THE REFRESH INTERVAL IS WARNED, NOT REFUSED. The two were validated
+  // independently until a review found the interaction: when max-age does not exceed the refresh
+  // interval, a freshly adopted root ages out before the next refresh replaces it, so the gateway drops
+  // the root and returns 503 on a fixed period even while the source keeps publishing. This is not always
+  // a mistake, though: an operator can legitimately prefer refusing a stale root over serving one and
+  // accept the periodic gap, so it is a startup warning that names the cost rather than a boot refusal
+  // (which would also forbid that valid choice). max-age 0 disables the age check and is exempt.
+  if (config.oracleMaxAgeSeconds > 0 && config.oracleMaxAgeSeconds <= config.oracleRefreshSeconds) {
+    console.warn(
+      `[config] MNO_ORACLE_MAX_AGE (${config.oracleMaxAgeSeconds}s) is at or below MNO_ORACLE_REFRESH ` +
+        `(${config.oracleRefreshSeconds}s), so a refreshed root ages out before the next refresh and ` +
+        `/v1/challenge returns 503 on a fixed period even while the source publishes. Set max-age above ` +
+        `the refresh interval to avoid the gap, or 0 to disable the freshness check if this is intended.`,
     );
   }
 

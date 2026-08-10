@@ -39,8 +39,29 @@ by a different model family before it was called done.
   keyed by the registration nullifier. A fresh full pass then returned APPROVE with one non-blocking
   refusal-reason residual, recorded in the contract. The eight contract invariants are confirmed to hold.
 
-The confirmed minors below (A4 through A14) are not folded here; they are a scoped follow-up. The refuted
-candidates and the tier-1 residuals are unchanged.
+FOLLOW-UP FOLD, 2026-08-10. Six of the confirmed minors are now folded, each with a mutation-checked test
+except where noted:
+
+- A7 folded. A nullifier-store read that fails before the irreversible spend is tagged `beforeSpend` in
+  `core/verifier.js`, and `core/gateway.js` restores the one-time nonce for it rather than burning it. A
+  failure at the spend itself is left uncertain and fails closed.
+- A8 folded. The per-account challenge rate-limit key drops the context, matching the verify path's
+  deliberate account-only keying, so the limit is not multiplied by joining communities.
+- A9 folded. `MNO_ORACLE_REFRESH` is capped so its millisecond product cannot overflow the 32-bit timer
+  and clamp to 1 ms.
+- A10 folded as a startup WARNING (not a boot refusal), because a max-age at or below the refresh interval
+  is an unusual but legitimate prefer-refuse-stale choice, so it is flagged rather than forbidden.
+- A11 folded. The coinbase parser refuses trailing bytes after the transaction, matching the sibling
+  partial-Merkle parser.
+- A12 folded. The Matrix sync loop wraps its poll in a try/catch so a transient homeserver error backs off
+  and retries instead of crashing the bot. NO automated test: the bot entrypoint is a top-level script
+  with hardcoded homeserver dependencies and is not structured for injection, and the fix mirrors the
+  loop's existing tested `!res.ok` backoff.
+
+STILL A SCOPED FOLLOW-UP: A6 (a per-entry count bound on the node-mode list parse, needs a bound value),
+and the judgment-call items A4 and A5 (the self-healing root-pin edges, not reachable on shipped defaults)
+and A13 and A14 (the Platform-contract items, on a path that is not live). The refuted candidates and the
+tier-1 residuals are unchanged.
 
 ## Confirmed findings
 

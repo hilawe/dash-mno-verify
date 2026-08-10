@@ -1162,11 +1162,16 @@ async function bootGateway({ config = buildConfig(process.env) } = {}, release) 
         // The per-account limit, applied now that the account is actually known. With an authenticated
         // adapter this stops one user behind that adapter from spending the whole community's window;
         // without one it is best-effort, since the caller chooses the string (see the note above).
+        // KEYED BY ACCOUNT ALONE, not by context, matching the verify path's deliberate choice below. A
+        // review found this path keyed on the context too, so a user requesting challenges for several
+        // communities got a FRESH per-account allowance per community and could multiply the documented
+        // per-account-per-window limit by joining more. The context is known here (unlike on the verify
+        // path), but including it is the wrong direction for the same reason the verify path rejects it.
         // BOTH BUCKETS TOGETHER, or neither. Charging them in sequence made a request refused by the
         // second still cost the first, so a caller the shared bucket turned away lost its own personal
         // allowance too. Reordering just moved which one leaked, and both orderings shipped.
         if (!allowAll([
-          [accountChallengeLimiter, rateKey(clientKey(req), account, ctx)],
+          [accountChallengeLimiter, rateKey(clientKey(req), account)],
           [challengeLimiter, clientKey(req)],
         ])) {
           return send(res, 429, { error: "rate limited" });
@@ -1332,17 +1337,23 @@ async function bootGateway({ config = buildConfig(process.env) } = {}, release) 
             },
           });
         } catch (err) {
-          // The verify concurrency gate shed this request. The challenge was taken but NOT processed
-          // (the crypto verify never ran), so restore it (original expiry) rather than burn the
-          // member's one-time nonce for a transient overload, then shed with 503. restore fails only if
-          // the challenge expired meanwhile or the store is genuinely full, in which case the nonce
-          // could not be preserved and the member must request a new challenge (say so, rather than tell
-          // them to retry a dead nonce).
-          if (err && err.overloaded) {
+          // THE VERIFY DID NOT REACH THE IRREVERSIBLE NULLIFIER SPEND, so the challenge was taken but
+          // nothing was committed. Two cases reach here: the concurrency gate shed the request
+          // (overloaded, the crypto verify never ran), or a nullifier-store read BEFORE the spend failed
+          // transiently (beforeSpend, tagged in verifier.js). In both, restore the one-time nonce
+          // (original expiry) rather than burn it, then report a transient failure with 503. A review
+          // found the beforeSpend case previously fell through to the generic catch and returned a client
+          // error with the nonce spent, forcing a full re-prove for a transient store blip. restore fails
+          // only if the challenge expired meanwhile or the store is full, in which case the nonce could
+          // not be preserved and the member must request a new challenge (say so, rather than tell them to
+          // retry a dead nonce). An error from the spend itself is NOT tagged, so it stays uncertain and
+          // fails closed below rather than restoring a nonce whose tag may have landed.
+          if (err && (err.overloaded || err.beforeSpend)) {
+            const detail = err.overloaded ? "overloaded" : "a temporary error verifying";
             const restored = challenges.restore(nonce, pending);
             return restored
-              ? send(res, 503, { error: "overloaded, retry later" })
-              : send(res, 503, { error: "overloaded, the challenge could not be preserved, request a new challenge" });
+              ? send(res, 503, { error: `${detail}, retry later` })
+              : send(res, 503, { error: `${detail}, the challenge could not be preserved, request a new challenge` });
           }
           throw err;
         }

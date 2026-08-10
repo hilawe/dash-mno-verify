@@ -659,6 +659,30 @@ test("a request the per-account limit refuses does not spend the shared bucket",
   }
 });
 
+test("A8: the per-account challenge limit is not multiplied by context", async () => {
+  // The per-account limit must bind across a user's communities. A review found the challenge path keyed
+  // it on the context too, so the same account requesting challenges for different communities got a
+  // FRESH per-account allowance each time and could multiply the documented per-account-per-window limit
+  // by joining more. The shared limit is set high here so only the per-account limit (1) can bind.
+  const { dir, env } = await envWithSnapshot({ MNO_RATE_CHALLENGE_ACCOUNT: "1", MNO_RATE_CHALLENGE: "1000", MNO_RATE_INGRESS: "1000" });
+  const gateway = await createGateway({ config: buildConfig(env) });
+  try {
+    const port = await gateway.listen(0);
+    const base = `http://127.0.0.1:${port}`;
+    const ask = (communityId) => post(base, "/v1/challenge", { platform: "p", communityId, roleId: "r", account: "alice" });
+
+    assert.equal((await ask("community-1")).status, 200, "alice's one per-account allowance, in community 1");
+    assert.equal(
+      (await ask("community-2")).status,
+      429,
+      "the same account in another community shares that one allowance, it is not multiplied by context",
+    );
+  } finally {
+    await gateway.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("a request the shared bucket refuses does not spend the account's own allowance", async () => {
   // THE OTHER DIRECTION, and the one a short-circuiting sequential charge still gets wrong. Charging
   // the account bucket first and the shared bucket second means a caller the SHARED bucket turns

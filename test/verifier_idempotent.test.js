@@ -30,6 +30,45 @@ const args = (account, { nullifiers, verifyProof = () => true }) => ({
   expected: baseExpected(account),
 });
 
+test("A7: a nullifier read that fails BEFORE the spend tags the error beforeSpend, so the caller can restore the nonce", async () => {
+  // A transient store read failure (a SQLite read error, a Platform round-trip blip) before the
+  // irreversible nullifier spend must not burn the member's one-time challenge. verifyMembership tags
+  // such an error so the gateway restores the nonce rather than returning a client error with it spent.
+  const throwingRead = {
+    has: async () => {
+      throw new Error("transient store read failure");
+    },
+    get: async () => null,
+    add: async () => ({ duplicate: false }),
+  };
+  await assert.rejects(
+    () => verifyMembership(args("alice", { nullifiers: throwingRead })),
+    (err) => {
+      assert.equal(err.beforeSpend, true, "a pre-spend read failure is tagged restorable");
+      return /transient store read failure/.test(err.message);
+    },
+  );
+});
+
+test("A7: a failure AT the spend is NOT tagged beforeSpend, so the nonce is not restored (fail closed)", async () => {
+  // The spend (nullifiers.add) is the irreversible step. If it throws, the tag may have landed, so the
+  // error must stay uncertain and the nonce must not be restored, or a second grant could be issued.
+  const spendFails = {
+    has: async () => false, // no prior spend, so the flow reaches add()
+    get: async () => null,
+    add: async () => {
+      throw new Error("uncertain spend");
+    },
+  };
+  await assert.rejects(
+    () => verifyMembership(args("alice", { nullifiers: spendFails })),
+    (err) => {
+      assert.notEqual(err.beforeSpend, true, "the spend's own failure is not marked restorable");
+      return /uncertain spend/.test(err.message);
+    },
+  );
+});
+
 test("first verify spends the tag and records the granting account in one record", async () => {
   const nullifiers = new NullifierStore();
   const r = await verifyMembership(args("alice", { nullifiers }));
