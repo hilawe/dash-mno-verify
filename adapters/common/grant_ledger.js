@@ -65,6 +65,18 @@
 //   against real platform state at startup, which Matrix and Discord both do; Telegram cannot do the
 //   general form, because its API exposes no member roster, so for Telegram this stays open.
 //   Do not describe the non-interleaving property as holding across a process death.
+//
+//   Not absolute under a starved scheduler. The refusal is an OS advisory (fcntl) lock, and its
+//   enforcement is only as reliable as the kernel under load. Reproduced on Linux under heavy CPU
+//   contention, a second opener is admitted a few percent of the time even though the holder still
+//   holds a full exclusive lock (confirmed by reading /proc/locks), and the harder openers hammer the
+//   file the lower the refusal rate falls. No journal mode changes this: rollback leaks more than WAL,
+//   and a forced BEGIN EXCLUSIVE does not help, because the miss is below SQLite, at the kernel's
+//   advisory-lock enforcement. On a quiescent host, and on the local storage required above, an
+//   established holder refuses every opener, so this is a property of an overloaded box rather than of
+//   the ledger, but it is why the "refused every time" phrasing is scoped to a non-starved system and
+//   why the test that checks it polls past the rare miss and retries a fresh holder instead of
+//   asserting an immediate absolute (test/adapter_grant_expiry.test.js).
 import { DatabaseSync } from "node:sqlite";
 import { chmodSync, mkdirSync, readFileSync, renameSync, existsSync } from "node:fs";
 import { dirname } from "node:path";
