@@ -7,10 +7,10 @@ prioritized punch list.
 
 ## CURRENT STATE, 2026-08-09 (sixth round closed, audit scoped). THIS SUPERSEDES EVERY SECTION BELOW IT
 
-`main` at `9372159`. ONE COMMIT IS UNPUSHED (the audit-scope doc), `origin/main` is at `456cda8`, whose
-CI is green on all three jobs (`circuits`, `checks`, `full`). Tree is clean apart from an untracked
-`output/` directory that has sat there since 08-04 and is not in `.gitignore`. Suite 632, all passing
-locally.
+`main` and `origin/main` are both at `905f0d9`, in sync, and its CI is green on all three jobs
+(`circuits`, `checks`, `full`) confirmed after the push. Tree is clean. The `output/` directory that had
+sat untracked since 08-04 is now gitignored (`905f0d9`, rendered doc PDFs, regenerable and not source),
+which closes that punch-list item. Suite 632, all passing locally.
 
 THE WHOLE SIXTH-ROUND REVIEW IS CLOSED. F1 through F6 are all folded, reviewed by a different model
 family, pushed, and CI-confirmed (F1 across the seven-round store-review loop; F2 `c813f3a`, F3
@@ -65,8 +65,7 @@ direct, not a defect to pick up:
    ZK-circuit specialist for tier 1, because the unaudited `circom-ecdsa` dependency sits on the
    single-tier critical path. This is the real gate before the system protects anything of value.
 2. Keep the proof and the challenge off the chat platform (`TODO.md`), the standing design item.
-3. The untracked `output/` directory: decide whether to commit, ignore, or remove it.
-4. A flaky test is being fixed in a SEPARATE session: `a second process is refused while the first
+3. A flaky test is being fixed in a SEPARATE session: `a second process is refused while the first
    holds the ledger` (`test/adapter_grant_expiry.test.js`), a Discord adapter SQLite lock race that
    reddens CI's `full` job intermittently and clears on a plain re-run. Unrelated to any finding.
 
