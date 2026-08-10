@@ -25,12 +25,22 @@ store-review narrowing that had said the store checks only structure; the spec i
 a consistent fixture rename to canonical decimals across three test files. Reviewed APPROVE-WITH-FIXES,
 both minors (append-path symmetry, test breadth) folded.
 
-F3 IS DONE (`61688d3`, UNPUSHED). The RootWindows snapshot guard compared a record's SHA-256 root to
-its snapshot's only when BOTH were non-null, so an asymmetric record (one carries a shaRoot, the other
-does not) passed, recreating the split the guard closes. It now null-normalizes both sides and compares
-unconditionally. Latent (the gateway passes matching values), fixed as a real invariant hole. Reviewed
-APPROVE, nothing to fold. F5 and F6 remain open (section 5). Next recommended: F5 (the IPv6 parser
-collision) or F6 (the X11 reference-image cache key), both low.
+F3 IS DONE (`61688d3`, pushed, CI green). The RootWindows snapshot guard compared a record's SHA-256
+root to its snapshot's only when BOTH were non-null; it now null-normalizes and compares
+unconditionally.
+
+F5 AND F6 ARE DONE (`d9b6044`, UNPUSHED), which CLOSES THE WHOLE SIXTH-ROUND REVIEW: F1-F6 are all
+folded. F5, the IPv6 service parser accepted the wrong group count (an exact byte collision), plus, on
+review, bracketless/unmatched-bracket IPv6 and Number()-coercible IPv4 octets; the parser now enforces
+structure and count but deliberately does NOT canonicalize IPv6 representation (Core emits both
+compressed and expanded, which encode to the same correct bytes). F6, the X11 reference-image cache key
+ignored the effective DASH_COMMIT; it is now folded into the identity, the duplicated name logic in
+generate.mjs/fuzz.mjs is extracted to a shared `image_name.mjs` that build.sh matches, and the
+DASH_TAG empty-semantics divergence was fixed. Reviewed APPROVE-WITH-FIXES, all three minors folded.
+
+NOTHING FROM THE SIXTH ROUND REMAINS. The next work is NOT a finding: the audit (none yet;
+`circom-ecdsa` is unaudited demonstration code by its own README), keeping the proof off the chat
+platform (TODO.md), and the untracked `output/`. See the punch list in the reports/TODO.md.
 
 A FLAKY test is being fixed in a separate session: `a second process is refused while the first holds
 the ledger` (`test/adapter_grant_expiry.test.js`), a Discord adapter SQLite lock race that reddened
@@ -47,8 +57,8 @@ not alter the design does not trigger another external round. One more neutral s
 cheap belt-and-braces if wanted, but the loop is done. Read the contract before ever touching the
 store again, and do not reopen it without a new finding.
 
-WHAT IS LEFT IS NOT THE STORE. F2, F4, and F3 are folded (`c813f3a`, `5bd0f47`, `61688d3`). F5 and F6
-from the sixth review round (section 5) are still open and untouched.
+WHAT IS LEFT IS NOT THE STORE, AND NO LONGER THE SIXTH ROUND EITHER. F1-F6 are all folded (`c813f3a`,
+`5bd0f47`, `61688d3`, `d9b6044`, and the store-review sequence for F1). Section 5's list is closed.
 
 IMPORTANT REVIEW-TOOLING NOTE (kept because it will recur): the external reviewer's content filter
 STOPPED a round mid-run over the crypto-heavy gateway code. The framing that worked, used for rounds
