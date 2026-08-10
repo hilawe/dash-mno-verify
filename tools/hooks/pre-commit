@@ -58,7 +58,16 @@ EOF
 # lock they judged stale cannot have it yanked back out from under a new holder by the old hook's
 # cleanup. A termination the trap cannot see (signal 9) leaves the lock behind, which errs toward
 # refusing and is what the removal message below is for.
-LOCK="$ROOT/.git/precommit-suite.lock"
+#
+# THE LOCK LIVES IN THE SHARED GIT DIRECTORY, NOT "$ROOT/.git". In a linked worktree the worktree's
+# `.git` is a FILE (a gitdir pointer), so `mkdir "$ROOT/.git/..."` fails with ENOTDIR and the hook
+# read that failure as a held lock, blocking EVERY commit from EVERY worktree with an uncleanable
+# stale-lock message. `--git-common-dir` is the one real git directory shared by the main checkout and
+# all worktrees, which is also the right scope for this lock: two worktrees of one repo run the same
+# suite and would bind the same loopback port, exactly the contention below guards. In a non-worktree
+# checkout it resolves to `$ROOT/.git`, so the lock path is unchanged there. It can be printed relative
+# (the main checkout does), so it is resolved to an absolute path via the directory it names.
+LOCK="$(cd "$(git rev-parse --git-common-dir)" && pwd)/precommit-suite.lock"
 if ! mkdir "$LOCK" 2>/dev/null; then
   holder="$(cat "$LOCK/pid" 2>/dev/null || echo unknown)"
   echo "COMMIT BLOCKED: another pre-commit suite run holds $LOCK (pid $holder)."
