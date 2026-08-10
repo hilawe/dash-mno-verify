@@ -9,22 +9,9 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { join } from "node:path";
-import { createHash } from "node:crypto";
+import { resolveImage } from "./image_name.mjs";
 
-// THE PIN AND THE IMAGE NAME COME FROM ONE PLACE. They were written out in four files, and the two
-// scripts disagreed: generate.mjs honoured DASH_TAG while fuzz.mjs hard-coded a tag, so
-// `DASH_TAG=vX ./fuzz.sh` built vX and then fuzzed the stale image. The name folds a hash of the
-// build inputs for the same reason build.sh does, so a changed harness or Dockerfile can never
-// resolve to an image built from the old ones.
-function resolveImage() {
-  const here = fileURLToPath(new URL(".", import.meta.url));
-  const tag = process.env.DASH_TAG ?? readFileSync(join(here, "PIN"), "utf8").trim().split(/\s+/)[0];
-  const inputs = ["Dockerfile", "harness.cpp", "PIN"].map((f) => readFileSync(join(here, f))).join("");
-  const hash = createHash("sha256").update(inputs).digest("hex").slice(0, 12);
-  return `x11ref:${tag}-${hash}`;
-}
-const IMAGE = process.env.X11REF_IMAGE ?? resolveImage();
+const IMAGE = resolveImage();
 // `docker` from PATH when it is there, falling back to the Homebrew location this project's Mac uses.
 // Hard-coding that path made the tooling work on exactly one machine, which for a harness whose whole
 // purpose is that someone else can re-derive the vectors is the wrong end to optimise.

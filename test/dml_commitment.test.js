@@ -472,3 +472,43 @@ test("a malformed IPv6 group is refused rather than silently becoming zero", () 
   assert.equal(serviceBytes("[2001:db8::1]:9999").subarray(0, 16).toString("hex"), "20010db8000000000000000000000001");
   assert.equal(serviceBytes("[::]:0").subarray(0, 16).toString("hex"), "00".repeat(16));
 });
+
+test("a structurally malformed service is refused, including the group-count collision (F5)", () => {
+  // F5 FROM THE SIXTH-ROUND REVIEW, and its follow-up. The parser validated each group but not the
+  // group COUNT. Without "::" it accepted fewer than eight groups and padded them, and with "::" it
+  // accepted a full eight beside the abbreviation, an exact collision: "[1:2:3:4:5:6:7:8::]" produced
+  // bytes IDENTICAL to "[1:2:3:4:5:6:7:8]". A review then found more structural holes: IPv6 without
+  // brackets, unmatched brackets, and IPv4 octets that Number() coerces ("1e0", "+1", leading zero).
+  const refused = [
+    // group count
+    "[1:2:3:4:5:6:7]:9999", // seven groups, no "::", was silently padded to eight
+    "[1:2:3:4:5:6:7:8::]:9999", // eight groups plus "::": the exact collision with the canonical form
+    "[1:2:3:4:5:6:7:8:9]:9999", // nine groups
+    "[1:::2]:9999", // a stray ":::" leaves an empty group, once filtered away
+    "[1:2:3:4:5:6:7:]:9999", // a trailing single colon, an empty final group
+    // brackets
+    "::1:9999", // IPv6 without brackets, ambiguous against the port colon
+    "[::1:9999", // unmatched "["
+    "::1]:9999", // unmatched "]"
+    "[1.2.3.4]:9999", // IPv4 must not be bracketed
+    // IPv4 octet and port spellings that Number() would coerce
+    "01.2.3.4:9999", // a leading zero
+    "1e0.2.3.4:9999", // scientific notation
+    "+1.2.3.4:9999", // a sign
+    "[::1]:+9999", // a signed port
+    "1.2.3.4:0x270f", // a hex port
+  ];
+  for (const bad of refused) {
+    assert.throws(() => serviceBytes(bad), /malformed|out of range|not a plain decimal|not IPv6|must be bracketed|has no port/, bad);
+  }
+  // The canonical spellings Dash Core emits still encode. NOTE this is NOT a one-spelling guarantee:
+  // Core emits both compressed and expanded IPv6, and leading zeros are a valid representation, so
+  // several valid spellings of one address legitimately encode to the same CORRECT bytes. The property
+  // is that malformed input is refused and the bytes are right for the address a valid spelling names.
+  assert.equal(serviceBytes("[1:2:3:4:5:6:7:8]:9999").subarray(0, 16).toString("hex"), "00010002000300040005000600070008");
+  assert.equal(serviceBytes("[0:0:0:0:0:0:0:1]:9999").subarray(0, 16).toString("hex"), "00".repeat(15) + "01"); // expanded, Core emits it
+  assert.equal(serviceBytes("[::01]:9999").subarray(0, 16).toString("hex"), "00".repeat(15) + "01"); // a leading zero is a valid group
+  assert.equal(serviceBytes("[::1]:9999").subarray(0, 16).toString("hex"), "00".repeat(15) + "01");
+  assert.equal(serviceBytes("[1::]:9999").subarray(0, 16).toString("hex"), "0001" + "00".repeat(14));
+  assert.equal(serviceBytes("[1:2::7:8]:9999").subarray(0, 16).toString("hex"), "00010002000000000000000000070008");
+});

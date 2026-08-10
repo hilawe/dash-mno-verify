@@ -12,7 +12,14 @@ COMMIT="${DASH_COMMIT-${PIN_LINE##* }}"
 # place and every later run verified against a binary that no longer matched the sources. A reviewer
 # appended "#error" to harness.cpp and watched build.sh report "already built" and exit 0. Folding a
 # hash of the build inputs into the image name makes a stale image impossible to reach by accident.
-INPUTS_HASH="$(cat "$HERE/Dockerfile" "$HERE/harness.cpp" "$HERE/PIN" | shasum -a 256 | cut -c1-12)"
+#
+# THE EFFECTIVE COMMIT IS PART OF THE IDENTITY TOO (F6). The tag is mutable, so DASH_COMMIT is the
+# escape the Dockerfile documents for inspecting a moved tag, and an empty DASH_COMMIT is a distinct
+# escape of its own. Without the commit in the hash, `DASH_COMMIT= build.sh` or a different commit at
+# the same tag resolved to the same image name and hit the cache instead of rebuilding. Folding
+# COMMIT into the hash gives the empty override and every alternate commit their own image. The
+# generate.mjs and fuzz.mjs scripts fold it identically, so all three resolve the same name.
+INPUTS_HASH="$( { cat "$HERE/Dockerfile" "$HERE/harness.cpp" "$HERE/PIN"; printf '\nDASH_COMMIT=%s\n' "$COMMIT"; } | shasum -a 256 | cut -c1-12)"
 IMAGE="${X11REF_IMAGE:-x11ref:${TAG}-${INPUTS_HASH}}"
 
 if ! "$DOCKER" info >/dev/null 2>&1; then

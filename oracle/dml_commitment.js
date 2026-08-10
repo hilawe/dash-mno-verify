@@ -55,41 +55,92 @@ const internalOrder = (hex) => reversed(Buffer.from(hex, "hex"));
 // An IPv4 address occupies the IPv4-mapped range, which is why the 0xffff sits at offset 10.
 export function serviceBytes(service) {
   const out = Buffer.alloc(18);
-  const split = String(service).lastIndexOf(":");
-  if (split < 0) throw new Error(`service ${JSON.stringify(service)} has no port`);
-  const host = String(service).slice(0, split).replace(/^\[|\]$/g, "");
-  const port = Number(String(service).slice(split + 1));
-  if (!Number.isInteger(port) || port < 0 || port > 0xffff) throw new Error(`service port out of range in ${JSON.stringify(service)}`);
-  if (host.includes(":")) {
+  const s = String(service);
+  // BRACKETS ARE STRUCTURAL, not optional. A review found the old code stripped an optional "[" or
+  // "]" and then chose the branch by whether the host contained a colon, so a bracketless "::1:9999"
+  // and an unmatched "[::1:9999" both parsed as an IPv6 service. An IPv6 service MUST be "[host]:port"
+  // and an IPv4 one MUST be "host:port" with no brackets and no colons, which is the form Dash Core
+  // emits and the only form that disambiguates the port colon from the address colons.
+  let host, portStr, isV6;
+  if (s.startsWith("[")) {
+    const close = s.indexOf("]");
+    if (close < 0 || s[close + 1] !== ":") {
+      throw new Error(`malformed IPv6 service ${JSON.stringify(service)}, expected "[host]:port"`);
+    }
+    host = s.slice(1, close);
+    portStr = s.slice(close + 2);
+    isV6 = true;
+    if (!host.includes(":")) throw new Error(`bracketed host is not IPv6 in ${JSON.stringify(service)}`);
+  } else {
+    const split = s.lastIndexOf(":");
+    if (split < 0) throw new Error(`service ${JSON.stringify(service)} has no port`);
+    host = s.slice(0, split);
+    portStr = s.slice(split + 1);
+    isV6 = false;
+    if (host.includes(":")) throw new Error(`IPv6 service must be bracketed as "[host]:port" in ${JSON.stringify(service)}`);
+  }
+  // A PLAIN DECIMAL PORT, so "+9999", "0x270f", and "9.9" (which Number() would coerce) are refused.
+  if (!/^\d{1,5}$/.test(portStr)) throw new Error(`service port is not a plain decimal in ${JSON.stringify(service)}`);
+  const port = Number(portStr);
+  if (port > 0xffff) throw new Error(`service port out of range in ${JSON.stringify(service)}`);
+  if (isV6) {
     // ONE ABBREVIATION AT MOST. "::" may appear once in an IPv6 address, and splitting on it without
     // saying so took the first two parts and silently discarded the rest, so "2001::1::2" parsed as
     // "2001::1" and encoded bytes for an address nobody wrote. Found by a test written for the
     // group-validation fix, which is the useful kind of accident.
     const parts = host.split("::");
     if (parts.length > 2) throw new Error(`malformed IPv6 host in ${JSON.stringify(service)}, more than one "::"`);
-    const [head, tail = ""] = parts;
-    const h = head ? head.split(":").filter(Boolean) : [];
-    const t = tail ? tail.split(":").filter(Boolean) : [];
-    if (h.length + t.length > 8) throw new Error(`malformed IPv6 host in ${JSON.stringify(service)}`);
-    const groups = [...h, ...Array(8 - h.length - t.length).fill("0"), ...t];
-    // EACH GROUP IS VALIDATED, not coerced. parseInt("gg", 16) is NaN and the mask turned that into
-    // zero, so "gg" and "0" produced identical bytes and a malformed service from the node serialized
-    // to a valid-looking entry. The surrounding boundary claims malformed fields refuse, and this was
-    // the one place quietly disagreeing.
-    groups.forEach((g, n) => {
-      if (!/^[0-9a-fA-F]{1,4}$/.test(g)) {
-        throw new Error(`malformed IPv6 group ${JSON.stringify(g)} in ${JSON.stringify(service)}`);
+    const compressed = parts.length === 2;
+    // EACH GROUP IS VALIDATED, not coerced, and an EMPTY group is malformed. parseInt("gg", 16) is NaN
+    // and the mask turned that into zero, so "gg" and "0" once produced identical bytes. An empty
+    // group (from a stray ":::" or a leading/trailing single ":") is malformed the same way, and is
+    // rejected here rather than filtered away, which is what let "1:::2" silently parse as "1::2". The
+    // only legal empty side is the whole of one side of a "::", handled by treating "" as no groups.
+    const groupsOf = (side) => {
+      if (side === "") return [];
+      const gs = side.split(":");
+      for (const g of gs) {
+        if (!/^[0-9a-fA-F]{1,4}$/.test(g)) {
+          throw new Error(`malformed IPv6 group ${JSON.stringify(g)} in ${JSON.stringify(service)}`);
+        }
       }
-      out.writeUInt16BE(parseInt(g, 16), n * 2);
-    });
+      return gs;
+    };
+    const h = groupsOf(parts[0]);
+    const t = compressed ? groupsOf(parts[1]) : [];
+    // THE GROUP COUNT IS EXACT, which is what F5 closed. Without "::" an address is fully written and
+    // must carry exactly eight groups: the old code accepted fewer and padded them, so "1:2:3:4:5:6:7"
+    // silently became "...:7:0". With "::" the abbreviation must stand for at least one zero group, so
+    // the written groups must be seven or fewer: the old code accepted eight beside a "::", so
+    // "1:2:3:4:5:6:7:8::" produced bytes IDENTICAL to the canonical "1:2:3:4:5:6:7:8".
+    //
+    // WHAT THIS DOES NOT DO, stated so the boundary is not over-claimed: it does not enforce a single
+    // CANONICAL IPv6 spelling. Leading zeros ("::01"), uppercase hex, and the expanded versus
+    // compressed forms are all valid representations of one address, they all encode to the same
+    // CORRECT bytes, and Dash Core is documented to emit both compressed and expanded forms, so
+    // refusing them would refuse a real service. The guarantee here is that a structurally malformed
+    // service is refused and that the byte encoding is correct for the address a valid spelling names,
+    // not that one address has exactly one accepted spelling.
+    if (!compressed && h.length !== 8) {
+      throw new Error(`malformed IPv6 host in ${JSON.stringify(service)}, needs exactly eight groups without "::"`);
+    }
+    if (compressed && h.length + t.length > 7) {
+      throw new Error(`malformed IPv6 host in ${JSON.stringify(service)}, "::" must replace at least one group`);
+    }
+    const groups = compressed ? [...h, ...Array(8 - h.length - t.length).fill("0"), ...t] : h;
+    groups.forEach((g, n) => out.writeUInt16BE(parseInt(g, 16), n * 2));
   } else {
     const octets = host.split(".");
     if (octets.length !== 4) throw new Error(`malformed IPv4 host in ${JSON.stringify(service)}`);
     out.writeUInt16BE(0xffff, 10);
     octets.forEach((o, n) => {
-      const v = Number(o);
-      if (!Number.isInteger(v) || v < 0 || v > 255) throw new Error(`malformed IPv4 host in ${JSON.stringify(service)}`);
-      out[12 + n] = v;
+      // PLAIN DECIMAL, 0 to 255, no leading zeros. Number() would coerce "1e0", "+1", and "0x1" to
+      // integers in range, so "1e0.2.3.4" and "1.2.3.4" once encoded to the same bytes. A strict
+      // decimal literal is the octet spelling Dash Core emits.
+      if (!/^(0|[1-9]\d{0,2})$/.test(o) || Number(o) > 255) {
+        throw new Error(`malformed IPv4 octet ${JSON.stringify(o)} in ${JSON.stringify(service)}`);
+      }
+      out[12 + n] = Number(o);
     });
   }
   out.writeUInt16BE(port, 16);
