@@ -5,7 +5,100 @@ counts and supersedes everything below it. Historical sections are append-only a
 only marked superseded. Read this first when picking the project back up, then `TODO.md` for the full
 prioritized punch list.
 
-## CURRENT STATE, 2026-08-09 (sixth round closed, audit scoped). THIS SUPERSEDES EVERY SECTION BELOW IT
+## CURRENT STATE, 2026-08-10 (internal assurance pass run, blocker + two majors folded and pushed, circuit static analysis started). THIS SUPERSEDES EVERY SECTION BELOW IT
+
+`origin/main` is at `84881c6`, in sync, CI green on all three jobs (`circuits`, `checks`, `full`). The
+only uncommitted work is the circuit-analysis harness (`tools/circuit-analysis/`) plus this handoff; if
+they were committed in the same change that wrote this line, the tree is clean.
+
+### 0. FOLLOW THE PLAYBOOKS. Same first instruction as always (see the superseded 08-09 block below for
+the full load-bearing list, which still applies verbatim: write-time self-verification, the fresh-full
+review loop, the writing discipline, and the standing rules including the manual leak scan and
+never-push-without-per-push-approval on this direct-push public repo).
+
+### 1. WHAT THIS SESSION DID
+
+An INTERNAL ASSURANCE PASS was designed and run as a no-external-auditor substitute, documented in
+`docs/INTERNAL_ASSURANCE_PROCESS.md` (its design was critiqued by two outside model families before use
+and reshaped). The pass: a ten-reader fleet, a different-family CLI pass with repo access, and
+adversarial verification, over the frozen tree. It confirmed 14 candidates and refuted 7, recorded in
+`REVIEW_FINDINGS_dash-mno-verify_internal_assurance_2026-08-10.md`.
+
+THE BLOCKER AND TWO MAJORS ARE FOLDED, PUSHED, AND CI-GREEN (commit `84881c6`, rebased cleanly onto four
+commits another session had landed, the flaky-lock-test fix and a pre-commit worktree-lock fix, no file
+overlap, no force-push). Each fix is mutation-checked and reviewed by a different model family:
+
+- A1 (blocker), `core/registration_store.js`: a complete newline-terminated but unsynced record was
+  trusted on restart with no file barrier. `#load` now fsyncs the file before installing the maps for a
+  schedule-configured store with records. Three-family confirmed.
+- A2 (major), the members-tree reconciliation across `core/season.js`, `core/verifier.js`,
+  `core/gateway.js`. TOOK SIX REVIEW ROUNDS. The first fix was on a path production never reaches; the
+  real defect was structural (a strand corrupted every LATER registration, not just the stranded
+  member's retry). Crossed rule 7, so its contract was written to `docs/MEMBERS_TREE_RECONCILIATION.md`
+  and the rest folded as divergences: `commit` reconciles before assigning a position or checking
+  capacity, an index-vs-tree guard fails closed, both verifier anchor checks recover a durable duplicate
+  before the anchor rule, the pre-capacity duplicate check is keyed by the registration nullifier. The
+  different-family CLI reviewer with repo access converged to APPROVE, and two further model families
+  corroborated on the FINAL code (fingerprint-verified). One refusal-reason residual is documented in the
+  contract.
+- A3 (major), `oracle/node_client.js`: the direct-node cli read used `execFileSync`, freezing the
+  gateway event loop. Now promisified `execFile`, awaited. Three-family confirmed.
+
+CIRCUIT STATIC ANALYSIS STARTED (the no-specialist tier-1 path, after the operator ruled out paying a
+specialist). `tools/circuit-analysis/` is a containerized circomspect (Trail of Bits) harness, pinned to
+circomspect 0.9.0, same conventions as `tools/x11-reference`. FIRST RUN RESULT (in `output/circomspect.txt`,
+gitignored, regenerable): 0 errors, 4 warnings, 45 notes. The four warnings are assessed: two are the
+Semaphore `sq` binding (intentional, corroborates the S9 reader), two are `Num2Bits` aliasing in
+`hash160.circom` that are BENIGN at the instantiated `n=64` (aliasing needs `n` near the ~254-bit field
+size). No error-level under-constraint finding. circomspect is STATIC, so this raises the tier-1 floor
+above "structural only" but is not a soundness proof.
+
+KEY CIRCUIT FACT established this session: BOTH `mno_membership.circom` (single-tier) AND
+`mno_registration.circom` (two-tier registration) include `circom-ecdsa` and call `ECDSAPrivToPub`, so the
+unaudited dependency is on the critical path of BOTH designs and cannot be dodged by disabling one path.
+Only `mno_members.circom` (per-epoch re-proof) is free of it. This kills the "ship only two-tier to avoid
+circom-ecdsa" idea.
+
+### 2. WHERE TO START (punch list, ordered)
+
+1. Commit the circuit-analysis harness and this handoff if not already done in the same change.
+2. THE A4-A14 MINOR FOLDS from the assurance findings report (config footguns, a Matrix-bot crash on a
+   transient error, two Platform-contract items that are not live). Confirmed minors, a scoped follow-up,
+   each under the mutation-checked discipline. The operator asked to return to these.
+3. Continue circuit assurance: Ecne (R1CS determinism) and Picus (SMT under-constraint) run COMPONENT-WISE
+   (they time out on the 254k-constraint whole circuits; isolate `merkle`, `hash160`, the nullifier
+   Poseidon, the Semaphore binding, and `ECDSAPrivToPub`), then extend the differential-testing pattern
+   (the hash160 vectors, the X11 harness) to nullifier/commitment derivation.
+4. The residual tier-1 items no free tool closes stay for a specialist IF ever funded: circom-ecdsa
+   template safety as used, the trusted-setup ceremony assumption, a novel attack. Operator has declined
+   to fund a specialist, so the operational options stand: do not gate real value yet, small anonymity
+   set, capped grants, contingent bug bounty over a retainer.
+
+### 3. WHAT FORCED REWORK THIS SESSION (feeds the playbooks)
+
+- A2 drew findings across three review rounds before rule 7 was invoked; the mechanical trigger should
+  have fired after round two, not by feel after round three. Same lesson the registration-store contract
+  already recorded. The written contract then drove it to convergence.
+- The two packet-reviewer families' first replies described the SUPERSEDED A2 fix (the reverted
+  `_materializeFrom`/`indexOf` form), because a stale packet copy or a cached prompt was used. Fixed by
+  putting a version+content-hash token in the packet FILENAME and a fingerprint line the reviewer must
+  echo. Feeds a new habit: version review packets by content hash so a stale paste is self-evident.
+- The push was rejected non-fast-forward because another session had advanced `origin`. Handled by
+  fetch + clean rebase (no file overlap, no force-push), then re-running the full suite on the combined
+  tree before pushing. Feeds the re-verify-before-acting rule: re-check `origin` right before a push.
+
+### 4. GOTCHAS CARRIED FORWARD
+
+- Re-run circomspect: `bash tools/circuit-analysis/run.sh output/circomspect.txt` (image is built and
+  cached, so seconds). circomspect has no `--version` flag (use `--help`); that mistake failed the first
+  image build's sanity line.
+- The full-suite pre-commit hook is ~2.5 min; a commit needs a generous timeout or it is stopped mid-gate.
+- After any push, read the CI conclusion and check the `full` job specifically.
+- `output/` is gitignored (rendered artifacts and now the circomspect report live there).
+
+The block below is the superseded 08-09 state, kept append-only.
+
+## SUPERSEDED, 2026-08-09 (sixth round closed, audit scoped)
 
 `main` and `origin/main` are both at `905f0d9`, in sync, and its CI is green on all three jobs
 (`circuits`, `checks`, `full`) confirmed after the push. Tree is clean. The `output/` directory that had
