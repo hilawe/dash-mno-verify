@@ -11,7 +11,8 @@
     ],
     "required": ["height", "root", "treeDepth"],
     "additionalProperties": false,
-    "documentsMutable": false
+    "documentsMutable": false,
+    "canBeDeleted": false
   },
   "nullifier": {
     "type": "object",
@@ -44,7 +45,8 @@
     ],
     "required": ["season", "root", "size"],
     "additionalProperties": false,
-    "documentsMutable": false
+    "documentsMutable": false,
+    "canBeDeleted": false
   },
   "registration": {
     "type": "object",

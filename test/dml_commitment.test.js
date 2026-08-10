@@ -125,6 +125,15 @@ test("a coinbase that is not the one the branch marks, or a header the branch do
   );
 });
 
+test("A6: a masternode list past the entry-count bound is refused before reconstruction", () => {
+  // smlMerkleRoot maps, sorts, and double-hashes every entry synchronously, so an oversized list would
+  // stall the request-serving loop in direct-node mode. The bound refuses it up front, before any entry
+  // is processed, so the list contents do not even need to be well formed here. The positive path (the
+  // real mainnet fixture) is covered by the tests above.
+  const oversized = Array.from({ length: 50001 }, () => ({ proRegTxHash: "00".repeat(32) }));
+  assert.throws(() => smlMerkleRoot(oversized), /past the 50000 bound/, "an oversized list is refused before the heavy work");
+});
+
 test("A11: a coinbase with trailing bytes after its payload is refused, not parsed as canonical", () => {
   // A review found that appending a byte to a valid cbTx parsed to the same height and masternode root
   // and was accepted, because the parser never checked it had consumed the whole transaction. The parser

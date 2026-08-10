@@ -259,7 +259,19 @@ export function merkleRootFromLeaves(leaves) {
 // The masternode list root, as the coinbase commits to it. Entries are ordered by proRegTxHash in
 // its INTERNAL byte order, which is what Dash's own sort compares (`uint256::Compare` is a memcmp
 // over the stored bytes), and that is not the same order as sorting the displayed hex.
+// A BOUND ON THE ENTRY COUNT, so an oversized list cannot stall the loop. smlMerkleRoot maps, sorts,
+// and double-hashes every entry synchronously, so a list the size of the response byte cap allows (a
+// review measured a maximal response, about 100,000 entries, as a several-hundred-millisecond stall on
+// the request-serving loop in direct-node mode) blocks the gateway for however long the node chose. The
+// mainnet list is near 2,972 and the masternode count is economically bounded to low thousands by
+// collateral, so 50,000 is large headroom while capping the work at a bounded cost. Refuse rather than
+// reconstruct a list no honest node produces.
+const MAX_MN_LIST_ENTRIES = 50000;
+
 export function smlMerkleRoot(mnList) {
+  if (mnList.length > MAX_MN_LIST_ENTRIES) {
+    throw new Error(`masternode list has ${mnList.length} entries, past the ${MAX_MN_LIST_ENTRIES} bound`);
+  }
   const keyed = mnList.map((e) => ({ e, key: internalOrder(e.proRegTxHash) }));
   keyed.sort((a, b) => Buffer.compare(a.key, b.key));
   for (let i = 1; i < keyed.length; i++) {

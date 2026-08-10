@@ -58,10 +58,33 @@ except where noted:
   with hardcoded homeserver dependencies and is not structured for injection, and the fix mirrors the
   loop's existing tested `!res.ok` backoff.
 
-STILL A SCOPED FOLLOW-UP: A6 (a per-entry count bound on the node-mode list parse, needs a bound value),
-and the judgment-call items A4 and A5 (the self-healing root-pin edges, not reachable on shipped defaults)
-and A13 and A14 (the Platform-contract items, on a path that is not live). The refuted candidates and the
-tier-1 residuals are unchanged.
+SECOND FOLD, 2026-08-10, folds two more and accepts three residuals.
+
+- A6 folded. `smlMerkleRoot` in `oracle/dml_commitment.js` refuses a masternode list past a 50,000-entry
+  bound before it maps, sorts, and double-hashes it, so an oversized node response cannot stall the
+  request-serving loop. The mainnet list is near 2,972 and the count is economically bounded to low
+  thousands, so the bound is large headroom. Mutation-checked.
+- A13 folded. `dmlRoot` and `membersRoot` in `contract/mno-verify.contract.json` now set
+  `canBeDeleted:false`, matching the nullifier and registration types, so a published root cannot be
+  swapped by delete-then-recreate. Mutation-checked in `test/contract_schema.test.js`.
+
+ACCEPTED RESIDUALS, recorded rather than folded, each for a stated reason:
+
+- A4 and A5, the root-pin edges. Both are self-healing (the challenge nonce is consumed but the nullifier
+  is not, so no membership is lost and a re-challenge recovers), and NEITHER is reachable on shipped
+  defaults (A4 needs a burst of at least MNO_ROOT_WINDOW registrations for one context inside a single
+  challenge's lifetime; A5 needs a lowered root window or a list grown far past today's size). Folding
+  them means giving the per-context members RootStore the same pin awareness the DML window has, which
+  touches the root-pin architecture that the A2 fold showed is defect-prone, so the risk-to-reward for a
+  self-healing, not-reachable edge does not justify the change now. Revisit if a deployment lowers
+  MNO_ROOT_WINDOW or the list grows by roughly an order of magnitude.
+- A14, the Platform-contract creator restriction. A funded identity could front-run a predictable unique
+  key (a future height or season) and, with immutability, block the honest oracle write. The fix is an
+  owner-scoped unique index, a contract redesign. The Platform path is not wired in code and is documented
+  as not live, and the multi-gateway Platform mode already rests on an operator-coordinated schedule
+  rather than the contract, so this is deferred with that path rather than folded now.
+
+The refuted candidates and the tier-1 residuals are unchanged.
 
 ## Confirmed findings
 
