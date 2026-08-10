@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { SeasonMembers } from "../core/season.js";
 import { RegistrationStore, MemoryRegistrationBackend } from "../core/registration_store.js";
+import { verifyRegistrationCore } from "../core/verifier.js";
 import { makeDmlRootHasher } from "../core/dml_root.js";
 
 // The shared empty members root an unmaterialized context serves, computed once via the fast hasher.
@@ -51,6 +52,242 @@ test("a commit into a bucket declared for a different statement is rejected, tre
   assert.equal(invalid.reason, "invalid-engine-statement");
   assert.equal(m.size(CTX), 1);
   assert.equal(m.root(CTX), rootAfterFirst);
+});
+
+test("A2: a durable-but-stranded member is reconciled on the already-registered retry, preserving prior roots", async () => {
+  // The internal assurance round's strand, corrected after a different-family review showed the first
+  // fix sat on a path production never reaches. On a retry the store reports the record already durable,
+  // so verifyRegistrationCore returns already-registered at registrationStore.has() BEFORE commit() runs.
+  // The recovery is therefore triggered from that already-registered path: it rebuilds the cache from the
+  // durable records when the cache is behind, and it preserves the context's root window so a still-live
+  // root a challenge was minted against is not evicted.
+  const store = newStore();
+  const m = newSeason(store);
+  await m.ensureContext(0, CTX);
+
+  // Member A registers normally: durable AND in the tree. Capture the root the tree served with A alone.
+  const a = await m.commit(0, CTX, "111", () =>
+    store.append({ season: 0, contextHash: CTX, regNullifier: "135", commitment: "111", engine: "plonk", statement: "derive" }),
+  );
+  assert.equal(a.ok, true);
+  const rootWithA = m.root(CTX);
+  assert.equal(m.rootStore(CTX).isRecent(rootWithA), true);
+
+  // Member B is stranded: durably written but never appended to the tree (its commit threw after the
+  // durable write). Appending straight to the store reproduces that exact state.
+  await store.append({ season: 0, contextHash: CTX, regNullifier: "136", commitment: "222", engine: "plonk", statement: "derive" });
+  assert.equal(m.size(CTX), 1, "the cached tree is missing the stranded member");
+  assert.deepEqual((await store.forSeasonContext(0, CTX)).map((r) => r.commitment), ["111", "222"], "both are durable");
+
+  // B retries registration. registrationStore.has() is true, so the core answers already-registered
+  // without reaching the proof verify or commit (both throw here if reached); recover must reconcile first.
+  const result = await verifyRegistrationCore({
+    claims: { commitment: "222", regNullifier: "136", root: "r", season: 0, contextHash: CTX },
+    verifyProof: () => {
+      throw new Error("proof verify must not run on an already-registered retry");
+    },
+    // A STALE anchor (isRecent false): recovery must NOT be blocked by anchor freshness (finding P1-a),
+    // because an already-durable member cannot be required to re-anchor and may have left the list.
+    expected: { rootStore: { isRecent: () => false }, season: 0, contextHash: CTX, engine: "plonk", statement: "derive" },
+    registrationStore: store,
+    commit: () => {
+      throw new Error("commit must not run on an already-registered retry");
+    },
+    recover: (s, c) => m.recoverMember(s, c),
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "already-registered", "recovered despite a stale anchor, not stale-or-unknown-root");
+  assert.equal(m.size(CTX), 2, "the stranded member is reconciled into the tree");
+  assert.ok(m.commitments(CTX).includes("222"), "so a later /v1/members read serves them a valid path");
+  assert.equal(m.rootStore(CTX).isRecent(rootWithA), true, "the previously served root is preserved, not evicted");
+  assert.equal(m.rootStore(CTX).isRecent(m.root(CTX)), true, "and the new root is present too");
+
+  // A NEW registration (unknown nullifier) with the same stale anchor is still rejected: the reorder
+  // did not weaken the anchor rule for a genuine new registration, only lifted it off the durable replay.
+  const fresh = await verifyRegistrationCore({
+    claims: { commitment: "333", regNullifier: "137", root: "r", season: 0, contextHash: CTX },
+    verifyProof: () => true,
+    expected: { rootStore: { isRecent: () => false }, season: 0, contextHash: CTX, engine: "plonk", statement: "derive" },
+    registrationStore: store,
+    commit: () => {
+      throw new Error("commit must not run once the anchor is refused");
+    },
+    recover: (s, c) => m.recoverMember(s, c),
+  });
+  assert.equal(fresh.reason, "stale-or-unknown-root", "a new registration still needs a fresh anchor");
+});
+
+test("A2 (P1-b): a concurrent retry reaching commit's duplicate branch is also reconciled", async () => {
+  // A re-review found the verifier has() short-circuit recovers only a SEQUENTIAL retry. Two retries can
+  // both read has()==false before either enters the season queue; the first writes durably and throws
+  // before the tree append, and the second reaches commit(), gets duplicate from the durable append, and
+  // must reconcile the cache there too rather than answering already-registered with the member absent.
+  const store = newStore();
+  const m = newSeason(store);
+  await m.ensureContext(0, CTX);
+  const a = await m.commit(0, CTX, "111", () =>
+    store.append({ season: 0, contextHash: CTX, regNullifier: "135", commitment: "111", engine: "plonk", statement: "derive" }),
+  );
+  assert.equal(a.ok, true);
+  // Strand B durably, outside the tree.
+  await store.append({ season: 0, contextHash: CTX, regNullifier: "136", commitment: "222", engine: "plonk", statement: "derive" });
+  assert.equal(m.size(CTX), 1);
+
+  // The second concurrent retry reaches commit and its appendDurable reports duplicate.
+  const res = await m.commit(0, CTX, "222", async () => ({ duplicate: true }));
+  assert.equal(res.ok, false);
+  assert.equal(res.reason, "already-registered");
+  assert.equal(m.size(CTX), 2, "commit's duplicate branch reconciled the stranded member into the tree");
+  assert.ok(m.commitments(CTX).includes("222"));
+});
+
+test("A2 (P2): recoverMember never rolls the cache backward, it reports season-rolled", async () => {
+  // A re-review found that recoverMember called _roll(season), which throws under monotonic when a
+  // rollover queued ahead of the call has advanced the cache past this request's season. It now checks
+  // the cache season instead of rolling, so a mismatched season is a no-op season-rolled result.
+  const store = newStore();
+  const m = new SeasonMembers({ store, rootWindow: 8, nowSec: () => 0, emptyRoot: EMPTY_ROOT, monotonic: true });
+  await m.ensureContext(1, CTX); // the cache is now on season 1
+  const r = await m.recoverMember(0, CTX); // a straggler for the ended season 0
+  assert.deepEqual(r, { rebuilt: false, reason: "season-rolled" }, "no throw, no backward roll");
+  assert.equal(m.current, 1, "the cache season is unchanged");
+});
+
+test("A2 (Finding 1): a normal commit after a strand reconciles first, so leaf order stays a durable prefix", async () => {
+  // The third-round blocker. A strand leaves the cache behind the durable records, and before this fix a
+  // later NORMAL commit appended onto that lagging cache, assigning the new member a tree position below
+  // the durable index the store handed back. The served tree and a restart rebuild then diverged, and the
+  // capacity guard under-counted. commit now reconciles before assigning a position.
+  const store = newStore();
+  const m = newSeason(store);
+  await m.ensureContext(0, CTX);
+  // A registers normally: durable and cached at index 0.
+  const a = await m.commit(0, CTX, "111", () =>
+    store.append({ season: 0, contextHash: CTX, regNullifier: "135", commitment: "111", engine: "plonk", statement: "derive" }),
+  );
+  assert.equal(a.ok, true);
+  // B is stranded: durable at index 1, never in the tree.
+  await store.append({ season: 0, contextHash: CTX, regNullifier: "136", commitment: "222", engine: "plonk", statement: "derive" });
+  assert.equal(m.size(CTX), 1, "the cache lags: it holds only A");
+
+  // C registers normally. Its durable index is 2; commit must reconcile B in first so C lands at 2, not 1.
+  const c = await m.commit(0, CTX, "333", () =>
+    store.append({ season: 0, contextHash: CTX, regNullifier: "137", commitment: "333", engine: "plonk", statement: "derive" }),
+  );
+  assert.equal(c.ok, true);
+  assert.equal(c.index, 2, "C takes the durable index 2, not the lagging cache position 1");
+  assert.equal(m.size(CTX), 3);
+  assert.deepEqual(m.commitments(CTX), ["111", "222", "333"], "the tree is the durable prefix, with B reconciled in");
+});
+
+test("A2 (Finding 1 guard): a durable index that disagrees with the tree size fails closed, tree untouched", async () => {
+  // The second guard the review asked for: even if reconciliation ever failed to align them, a durable
+  // index that does not equal the tree position must not append the member at the wrong slot.
+  const store = newStore();
+  const m = newSeason(store);
+  await m.ensureContext(0, CTX);
+  const res = await m.commit(0, CTX, "111", async () => ({ duplicate: false, index: 5 }));
+  assert.equal(res.ok, false);
+  assert.equal(res.reason, "index-tree-mismatch", "a mismatched durable index is refused, not appended");
+  assert.equal(m.size(CTX), 0, "the tree is not mutated");
+});
+
+test("A2 (Finding 2a): a key that becomes durable during the proof recovers when the anchor then ages out", async () => {
+  // The concurrent race the third round found: a request passes the initial has() (false) and anchor
+  // (fresh), and while its proof verifies a concurrent request lands and strands the member. If this
+  // request's post-proof anchor recheck then fails, it must recover the now-durable member rather than
+  // returning stale-or-unknown-root and leaving it stranded.
+  let hasCalls = 0;
+  let rootCalls = 0;
+  let recovered = null;
+  const result = await verifyRegistrationCore({
+    claims: { commitment: "222", regNullifier: "136", root: "r", season: 0, contextHash: CTX },
+    verifyProof: () => true,
+    expected: {
+      rootStore: { isRecent: () => (++rootCalls === 1) }, // fresh at the initial check, aged out on the recheck
+      season: 0,
+      contextHash: CTX,
+      engine: "plonk",
+      statement: "derive",
+    },
+    registrationStore: { has: async () => ++hasCalls >= 2 }, // not durable initially, durable by the recheck
+    commit: () => {
+      throw new Error("commit must not run when the anchor aged out");
+    },
+    recover: async (s, c) => {
+      recovered = [s, c];
+    },
+  });
+  assert.equal(result.reason, "already-registered", "recovered instead of returning stale-or-unknown-root");
+  assert.deepEqual(recovered, [0, CTX], "recovery ran for the right season and context");
+});
+
+test("A2 (round 4): a duplicate at the full-tree boundary answers already-registered, not members-tree-full", async () => {
+  // The fourth-round edge. A concurrent duplicate can reconcile a member into the LAST slot, and the
+  // capacity check would then refuse the retry as members-tree-full before the durable append could report
+  // the duplicate. A read-only commitment check answers already-registered first.
+  const store = newStore();
+  const m = new SeasonMembers({ store, rootWindow: 8, nowSec: () => 0, emptyRoot: EMPTY_ROOT, treeDepth: 1 }); // capacity 2
+  await m.ensureContext(0, CTX);
+  await m.commit(0, CTX, "111", () =>
+    store.append({ season: 0, contextHash: CTX, regNullifier: "135", commitment: "111", engine: "plonk", statement: "derive" }),
+  );
+  await m.commit(0, CTX, "222", () =>
+    store.append({ season: 0, contextHash: CTX, regNullifier: "136", commitment: "222", engine: "plonk", statement: "derive" }),
+  );
+  assert.equal(m.size(CTX), 2, "the tree is full");
+
+  // A retry of an already-registered member (nullifier 136) must not be refused as members-tree-full,
+  // and must not attempt a durable write.
+  const retry = await m.commit(
+    0,
+    CTX,
+    "222",
+    async () => {
+      throw new Error("appendDurable must not run for a known duplicate at capacity");
+    },
+    "136",
+  );
+  assert.equal(retry.ok, false);
+  assert.equal(retry.reason, "already-registered", "a duplicate at the full boundary is already-registered");
+});
+
+test("A2 (round 5): the duplicate check is keyed by nullifier, not commitment", async () => {
+  const store = newStore();
+  const m = new SeasonMembers({ store, rootWindow: 8, nowSec: () => 0, emptyRoot: EMPTY_ROOT, treeDepth: 1 }); // capacity 2
+  await m.ensureContext(0, CTX);
+  await m.commit(0, CTX, "111", () =>
+    store.append({ season: 0, contextHash: CTX, regNullifier: "135", commitment: "111", engine: "plonk", statement: "derive" }), "135");
+  await m.commit(0, CTX, "222", () =>
+    store.append({ season: 0, contextHash: CTX, regNullifier: "136", commitment: "222", engine: "plonk", statement: "derive" }), "136");
+  assert.equal(m.size(CTX), 2, "full");
+
+  // SAME nullifier 136 with a DIFFERENT commitment 999 at capacity: still a durable duplicate, so
+  // already-registered (the old commitment-based check would have missed it and returned members-tree-full).
+  const sameNf = await m.commit(0, CTX, "999", async () => {
+    throw new Error("no durable write for a nullifier already registered");
+  }, "136");
+  assert.equal(sameNf.reason, "already-registered", "keyed by nullifier, catches a different commitment");
+
+  // A durable duplicate whose appendDurable would report a stale anchor is caught BEFORE that check.
+  const stale = await m.commit(0, CTX, "222", async () => ({ staleRoot: true }), "136");
+  assert.equal(stale.reason, "already-registered", "the durable duplicate is caught before the anchor check");
+});
+
+test("A2 (round 5): distinct nullifiers sharing a commitment are NOT treated as duplicates", async () => {
+  const store = newStore();
+  const m = newSeason(store); // ample room
+  await m.ensureContext(0, CTX);
+  await m.commit(0, CTX, "111", () =>
+    store.append({ season: 0, contextHash: CTX, regNullifier: "135", commitment: "111", engine: "plonk", statement: "derive" }), "135");
+  // A DIFFERENT nullifier 136 carrying the SAME commitment 111 is a distinct registration (two voting keys
+  // sharing a member secret), and with room it is accepted, not short-circuited to already-registered.
+  const second = await m.commit(0, CTX, "111", () =>
+    store.append({ season: 0, contextHash: CTX, regNullifier: "136", commitment: "111", engine: "plonk", statement: "derive" }), "136");
+  assert.equal(second.ok, true, "a distinct nullifier is a new registration, not a duplicate");
+  assert.equal(second.index, 1);
+  assert.equal(m.size(CTX), 2);
 });
 
 test("a member is scoped to its season: present on that season's rebuild, absent on another", async () => {

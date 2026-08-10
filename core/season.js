@@ -118,6 +118,65 @@ export class SeasonMembers {
     );
   }
 
+  // Rebuild a context's tree from durable records, KEEPING the context's existing RootStore rather than
+  // starting a fresh one. The difference from _materializeFrom matters: _materializeFrom builds a new
+  // RootStore for a first materialization, where there is no prior window to keep, but a mid-season
+  // reconciliation (recoverMember below) runs while a context has already served roots to challenges. A
+  // fresh store would discard those roots, so a challenge minted against a still-live root would be
+  // refused and an in-flight verification holding the store object would read it as a season rollover.
+  // Reusing the existing store and appending the new root retains prior roots up to the window and keeps
+  // the object identity, so neither happens. Caller must hold the serial queue.
+  async _rebuildTreePreservingRoots(contextHash, records) {
+    const existing = this.ctx.get(contextHash);
+    const tree = this.treeDepth
+      ? await MembersTree.fromCommitments(records.map((r) => r.commitment), this.treeDepth, await this.#poseidon())
+      : await MembersTree.fromCommitments(records.map((r) => r.commitment), undefined, await this.#poseidon());
+    const roots = existing ? existing.roots : new RootStore(this.rootWindow);
+    roots.update([{ height: tree.size(), root: tree.root(), ts: this.nowSec() }]);
+    const c = { tree, roots };
+    this.ctx.set(contextHash, c);
+    return c;
+  }
+
+  // Reconcile a context's cached members tree with its durable records. The tree is a cache, and within
+  // a running season a durable registration can end up ABSENT from it: the A2 strand, where a first
+  // commit's durable write held while its confirming reread failed, so append rejected, commit's tree
+  // append was skipped, and the retry then short-circuits at the store's duplicate check (verifier.js,
+  // registrationStore.has) BEFORE commit() runs, so nothing rebuilds the cache until a rollover or
+  // restart. This is the mid-season rebuild that strand needs, triggered from the verifier's
+  // already-registered path. It rebuilds ONLY when the cache is behind the durable records, preserving
+  // the root window, and it never re-verifies a proof, since the durable record is the authority that a
+  // proof already established.
+  // The rebuild-if-behind core, shared by recoverMember (which wraps it in the serial queue) and by
+  // commit's duplicate branch (already inside the queue). A commit only ever appends, never removes, so
+  // the cache is behind exactly when it holds fewer members than the durable records; an unmaterialized
+  // context with durable records (size 0) is behind too. Anything else needs no rebuild, so an ordinary
+  // replay pays only one durable read. Rebuilds preserve the root window. Caller MUST hold the serial
+  // queue and have confirmed the season is current.
+  async _reconcileIfBehind(contextHash) {
+    const records = await this.store.forSeasonContext(this.current, contextHash);
+    const cachedSize = this.ctx.get(contextHash)?.tree.size() ?? 0;
+    if (records.length > cachedSize) {
+      await this._rebuildTreePreservingRoots(contextHash, records);
+      return true;
+    }
+    return false;
+  }
+
+  recoverMember(season, contextHash) {
+    season = Number(season);
+    return this._serial(async () => {
+      // DO NOT ROLL. Recovery must never drive the cache backward: a rollover queued ahead of this call
+      // may have advanced the cache past this request's season while it waited, and _roll(oldSeason)
+      // would throw under monotonic (a re-review reproduced that surfacing as a misleading HTTP 400). If
+      // the cache season no longer matches, the member's season has ended and there is nothing to recover
+      // into the live tree, so answer season-rolled rather than rolling or throwing.
+      if (this.current !== season) return { rebuilt: false, reason: "season-rolled" };
+      const rebuilt = await this._reconcileIfBehind(contextHash);
+      return { rebuilt, size: this.ctx.get(contextHash)?.tree.size() ?? 0 };
+    });
+  }
+
   // Make the in-memory state reflect `season`, rolling over the trees if the season changed.
   ensure(season) {
     season = Number(season);
@@ -144,11 +203,33 @@ export class SeasonMembers {
   // interleave. Re-checks the season first, so a rollover during the caller's proof verify yields a
   // retry instead of a stale-season publish, and no durable record is written for a season gone by.
   // A registration is authenticated and rate-limited, so materializing the tree here is gated work.
-  commit(season, contextHash, commitment, appendDurable) {
+  commit(season, contextHash, commitment, appendDurable, regNullifier) {
     season = Number(season);
     return this._serial(async () => {
       if (this.current !== season) return { ok: false, reason: "season-rolled-retry" };
-      const c = await this._materialize(contextHash);
+      let c = await this._materialize(contextHash);
+      // RECONCILE THE CACHE BEFORE IT IS USED FOR CAPACITY OR POSITION. The members tree is a cache that
+      // can lag the durable records (the A2 strand: a prior commit's durable write held while its commit
+      // threw before the tree append). A commit that appends onto a lagging cache assigns the commitment a
+      // tree position BELOW the durable index the store hands back, so the served tree and a restart
+      // rebuild diverge, and the capacity guard under-counts. A third-round review reproduced both. So
+      // reconcile first (rebuilding only on a real deficit and preserving the root window), which also
+      // recovers a member a concurrent retry stranded, then re-acquire the context because the rebuild
+      // replaces the object. See docs/MEMBERS_TREE_RECONCILIATION.md.
+      await this._reconcileIfBehind(contextHash);
+      c = this.ctx.get(contextHash) ?? c;
+      // A DURABLE DUPLICATE NEEDS NO SLOT AND NO WRITE. Checked by the registration nullifier, the SAME
+      // identity RegistrationStore.has() and the durable append use, so it catches a retry regardless of
+      // the commitment it carries and does NOT mistake a distinct registration that happens to share a
+      // member secret (a different nullifier, same commitment) for a duplicate. A fifth-round review found
+      // that an earlier commitment-based form did both. Running it before the capacity check and the
+      // durable write means a retry at the full-tree boundary, or one whose anchor aged while it waited in
+      // the queue, is answered already-registered rather than members-tree-full or stale-or-unknown-root.
+      // Read-only: it creates no durable record. Guarded on regNullifier being supplied, so a caller that
+      // omits it falls through to the durable append's own duplicate signal, as before.
+      if (regNullifier != null && (await this.store.has(this.current, contextHash, regNullifier))) {
+        return { ok: false, reason: "already-registered" };
+      }
       // Capacity is checked BEFORE the durable write, because the durable record is the commit
       // point. Writing it first and then failing to append would leave a bucket that can never be
       // materialized again, so the order here is the whole point of the check.
@@ -178,7 +259,12 @@ export class SeasonMembers {
         return { ok: false, reason: "clock-regressed" };
       }
       const res = await appendDurable();
-      if (res.duplicate) return { ok: false, reason: "already-registered" };
+      if (res.duplicate) {
+        // A duplicate means this registration is already durable. The reconcile above ran before this
+        // write, so a member a concurrent retry stranded (its record durable, its commit thrown before
+        // the tree append) is already back in the tree by now, and this branch just reports the replay.
+        return { ok: false, reason: "already-registered" };
+      }
       // A bucket bound to a different (engine, statement), or an impossible engine/statement pair:
       // no durable record was written, so nothing is appended to the tree either.
       if (res.conflict) return { ok: false, reason: "statement-mismatch", declared: res.declared };
@@ -192,6 +278,13 @@ export class SeasonMembers {
       // no rebuild can reproduce and nothing can revoke.
       if (!Number.isInteger(res.index)) {
         return { ok: false, reason: "durable-write-unrecognised" };
+      }
+      // THE DURABLE INDEX AND THE TREE POSITION MUST AGREE. After the reconcile above the tree holds every
+      // durable record that predates this write, so the count the store assigned (res.index) equals the
+      // tree size. If they ever diverge, fail closed rather than appending at a slot a restart would
+      // rebuild differently, the leaf-order divergence the reconcile exists to prevent.
+      if (res.index !== c.tree.size()) {
+        return { ok: false, reason: "index-tree-mismatch" };
       }
       c.tree.append(commitment);
       const membersRoot = c.tree.root();

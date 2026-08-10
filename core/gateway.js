@@ -1412,6 +1412,13 @@ async function bootGateway({ config = buildConfig(process.env) } = {}, release) 
             rootEligible: (root) => dmlRoots.isEligibleWithin(root, config.registerRootMaxAgeSeconds, nowSec()),
           },
           registrationStore,
+          // RECONCILE A STRANDED MEMBER ON A REPLAY. When the store reports the registration already
+          // durable, the verifier answers already-registered without reaching commit, so if a prior
+          // commit's durable write held while its confirming reread failed, the members tree never
+          // gained the member (the A2 strand). recover reconciles this context's tree with the durable
+          // records, preserving the root window, so the retry puts a stranded member back rather than
+          // leaving them unable to build a path until a rollover or restart.
+          recover: (s, c) => seasonMembers.recoverMember(s, c),
           // The durable record and the members-tree mirror happen together inside the season
           // serialization, re-checking the season so a rollover during the proof verify above cannot
           // publish a stale-season root (the M2 race). The commit targets this context's tree.
@@ -1438,7 +1445,7 @@ async function bootGateway({ config = buildConfig(process.env) } = {}, release) 
               // write). Closing it properly needs a reversible or tombstoned admission record, which
               // is a format change and is recorded in TODO.md rather than smuggled in here.
               return registrationStore.append({ season: s, contextHash: c, regNullifier: n, commitment, engine, statement });
-            }),
+            }, n),
         });
         if (!result.ok) return send(res, 200, result);
         return send(res, 200, { ok: true, index: result.index, membersRoot: result.membersRoot, size: result.size });

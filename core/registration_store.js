@@ -677,6 +677,28 @@ export class FileBackend {
         await fh.close();
       }
       this.tornTailTerminated = true;
+    } else if (this.schedule != null && seen.size > 0) {
+      // BARRIER A COMPLETE, NEWLINE-TERMINATED TAIL BEFORE IT IS TRUSTED. The two branches above cover
+      // an interrupted append that left a torn line or a complete line with no newline. This branch
+      // covers the shape they miss, and an internal assurance round reproduced it: #appendOne writes
+      // JSON.stringify(record) + "\n" as ONE appendFile and then a SEPARATE fh.sync(), so a process
+      // force-terminated between those two awaits leaves a record that is complete AND newline-
+      // terminated but whose bytes never had a successful barrier behind them. On restart neither
+      // branch above fires (the line parses and the file ends in a newline), so without this the record
+      // is remembered and has() answers true for bytes a power loss can still drop, the same
+      // visibility-is-not-durability defect the write path and the torn-tail repair already guard, one
+      // shape further on. fsync of the file forces whatever the interrupted append left in the page
+      // cache, so after this a public read never reflects an unforced tail. If it fails, #load throws
+      // before installing the maps, the record is not trusted, and the next reconcile retries. Scoped
+      // to the schedule path, the same scope as the directory flush below, because a null-schedule
+      // FileBackend (tests, the in-memory backend's peers) carries no durability contract and is what
+      // drives the recovery-test filesystem sequences, which this must not perturb.
+      const fh = await this.openFile(this.path, "r+");
+      try {
+        await fh.sync();
+      } finally {
+        await fh.close();
+      }
     }
     // A store that predates the header cannot be checked retroactively: stamping it ASSERTS that its
     // existing records were written under the current schedule, which nobody verified. An empty store

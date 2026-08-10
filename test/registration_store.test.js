@@ -367,6 +367,48 @@ test("a normal file ending in a newline is not touched by the repair", async () 
   assert.equal(await readFile(path, "utf8"), before, "the file is byte-identical");
 });
 
+test("a COMPLETE, newline-terminated record is barriered on load before has() trusts it (A1)", async () => {
+  // The internal assurance round's confirmed blocker. #appendOne writes JSON.stringify(record) + "\n"
+  // as one appendFile and then a SEPARATE fh.sync(), so a force-termination between those two awaits
+  // leaves a record that is complete AND newline-terminated but whose bytes never had a successful
+  // barrier behind them. On restart the torn-tail branches do not fire (the line parses and the file
+  // ends in a newline), so before this fix the record was remembered and has() answered true for bytes
+  // a power loss could still drop. writeFile below simulates that state: a complete newline-terminated
+  // file whose data blocks were never fsync'd. The load must force the file before it trusts the tail.
+  const dir = await mkdtemp(join(tmpdir(), "mno-a1-"));
+  const path = join(dir, "regs.jsonl");
+  const header = JSON.stringify({ type: "schedule", schedule: "sch1" });
+  const rec = JSON.stringify({
+    season: 0, contextHash: "122", regNullifier: "146", commitment: "11", engine: "plonk", statement: "derive", index: 0,
+  });
+  await writeFile(path, `${header}\n${rec}\n`); // complete, newline-terminated, never barriered
+
+  const { open: realOpen, readFile: realReadFile } = await import("node:fs/promises");
+  let fileSyncs = 0;
+  const backend = new FileBackend(path, "sch1", false, {
+    open: async (p, ...rest) => {
+      const fh = await realOpen(p, ...rest);
+      return new Proxy(fh, {
+        get(target, prop) {
+          if (prop === "sync") {
+            return async () => {
+              if (p === path) fileSyncs += 1; // count only barriers of the FILE, not the directory flush
+              await target.sync();
+            };
+          }
+          const v = target[prop];
+          return typeof v === "function" ? v.bind(target) : v;
+        },
+      });
+    },
+    readFile: async (...args) => realReadFile(...args),
+  });
+  await backend.ready();
+
+  assert.equal(await backend.has({ season: 0, contextHash: "122", regNullifier: "146" }), true, "the record loads");
+  assert.ok(fileSyncs >= 1, "load forced the file's data blocks before trusting the newline-terminated tail");
+});
+
 // F3 FROM THE INDEPENDENT SECURITY REVIEW: a successful write followed by a sync or close error can
 // duplicate the registration. The bytes reach the file, the caller is told the write failed, the
 // in-memory index never learns the record exists, a retry appends it again, and a restart loads both

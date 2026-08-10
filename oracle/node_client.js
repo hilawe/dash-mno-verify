@@ -12,11 +12,20 @@
 // the call is the better outcome: the caller retries, and meanwhile the gateway keeps serving what
 // it already has.
 //
-// WHY THE BUFFER LIMIT EXISTS, and what it is measured against. execFileSync defaults to 1 MB, which
+// WHY THE BUFFER LIMIT EXISTS, and what it is measured against. execFile defaults to 1 MB, which
 // a mainnet response exceeds. The largest call this makes is `protx diff 1 <height>`, the whole list
 // rather than a delta, MEASURED at 1,828,817 bytes (about 1.74 MiB) for 2,972 masternodes at height
 // 2,515,929 on 2026-08-03. The 64 MiB default is therefore about 37x headroom rather than a guess.
-import { execFileSync } from "node:child_process";
+//
+// THE COMMAND-LINE PATH RUNS ASYNCHRONOUSLY. It used execFileSync, which blocks the entire event loop
+// for the subprocess duration. In the gateway's direct-node mode the refresh timer issues these calls
+// on the request-serving loop, so a slow or hung dash-cli froze every challenge and verify until it
+// returned, up to the timeout. An internal assurance round reproduced that. execFile promisified keeps
+// the same deadline (the timeout option) and the same buffer cap while yielding to the loop.
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
 
 export const DEFAULT_TIMEOUT_MS = 30_000;
 export const DEFAULT_MAX_BUFFER = 64 * 1024 * 1024;
@@ -58,7 +67,7 @@ export function makeNodeCall({
   timeoutMs = DEFAULT_TIMEOUT_MS,
   maxBuffer = DEFAULT_MAX_BUFFER,
   fetchImpl = fetch,
-  execImpl = execFileSync,
+  execImpl = execFileAsync,
 } = {}) {
   async function rpc(method, params = []) {
     const headers = { "content-type": "application/json" };
@@ -102,8 +111,9 @@ export function makeNodeCall({
     return j.result;
   }
 
-  function cli(args) {
-    return JSON.parse(execImpl("dash-cli", args, { encoding: "utf8", timeout: timeoutMs, maxBuffer }));
+  async function cli(args) {
+    const { stdout } = await execImpl("dash-cli", args, { encoding: "utf8", timeout: timeoutMs, maxBuffer });
+    return JSON.parse(stdout);
   }
 
   return (method, params = []) => (rpcUrl ? rpc(method, params) : cli([method, ...params.map(String)]));

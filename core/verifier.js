@@ -259,7 +259,10 @@ export function decodeZkvmRegistrationClaims(journal) {
 // appends the same commitment to the members tree, in one critical section, so the durable index
 // and the tree position are assigned together and a rollover cannot land between them. The members
 // tree is only a cache rebuilt from records, so a crash right after the durable write re-derives
-// the member on the next rebuild instead of stranding them for the season.
+// the member on the next RESTART rebuild. Within a running process the cache is not rebuilt on its
+// own, so a durable write whose commit threw AFTER it landed (the A2 strand) would leave the member
+// out of the cache until a rollover or restart; the already-registered path below reconciles the
+// cache through recover() so the retry recovers a stranded member rather than waiting for one.
 //
 // commit({ season, contextHash, regNullifier, commitment }) -> { ok, reason?, index?, membersRoot?, size? }
 //
@@ -267,7 +270,7 @@ export function decodeZkvmRegistrationClaims(journal) {
 // engine. It takes already-decoded `claims`, the engine's crypto check as an injected async
 // `verifyProof()`, and `expected.rootStore` (the Poseidon root store for PLONK, the SHA-256 root
 // store for the zkVM engine), so the engines differ only outside this function.
-export async function verifyRegistrationCore({ claims, verifyProof, expected, registrationStore, commit, gate = (fn) => fn() }) {
+export async function verifyRegistrationCore({ claims, verifyProof, expected, registrationStore, commit, recover, gate = (fn) => fn() }) {
   // 0) the caller (the gateway) must name a valid engine and statement, which bind this bucket's
   //    durable declaration. They are gateway-chosen, never taken from the proof, and must be present
   //    and valid, so an engine dispatcher cannot omit them and silently default a custody
@@ -297,15 +300,39 @@ export async function verifyRegistrationCore({ claims, verifyProof, expected, re
       return false;
     }
   };
-  if (!rootOk()) return { ok: false, reason: "stale-or-unknown-root" };
   // 2) the season must be the one being registered
   if (String(claims.season) !== String(expected.season)) return { ok: false, reason: "wrong-season" };
   // 3) the proof must be scoped to this community, platform, and role
   if (String(claims.contextHash) !== String(expected.contextHash)) return { ok: false, reason: "wrong-context" };
   // 4) one voting key registers once per season and context. A cheap read so an obvious replay is
   //    rejected before the expensive proof verify; the durable append in commit is the authority.
-  if (await registrationStore.has(claims.season, claims.contextHash, claims.regNullifier))
+  //    RECONCILE THE MEMBERS TREE BEFORE ANSWERING. Normally an already-registered member is also
+  //    present in the cached members tree, so answering already-registered is right. But a durable
+  //    member can be ABSENT from the cache (the A2 strand: a first commit whose durable write held while
+  //    its confirming reread failed skipped the tree append, and this very short-circuit then keeps the
+  //    retry from ever reaching commit, so nothing rebuilds the cache until a rollover or restart).
+  //    recover() reconciles the context's tree with the durable records, putting a stranded member back
+  //    so a later /v1/members read serves them a valid path. It runs no proof verify, since the durable
+  //    record is the authority a proof already established, and it rebuilds only when the cache is behind.
+  //    Optional, so a caller that supplies no recover behaves exactly as before.
+  //
+  //    THIS RUNS BEFORE THE ANCHOR-FRESHNESS RULE ON PURPOSE. A re-review of the recovery found that
+  //    checking root recency first rejects a stranded member whose DML root has aged out with
+  //    stale-or-unknown-root, and that member cannot make a fresh proof if the masternode has since left
+  //    the list, so the root rule would permanently deny a durable, already-entitled seasonal membership.
+  //    The anchor rule exists to gate a NEW registration buying a season against a stale root; an
+  //    already-durable registration bought its season already, so recovering its cache entry does not
+  //    depend on current root freshness. Season and context are still checked above, so recovery is
+  //    scoped to the right bucket.
+  if (await registrationStore.has(claims.season, claims.contextHash, claims.regNullifier)) {
+    if (typeof recover === "function") await recover(claims.season, claims.contextHash);
     return { ok: false, reason: "already-registered" };
+  }
+
+  // 1) the DML root must be current, checked here for a NEW registration (an already-durable one was
+  //    handled above without it). Deferred from the top of the function so the duplicate recovery above
+  //    is not blocked by a stale anchor.
+  if (!rootOk()) return { ok: false, reason: "stale-or-unknown-root" };
 
   // 5) the proof itself (PLONK verify, or the zkVM receipt verify against the pinned image id). Run
   //    it through `gate` so the gateway can bound global concurrency of the expensive verify. The
@@ -317,7 +344,19 @@ export async function verifyRegistrationCore({ claims, verifyProof, expected, re
   //      without this a registration could be committed for a season against a root the gateway had
   //      already stopped accepting. Same shape as the membership path's period recheck: a value read
   //      before an await must be read again before the irreversible step.
-  if (!rootOk()) return { ok: false, reason: "stale-or-unknown-root" };
+  //      BUT RECOVER FIRST IF THIS KEY BECAME DURABLE DURING THE PROOF. A concurrent request for the
+  //      same key can land and strand the member while this proof verifies, so this request is now
+  //      effectively a retry. A third-round review found that returning stale-or-unknown-root here would
+  //      leave that member stranded when the anchor also aged out, defeating the rule that an
+  //      already-durable member does not depend on anchor freshness. So re-check the duplicate and
+  //      recover before applying the anchor rule, the same order as the initial check.
+  if (!rootOk()) {
+    if (await registrationStore.has(claims.season, claims.contextHash, claims.regNullifier)) {
+      if (typeof recover === "function") await recover(claims.season, claims.contextHash);
+      return { ok: false, reason: "already-registered" };
+    }
+    return { ok: false, reason: "stale-or-unknown-root" };
+  }
 
   // 6) the atomic, season-serialized commit. expected.season is the gateway's authoritative season
   //    (equal to claims.season by check 2), used for the season re-check inside commit. The engine
@@ -349,6 +388,7 @@ export async function verifyRegistration({
   expected,
   registrationStore,
   commit,
+  recover,
   verifyProof = () => snarkjs.plonk.verify(vkey, publicSignals, proof),
   gate = (fn) => fn(),
 }) {
@@ -359,7 +399,7 @@ export async function verifyRegistration({
   if (expected.engine !== "plonk") return { ok: false, reason: "engine-mismatch" };
   const decoded = decodePlonkRegistrationClaims(publicSignals);
   if (decoded.error) return { ok: false, reason: decoded.error };
-  return verifyRegistrationCore({ claims: decoded.claims, verifyProof, expected, registrationStore, commit, gate });
+  return verifyRegistrationCore({ claims: decoded.claims, verifyProof, expected, registrationStore, commit, recover, gate });
 }
 
 // The zkVM-facing registration verify, the engine sibling of verifyRegistration. It decodes the
@@ -377,7 +417,7 @@ export async function verifyRegistration({
 // verifier (a pinned r0vm subprocess or a WASM build), which is deferred and artifact-gated. A unit
 // test injects a stub. A gateway configured for the zkVM engine must supply a real one or refuse to
 // boot (there is no default, so an unconfigured zkVM verify fails closed rather than skips the check).
-export async function verifyZkvmRegistration({ receipt, journalBytes, verifyReceipt, expected, registrationStore, commit, gate = (fn) => fn() }) {
+export async function verifyZkvmRegistration({ receipt, journalBytes, verifyReceipt, expected, registrationStore, commit, recover, gate = (fn) => fn() }) {
   // This wrapper is the zkVM engine, so it pins its own engine (see the PLONK wrapper's note), so a
   // mismatched declaration cannot commit a zkVM registration under a PLONK label.
   if (expected.engine !== "zkvm") return { ok: false, reason: "engine-mismatch" };
@@ -390,6 +430,7 @@ export async function verifyZkvmRegistration({ receipt, journalBytes, verifyRece
     expected,
     registrationStore,
     commit,
+    recover,
     gate,
   });
 }

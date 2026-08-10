@@ -81,3 +81,26 @@ test("a body that is not JSON says so, rather than failing somewhere later", asy
 test("the default cap matches the one the command-line path has always had", () => {
   assert.equal(DEFAULT_MAX_BUFFER, 64 * 1024 * 1024, "the two paths are bounded the same way");
 });
+
+test("A3: the command-line node path runs asynchronously and does not block the event loop", async () => {
+  // The internal assurance round's confirmed availability defect. The cli path used execFileSync, so in
+  // the gateway's direct-node mode a refresh froze the whole event loop for the subprocess duration, up
+  // to the timeout. It now awaits an async exec and reads stdout, so a concurrent timer runs while the
+  // node call is outstanding. The injected execImpl returns the async {stdout} shape execFile produces;
+  // a synchronous (execFileSync) implementation would receive that promise and JSON.parse would throw.
+  let ticked = false;
+  const timer = setTimeout(() => {
+    ticked = true;
+  }, 0);
+  const execImpl = async (cmd, args) => {
+    assert.equal(cmd, "dash-cli");
+    assert.deepEqual(args, ["getblockcount"]);
+    await new Promise((r) => setTimeout(r, 10)); // a blocking implementation could not yield here
+    return { stdout: JSON.stringify(1234) };
+  };
+  const call = makeNodeCall({ execImpl });
+  const result = await call("getblockcount");
+  clearTimeout(timer);
+  assert.equal(result, 1234, "the parsed stdout is returned");
+  assert.equal(ticked, true, "a concurrent timer fired while the node call was outstanding, so the loop was not blocked");
+});
