@@ -30,6 +30,9 @@ input.json
 expected.txt
 witness.json
 
+# rendered doc artifacts (PDFs generated from committed markdown), regenerable, not source
+output/
+
 # editor and OS noise
 .DS_Store
 *.log
