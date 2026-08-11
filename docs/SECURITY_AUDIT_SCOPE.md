@@ -149,6 +149,18 @@ soundness, the safety of the third-party circuit dependency, the correctness of 
 usage, or resistance to an adversary with cryptographic depth the reviewing models did not have. Those
 are exactly the questions a first audit exists to answer.
 
+FREE AUTOMATED CIRCUIT ANALYSIS HAS SINCE RAISED PART OF THIS FLOOR, and an auditor should read
+`tools/circuit-analysis/RESULTS.md` before scoping tier 1. Static analysis (circomspect) is clean, and a
+determinism checker (Ecne) has PROVEN that `mno_members` (the two-tier per-epoch membership circuit,
+including its Merkle inclusion and its Poseidon nullifier, commitment, and signal binding) and `hash160`
+are fully constrained, so their outputs cannot be chosen by a prover. This is a stronger statement than the
+structural-only reach the internal process claims elsewhere, and it means the two-tier per-epoch path's
+determinism is no longer an open question for the auditor. It does NOT settle the residual: the single-tier
+and registration circuits derive the public key in circuit with `ECDSAPrivToPub` from `circom-ecdsa`, which
+the automated tools reach only by treating that component as trusted, so whether that unaudited component is
+sound as used, and the trusted-setup assumption, remain for the specialist. The effect is to narrow tier 1
+toward that one named component rather than to close it.
+
 ## Decisions for the operator, with a recommendation
 
 Three choices set the shape of the engagement.
