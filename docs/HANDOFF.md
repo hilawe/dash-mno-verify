@@ -5,11 +5,13 @@ counts and supersedes everything below it. Historical sections are append-only a
 only marked superseded. Read this first when picking the project back up, then `TODO.md` for the full
 prioritized punch list.
 
-## CURRENT STATE, 2026-08-10 (internal assurance pass run, blocker + two majors folded and pushed, circuit static analysis started). THIS SUPERSEDES EVERY SECTION BELOW IT
+## CURRENT STATE, 2026-08-10 (assurance findings list fully closed, circuit determinism proven for the two-tier path). THIS SUPERSEDES EVERY SECTION BELOW IT
 
-`origin/main` is at `84881c6`, in sync, CI green on all three jobs (`circuits`, `checks`, `full`). The
-only uncommitted work is the circuit-analysis harness (`tools/circuit-analysis/`) plus this handoff; if
-they were committed in the same change that wrote this line, the tree is clean.
+`origin/main` is at `9971f28`, CI green on all three jobs (`circuits`, `checks`, `full`). TWO LOCAL COMMITS
+ARE UNPUSHED as of this writing: `d135fc5` (the Ecne soundness harness) and `2e1055f` (the circuit-analysis
+results doc and the audit-scope tier-1 update). Push them, confirm CI. One background job may still be
+running: an Ecne trusted-decomposition of the single-tier `mno_membership` circuit (see section 3), which
+is slow but not stuck. The working tree is otherwise clean apart from gitignored `output/` work dirs.
 
 ### 0. FOLLOW THE PLAYBOOKS. Same first instruction as always (see the superseded 08-09 block below for
 the full load-bearing list, which still applies verbatim: write-time self-verification, the fresh-full
@@ -44,35 +46,47 @@ overlap, no force-push). Each fix is mutation-checked and reviewed by a differen
 - A3 (major), `oracle/node_client.js`: the direct-node cli read used `execFileSync`, freezing the
   gateway event loop. Now promisified `execFile`, awaited. Three-family confirmed.
 
-CIRCUIT STATIC ANALYSIS STARTED (the no-specialist tier-1 path, after the operator ruled out paying a
-specialist). `tools/circuit-analysis/` is a containerized circomspect (Trail of Bits) harness, pinned to
-circomspect 0.9.0, same conventions as `tools/x11-reference`. FIRST RUN RESULT (in `output/circomspect.txt`,
-gitignored, regenerable): 0 errors, 4 warnings, 45 notes. The four warnings are assessed: two are the
-Semaphore `sq` binding (intentional, corroborates the S9 reader), two are `Num2Bits` aliasing in
-`hash160.circom` that are BENIGN at the instantiated `n=64` (aliasing needs `n` near the ~254-bit field
-size). No error-level under-constraint finding. circomspect is STATIC, so this raises the tier-1 floor
-above "structural only" but is not a soundness proof.
+THE A4-A14 MINORS ARE ALL RESOLVED AND PUSHED (`bd37841` folds A7-A12, `9971f28` folds A6 and A13 and
+records three residuals). Eight folded with mutation-checked tests except A12 (the Matrix bot entrypoint is
+a top-level script not structured for a unit test, stated honestly). Three accepted as documented residuals:
+A4 and A5 (self-healing root-pin edges not reachable on shipped defaults, folding them touches the root-pin
+architecture the A2 fold showed is defect-prone), and A14 (a Platform-contract redesign on a path not live).
+The internal-assurance findings list is now fully closed: 1 blocker + 2 majors + 8 minors folded, 3 residuals,
+7 refuted.
 
-KEY CIRCUIT FACT established this session: BOTH `mno_membership.circom` (single-tier) AND
-`mno_registration.circom` (two-tier registration) include `circom-ecdsa` and call `ECDSAPrivToPub`, so the
-unaudited dependency is on the critical path of BOTH designs and cannot be dodged by disabling one path.
-Only `mno_members.circom` (per-epoch re-proof) is free of it. This kills the "ship only two-tier to avoid
-circom-ecdsa" idea.
+CIRCUIT ANALYSIS, THE NO-SPECIALIST TIER-1 PATH, HAS PRODUCED REAL SOUNDNESS EVIDENCE, not just structural.
+`tools/circuit-analysis/` holds two harnesses and `RESULTS.md` records the outcome (read it and the
+audit-scope update before any tier-1 work):
+
+- STATIC (circomspect 0.9.0): 0 errors, 4 warnings, all assessed benign (the intentional Semaphore `sq`
+  binding, and `Num2Bits` aliasing that is benign at the instantiated `n=64`).
+- DETERMINISM (Ecne, 0xPARC, pinned by commit, Julia 1.7 in a container): PROVES `mno_members` (the
+  two-tier per-epoch membership circuit, INCLUDING its Merkle inclusion and Poseidon nullifier/commitment/
+  binding) and `hash160` FULLY CONSTRAINED, no trusted functions needed. So a prover cannot forge a witness
+  for the two-tier per-epoch path. This is stronger than the structural-only reach originally claimed, and
+  the audit-scope doc now says so.
+
+KEY CIRCUIT FACT: BOTH `mno_membership.circom` (single-tier) AND `mno_registration.circom` (two-tier
+registration) include `circom-ecdsa` and call `ECDSAPrivToPub`, so the unaudited dependency is on the
+critical path of BOTH designs and cannot be dodged by disabling one path. Only `mno_members.circom` is free
+of it. The residual is now narrowed to exactly `ECDSAPrivToPub` plus the trusted-setup assumption.
 
 ### 2. WHERE TO START (punch list, ordered)
 
-1. Commit the circuit-analysis harness and this handoff if not already done in the same change.
-2. THE A4-A14 MINOR FOLDS from the assurance findings report (config footguns, a Matrix-bot crash on a
-   transient error, two Platform-contract items that are not live). Confirmed minors, a scoped follow-up,
-   each under the mutation-checked discipline. The operator asked to return to these.
-3. Continue circuit assurance: Ecne (R1CS determinism) and Picus (SMT under-constraint) run COMPONENT-WISE
-   (they time out on the 254k-constraint whole circuits; isolate `merkle`, `hash160`, the nullifier
-   Poseidon, the Semaphore binding, and `ECDSAPrivToPub`), then extend the differential-testing pattern
-   (the hash160 vectors, the X11 harness) to nullifier/commitment derivation.
-4. The residual tier-1 items no free tool closes stay for a specialist IF ever funded: circom-ecdsa
-   template safety as used, the trusted-setup ceremony assumption, a novel attack. Operator has declined
-   to fund a specialist, so the operational options stand: do not gate real value yet, small anonymity
-   set, capped grants, contingent bug bounty over a retainer.
+1. Push the two unpushed commits (`d135fc5`, `2e1055f`) after a manual leak scan and explicit approval,
+   then confirm CI reads green on the `full` job.
+2. Read the single-tier Ecne trusted-decomposition result if the background run finished (section 3). If it
+   returned "sound assuming trusted functions ECDSAPrivToPub", the single-tier circuit's whole composition
+   is verified and the residual is exactly `ECDSAPrivToPub`. If it did not finish, that is fine, the
+   two-tier per-epoch verification stands and the run is CPU-bound not stuck.
+3. Optional deepening of circuit assurance, in value order: run the same trusted decomposition on
+   `mno_registration` (the two-tier registration circuit, also ECDSA); attempt `ECDSAPrivToPub` itself with
+   Ecne's `secp_solve` mode; extend the differential-testing pattern (the hash160 vectors, the X11 harness)
+   to nullifier and commitment derivation. Picus (SMT) is an alternative to Ecne if wanted.
+4. The residual tier-1 items no free tool closes stay for a specialist IF ever funded: `ECDSAPrivToPub`
+   soundness as used, the trusted-setup ceremony assumption, a novel attack. The operator has declined to
+   fund a specialist, so the operational options stand: do not gate real value yet, small anonymity set,
+   capped grants, contingent bug bounty over a retainer.
 
 ### 3. WHAT FORCED REWORK THIS SESSION (feeds the playbooks)
 
@@ -92,7 +106,16 @@ circom-ecdsa" idea.
 - Re-run circomspect: `bash tools/circuit-analysis/run.sh output/circomspect.txt` (image is built and
   cached, so seconds). circomspect has no `--version` flag (use `--help`); that mistake failed the first
   image build's sanity line.
+- ECNE GOTCHAS, all paid for this session. It needs JULIA 1.7 (its pinned deps use Base internals newer
+  Julia removed, `@_pure_meta`); 1.10 fails to precompile. Compile targets with `--O0` (unoptimized is
+  mandatory). The container runtime (colima) mounts the home tree (`/Users`) but NOT `/tmp` or the macOS
+  `$TMPDIR` (`/var/folders/...`), so the R1CS work dir must sit under the repo (the harness uses the
+  gitignored `output/`) or the mount comes up empty. Ecne's CLI parses `--trusted` but does NOT pass it
+  through (there is a `# TODO` in `src/Ecne.jl`), so trusted decomposition calls `solveWithTrustedFunctions`
+  directly with `trusted_r1cs`/`trusted_r1cs_names` from a small Julia driver. A full big-circuit run is
+  CPU-bound on the single-threaded R1CS read (about 86 MB for `mno_membership`), slow but not stuck.
 - The full-suite pre-commit hook is ~2.5 min; a commit needs a generous timeout or it is stopped mid-gate.
+  The gated `tools/` path means the circuit-harness commits run the full suite too.
 - After any push, read the CI conclusion and check the `full` job specifically.
 - `output/` is gitignored (rendered artifacts and now the circomspect report live there).
 
