@@ -5,7 +5,131 @@ counts and supersedes everything below it. Historical sections are append-only a
 only marked superseded. Read this first when picking the project back up, then `TODO.md` for the full
 prioritized punch list.
 
-## CURRENT STATE, 2026-08-10 (assurance findings list fully closed, circuit determinism proven for the two-tier path). THIS SUPERSEDES EVERY SECTION BELOW IT
+## CURRENT STATE, 2026-08-11 (single-tier non-ECDSA determinism closed by a composition wrapper; the prior handoff push landed). THIS SUPERSEDES EVERY SECTION BELOW IT
+
+This state is written into the commit it describes, so at write time that commit is by definition not yet
+pushed. The push protocol applies to it like any other: leak scan, explicit per-push approval, fast-forward
+push, then read the CI conclusions on all three jobs (`circuits`, `checks`, `full`) rather than assuming
+them. If this section is being read from `origin/main`, that protocol completed for it. Two things landed
+this session. First, the prior session's handoff commit `b3925bc` (docs-only) was one commit ahead of
+`origin` because the prior session wrote it but did not push it, so the authoritative handoff was
+local-only. It was leak-scanned by hand, pushed fast-forward with no force, and its CI was confirmed green
+on all three jobs. Second, the one circuit item the free tools had NOT closed is now closed: the
+single-tier `mno_membership` path is verified determinate everywhere except the ECDSA scalar
+multiplication, by a small composition wrapper rather than the OOM-prone full-circuit run.
+
+### 0. FOLLOW ALL THE PLAYBOOK RULES. THIS IS MANDATORY, NOT A REMINDER, AND IT IS THE FIRST INSTRUCTION
+
+The operator directed the handoff to tell the next session to follow all the same playbook rules. Every one
+below applied this session too and every one paid off. Read the relevant playbook BEFORE the kind of work it
+covers, not after. The rules, self-contained so nothing has to be hunted:
+
+- WRITE-TIME SELF-VERIFICATION on every behaviour-changing commit, instantiated for this repo in
+  `docs/PRECOMMIT_ADOPTION.md`. Enumerate the invariants a change touches (including guarantees the old
+  code gave only through its limitations), MUTATION-CHECK every new test (revert each half of the fix and
+  watch the test fail, and confirm the mutant PARSED and APPLIED before believing it was caught), grep the
+  DEFECT SHAPE across the tree after a fix, and trace every factual claim in a commit message to a command
+  actually run that turn. RULE 7 is mechanical: a unit repaired three or more times across rounds gets a
+  written SPECIFICATION, not a fourth patch.
+- THE REVIEW LOOP. A non-trivial change gets an independent review from a DIFFERENT MODEL FAMILY before it
+  is called done. Fold, then run ANOTHER FRESH FULL round over the whole changed surface, and repeat until
+  a fresh round returns APPROVE with nothing real to fold. A focused re-check is not the stopping
+  condition. At least one reviewer in the closing pool must have REPOSITORY ACCESS, since a no-access
+  reviewer audits the story, not the world, and cannot CLOSE a finding. The external CLI reviewer's
+  content filter stops over crypto-heavy code, so scope its prompt to the one module and frame it as plain
+  correctness and durability.
+- THE WRITING DISCIPLINE on every committed or shared artifact (`CLAUDE.md` "Style and authorship"): no
+  em-dashes, no colon lead-ins in prose, no body-prose semicolons, calibrated confidence, no first person
+  in a formal doc, and NO AI-tool product names in any committed file (describe reviews generically). Scan
+  every draft before presenting or committing it. Legitimate tool names (circom, circomspect, Ecne, and
+  the like) are fine; AI-assistant product names are not.
+- THE STANDING RULES that bite if forgotten. RE-VERIFY STATE before acting (`git log`/`status`, and
+  re-check `origin` right before a push). This is a DIRECT-PUSH PUBLIC repo with NO automated leak gate, so
+  the leak scan is manual and per commit. NEVER push without explicit per-push approval. After any push,
+  read the CI conclusion and check the `full` job specifically. Present decisions with a recommendation and
+  pros and cons, never a neutral menu. Answer an `ASIDE:` at the next break without derailing the work in
+  progress.
+
+### 1. WHAT THIS SESSION DID
+
+Two things.
+
+THE PRIOR HANDOFF COMMIT `b3925bc` WAS PUSHED. It was one docs-only commit ahead of `origin` (the prior
+session wrote it but did not push it), so the authoritative handoff was local-only. It was leak-scanned by
+hand (no secrets, no private paths, no AI-authorship credit, and the sole pattern hit was the filename
+`CLAUDE.md`), pushed fast-forward with no force, and CI confirmed green on all three jobs including `full`.
+
+THE SINGLE-TIER NON-ECDSA DETERMINISM IS CLOSED, which is the one circuit item the prior session's tools
+did not close (its full `mno_membership` Ecne run was OOM-killed at about 76%). It was closed by the SMALLER
+COMPOSITION WRAPPER option, not by a bigger VM. The wrapper
+`tools/circuit-analysis/ecne/wrappers/mno_membership_nonecdsa.circom` reproduces steps 2 through 6 of
+`circuits/mno_membership.circom` verbatim at (treeDepth, n, k) = (16, 64, 4), reproduces the per-limb
+`Num2Bits(64)` range checks `ECDSAPrivToPub` applies to `privkey` internally, and supplies the public key
+as an input (the trusted output of `ECDSAPrivToPub`), so Ecne solves the remaining 298,945-wire circuit
+directly. Ecne solved 298,941 of 298,945 variables, with the single output (the nullifier) uniquely
+determined (1 of 1 target). The only four underdetermined signals are the `IsZero` inverse witnesses inside
+the `BigLessThan` M1 canonical-scalar bound (`main.dlt.eq[i].isz.inv`), which are free by construction and
+whose dependent output `isz.out` is uniquely determined in every case, so nothing about the output is
+malleable. No other signal is underdetermined. Recorded in `tools/circuit-analysis/RESULTS.md`. The read
+took about two minutes and the solve about thirteen on the 12 GiB VM, no OOM, so no VM bump was needed.
+Ecne establishes output determinism, not correspondence to the intended function, and the wrapper does NOT
+check `pubkey = privkey * G`; that binding is `ECDSAPrivToPub` and stays the residual.
+
+### 2. WHERE TO START (punch list, ordered)
+
+Nothing is half-done (and if this section is being read from `origin/main`, nothing is unpushed either,
+per the push protocol above). Everything here is optional deepening the operator can pick up anytime.
+
+1. The same trusted-decomposition wrapper on the two-tier `mno_registration` circuit (also ECDSA), which
+   would verify its non-ECDSA components the way the single-tier wrapper just did. Build the analogous
+   `mno_registration_nonecdsa.circom` and run it through `ecne/run.sh`.
+2. Attempt `ECDSAPrivToPub` determinism itself with Ecne's `secp_solve` mode, or the full single-tier
+   circuit including ECDSA on a larger VM (`colima stop; colima start --memory 24`). Neither resolves the
+   real residual, which is whether `circom-ecdsa` computes the correct curve operation, a soundness
+   question rather than a determinism one, so this is lower value than it looks.
+3. Extend the differential-testing pattern (the hash160 vectors, the X11 harness) to nullifier and
+   commitment derivation. Picus (SMT) is an alternative to Ecne if wanted.
+4. The residual tier-1 items no free tool closes stay for a specialist IF ever funded: `ECDSAPrivToPub`
+   soundness as used, the trusted-setup ceremony assumption, a novel attack. The operator has declined to
+   fund a specialist, so the operational options stand: do not gate real value yet, small anonymity set,
+   capped grants, contingent bug bounty over a retainer.
+
+### 3. WHAT FORCED REWORK THIS SESSION (feeds the playbooks)
+
+- The first wrapper version dropped the per-limb `Num2Bits` range checks `ECDSAPrivToPub` applies to
+  `privkey` internally, so its constraint environment was weaker than production's and the recorded claim
+  ("only the scalar multiplication is removed") was wider than the code. The different-family review
+  caught it as a blocker, the checks were added, and the Ecne run was redone (same verdict shape). Feeds
+  the pre-commit rule about enumerating the invariants a change touches, INCLUDING constraints a removed
+  component provided internally.
+- The first `RESULTS.md` text said both decomposition realizations "live here" and "verify everything
+  around" the ECDSA component, while the isolated realization's Julia driver is not tracked and its run
+  never produced a verdict. Same review round caught it. Feeds the calibrated-confidence rule: a run that
+  was OOM-killed established nothing and must not share a sentence with one that finished.
+
+### 4. GOTCHAS CARRIED FORWARD (Ecne composition wrapper)
+
+- The composition wrapper runs through the same `ecne/run.sh` as any circuit, because it supplies the ECDSA
+  output as an ordinary input, not as a trusted R1CS function. So no Julia driver and no
+  `solveWithTrustedFunctions` are needed for this path, unlike the isolated `ecdsa_privtopub.circom`
+  decomposition.
+- Include resolution in the wrapper: the repo's own components are reached by a file-relative path
+  (`../../../../circuits/hash160/hash160.circom`, four levels up from `ecne/wrappers/`), while circomlib and
+  circom-ecdsa resolve through `run.sh`'s `-l node_modules -l circuits/.deps`, the same flags the other
+  circuits use.
+- Ecne prints a FULL per-signal determinism dump at the end (about 28 MB for this circuit), which is why the
+  process runs on for minutes after the verdict line. The authoritative part is the
+  `------ Bad Constraints ------` section, and the `Solved for N target variables` line is the
+  output-determinism verdict. Both live in the gitignored `output/`, trimmed to a small extract after the
+  run.
+- The Ecne gotchas from the prior session still hold (Julia 1.7, `--O0`, colima mounts `/Users` but not
+  `/tmp`, work dir under the repo's gitignored `output/`).
+- The pre-commit hook runs the full suite (about two and a half minutes) and the gated `tools/` path means
+  the circuit-harness commits run it too, so give a commit a generous timeout.
+
+The block below is the superseded 08-10 state, kept append-only.
+
+## SUPERSEDED, 2026-08-10 (assurance findings list fully closed, circuit determinism proven for the two-tier path)
 
 `origin/main` is at `71bd603`, IN SYNC, working tree clean, CI green on all three jobs (`circuits`,
 `checks`, `full`). Nothing is unpushed. The internal-assurance findings list is fully closed and the

@@ -40,19 +40,57 @@ VERIFIED FULLY CONSTRAINED (no trusted functions needed):
 So the entire two-tier per-epoch path is verified determinate, and the single-tier and registration
 circuits' non-ECDSA components are individually verified.
 
+OUTPUT DETERMINATE UNDER TRUSTED DECOMPOSITION (ECDSA supplied as a trusted input):
+
+- The single-tier `mno_membership` path, all of it except the ECDSA scalar multiplication. The wrapper
+  `tools/circuit-analysis/ecne/wrappers/mno_membership_nonecdsa.circom` reproduces steps 2 through 6 of
+  `circuits/mno_membership.circom` verbatim at the same (treeDepth, n, k) = (16, 64, 4), reproduces the
+  per-limb `Num2Bits(64)` range checks `ECDSAPrivToPub` applies to `privkey` internally (so removing the
+  component does not also remove the constraints it contributed), and replaces the scalar multiplication
+  itself with a `pubkey` input, the trusted output of `ECDSAPrivToPub`. Ecne solved 298,941 of 298,945
+  variables and reported the single output (the nullifier) uniquely determined (1 of 1 target variables).
+  The only four underdetermined signals are `main.dlt.eq[i].isz.inv`, the inverse witnesses of the four
+  `IsZero` gadgets inside the `BigLessThan` that enforces the M1 canonical-scalar bound. Those witnesses
+  are free by construction (a circomlib `IsZero` assigns `inv <-- in != 0 ? 1/in : 0` as a hint,
+  unconstrained when `in == 0`), and the value they feed, `isz.out`, is uniquely determined in every case,
+  so the output is not malleable. No other signal in the circuit is underdetermined.
+
+This establishes that everything the single-tier path does around the scalar multiplication (hash160, the
+Merkle inclusion, the privkey limb range checks, the M1 canonical-scalar bound, the privkey-derived
+nullifier, and the Semaphore signal binding) uniquely determines the nullifier from the witness. Ecne
+establishes uniqueness of outputs from inputs, not correspondence to the intended function, and the wrapper
+decouples `privkey` from `pubkey`, so nothing here checks that `pubkey = privkey * G`. That binding is
+exactly the trusted `ECDSAPrivToPub` and is the residual below.
+
+An earlier version of the wrapper omitted the internal `Num2Bits` range checks, which meant its `privkey`
+was less constrained than the production circuit's. A different-model review caught it, the checks were
+added, and the run was redone. The verdict shape was identical both times (the same four inverse witnesses
+and nothing else), but only the corrected run is the recorded result.
+
 ## The residual, and the one component it names
 
 The single-tier `mno_membership` and the two-tier `mno_registration` circuits both derive the public key
 from the private voting key in circuit with `ECDSAPrivToPub` from `circom-ecdsa`. That component is about
-383,000 wires, and the full circuits are about 682,000 unoptimized, which is the regime Ecne handles by
-TRUSTED-FUNCTION DECOMPOSITION: treat `ECDSAPrivToPub` as a trusted black box and verify the rest. The
-decomposition is set up here (`tools/circuit-analysis/ecne/wrappers/ecdsa_privtopub.circom` plus a driver),
-and a full run reads the 86 MB main R1CS single-threaded, which is slow but completes rather than failing.
+383,000 wires, and the full single-tier circuit is about 682,000 unoptimized. Ecne handles that regime by
+trusted-function decomposition, treating `ECDSAPrivToPub` as a trusted black box and checking the rest.
+Two realizations of that decomposition were attempted, and only the first reached a verdict:
 
-What that leaves for a specialist, unchanged in kind and now narrowed to one named component:
+- The composition wrapper above (`mno_membership_nonecdsa.circom`, tracked in `ecne/wrappers/`), which
+  supplies the ECDSA output as an input and lets Ecne solve the remaining circuit directly. This is the one
+  that ran to a verdict (the R1CS read about two minutes and the solve about twelve, well within the 12 GiB
+  VM), and it is the recommended path.
+- The isolated component (`ecdsa_privtopub.circom`, also tracked in `ecne/wrappers/`), compiled on its own
+  and handed to Ecne as a trusted function alongside the full main circuit through a small ad-hoc Julia
+  script calling `solveWithTrustedFunctions` (the Ecne CLI parses `--trusted` but does not pass it through).
+  That script is not tracked, because the run it drove never finished: the 86 MB main R1CS read is
+  single-threaded (about 49 minutes) and the solve was then OOM-killed on the 12 GiB VM, so this
+  realization produced NO verdict and established nothing. The composition wrapper replaces it.
+
+What that leaves for a specialist, unchanged in kind and narrowed to one named component:
 
 - Whether `ECDSAPrivToPub` in `circom-ecdsa` is sound as used. It is unaudited demonstration code by its
-  own documentation. The trusted decomposition verifies everything AROUND it; it does not verify it.
+  own documentation. The composition wrapper checks everything around it. It does not check it, and it does
+  not check the `pubkey = privkey * G` binding it is responsible for.
 - The trusted-setup ceremony assumption, which no constraint-level tool addresses.
 
 ## How to reproduce
@@ -60,6 +98,10 @@ What that leaves for a specialist, unchanged in kind and now narrowed to one nam
     bash tools/circuit-analysis/run.sh output/circomspect.txt         # static pass
     bash tools/circuit-analysis/ecne/run.sh circuits/mno_members.circom
     bash tools/circuit-analysis/ecne/run.sh test/hash160/hash160_test.circom
+    bash tools/circuit-analysis/ecne/run.sh tools/circuit-analysis/ecne/wrappers/mno_membership_nonecdsa.circom
 
-The ECDSA trusted decomposition compiles the wrapper alongside the target and drives Ecne's
-`solveWithTrustedFunctions` directly, because the Ecne CLI parses `--trusted` but does not pass it through.
+The single-tier composition wrapper (`mno_membership_nonecdsa.circom`) runs through the same `run.sh` as
+any other circuit, because it supplies the ECDSA output as an ordinary input rather than as a trusted
+function. The isolated `ecdsa_privtopub.circom` decomposition instead compiles the ECDSA component
+alongside the target and drives Ecne's `solveWithTrustedFunctions` directly, because the Ecne CLI parses
+`--trusted` but does not pass it through.
