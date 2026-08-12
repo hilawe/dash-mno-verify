@@ -148,6 +148,25 @@ Foot-guns to design against, all named by the Core lead:
   are committed via `merkleRootQuorums` in the same coinbase transaction. That is the full DIP4
   light-client bootstrap and is overkill before a first audit, but it is the path to fully trustless.
 
+CHAINLOCK VERIFICATION, PROTOTYPED AND STOPPED (2026-08-12). The verification primitives are built,
+tested against live regtest data, and reviewed: `oracle/quorum_commitment.js` reproduces
+`merkleRootQuorums` from the `protx diff` quorum commitments (so a quorum public key matches the block's
+coinbase), and `oracle/chainlock.js` BLS-verifies a ChainLock against a supplied quorum key set (basic
+scheme, requestId and signHash pinned against a live node's `quorum getrecsig`, using `@noble/curves`
+with no new dependency). A different-family review then found the load-bearing design gap: anchoring the
+quorum keys to the SAME block's coinbase is CIRCULAR. A dishonest node can mine a cheap powLimit block
+whose coinbase commits a fake quorum it controls, sign a fake ChainLock with that key, and every check
+passes. So checking the signature against same-block quorums does not close the dishonest-node residual;
+it only catches a node lying about ChainLock status on a REAL block. A real close needs the keys anchored
+to a hardcoded checkpoint followed forward through verified `mnlistdiff`s against headers whose difficulty
+(Dark Gravity Wave) chains from the checkpoint, plus the height-minus-8 signer selection and rotated-quorum
+`quorumIndex`. Decision (2026-08-12): STOP here for a community-gating tool and rely on the operational
+mitigations rather than build the bootstrap. The two primitives are kept as correct building blocks
+(committed, not wired into `diff_snapshot`, mainnet parameters unvalidated). Reopen only if this system
+will gate something of value. The direct-node read (`MNO_DML_SOURCE=node`) IS wired and remains a
+trusted-node read floored at powLimit. This note supersedes the stale "NOT WIRED" line at the top of this
+file.
+
 What this changes here: the oracle stops being a trusted publisher and becomes a snapshot whose
 correctness a verifier can check for itself. `docs/DESIGN.md` currently says the leaf set is
 authenticated "against a trusted key, not yet against the chain's own masternode-list commitment", and
