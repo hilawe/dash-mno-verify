@@ -382,7 +382,12 @@ export function cbTxCommitment(cbTxHex) {
   const payloadVersion = payload.u16();
   const height = payload.u32();
   const merkleRootMNList = reversed(Buffer.from(payload.take(32))).toString("hex");
-  return { payloadVersion, height, merkleRootMNList };
+  // merkleRootQuorums follows for cbTx payload version >= 2, and is the coinbase's commitment to the
+  // active quorum set. It is what anchors a signing quorum's public key to the chain (oracle/
+  // quorum_commitment.js reproduces it from the quorum list). Absent on a v1 coinbase (pre-DIP6), so
+  // it is returned as null there rather than reading whichever 32 bytes happen to follow.
+  const merkleRootQuorums = payloadVersion >= 2 ? reversed(Buffer.from(payload.take(32))).toString("hex") : null;
+  return { payloadVersion, height, merkleRootMNList, merkleRootQuorums };
 }
 
 // Walk a serialized CPartialMerkleTree, returning the root it reproduces and the leaves it marks as

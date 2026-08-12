@@ -1,0 +1,106 @@
+{
+  "_comment": "Real Dash regtest protx diff (base 1). The quorum commitments reproduce merkleRootQuorums, and cbTx carries it. Captured from a live dashmate regtest network, dashd v23.1.7 (post-v19, basic BLS scheme). Proves the serialization/merkle mechanism; mainnet parameters are validated separately.",
+  "height": null,
+  "blockHash": "45b1683d4bc7282c15145cb97058a1eb9937bd9f99f203c01c68c0be5a92f127",
+  "merkleRootQuorums": "171a131f67294015f1b1c883a4a72e79db80ccc95abff66ef587deb086519987",
+  "merkleRootMNList": "93dc0a684c1e2a6d59edf06c496eebc56ad275960e73ea573b7d73fd16d56bc5",
+  "cbTx": "03000500010000000000000000000000000000000000000000000000000000000000000000ffffffff016affffffff03656b0f00000000001976a91425c4d61237c70d7d38547bf94deefd42c1878c0f88acd058110000000000016a5ce91c00000000001976a9146900f704e6e03828fec94415fc1ad03b31403e5388ac00000000af0300a4240000c56bd516fd737d3b57ea730e9675d26ac5eb6e496cf0ed596d2a1e4c680adc9387995186b0de87f56ef6bf5ac9cc80db792ea7a483c8b1f1154029671f131a1700ac4059677a491596955858a5b879b7b9fba7603d366d3d4e454443a62c8460eb819784dbf4599be5bd75252b5e62675d15ed951bd887b52fba99a896e7aae65563a4058ba66f0c40a3801c7c58a26dea18ca6ac241b381a17d529702ecee66d553337d1721000000",
+  "newQuorums": [
+    {
+      "version": 3,
+      "llmqType": 100,
+      "quorumHash": "2a093741cdd6f6b427a04b1faf371372bb763dbc6b666ccea634c450e5aa3623",
+      "quorumIndex": 0,
+      "signers": "07",
+      "validMembers": "07",
+      "quorumPublicKey": "82175f773c1c814ca7c25ed6fdcd9fa0d73c0413dda408fe84c0193a76cabb91a1599333cf6b99fb9a2c207e04f17262",
+      "quorumVvecHash": "343441e22e9426f9174aae298052fe73c389f19e5b5bc14f0d969e2818d5529e",
+      "quorumSig": "a0c37546243d4f6c34826aed2859fd37e31138e0c3a15010d06d3a1bd7813e719d42e4d81c4dfb8e7f0cc1e2c16758470446ed562a54a4beb62a9e2a00fa541b3afaec68a3401b7defac652c3ef7f20e5502b5b268c2a3b35d1d8706731cb0e2",
+      "membersSig": "87d339a512dacdb1b3761e15fe1dbde5ca6d9958bd2fff8316bd08dedce87c8f08f0927344e97f831e1b117c6a137a7b0e02a58bc74783d9c7970cf6f5b485c21e3391585590af489eba41fbc85e8212603c2da217b5f9145b051a6586bc0ea9"
+    },
+    {
+      "version": 3,
+      "llmqType": 100,
+      "quorumHash": "1f34dfc9f1e5eb86c34e042d0c94791aa15556bd222ede67038f186ee07fcd7b",
+      "quorumIndex": 0,
+      "signers": "07",
+      "validMembers": "07",
+      "quorumPublicKey": "a70db75ab3f9664c2357c9c8d48d21343481170483eb4441bfe834d1fff2f29f29c81a37836ec36d24cfa5b821cd240a",
+      "quorumVvecHash": "f4a4d4665d130fc1415f692b180f1c58e00eb8fe9b675d8dff5e011a5c4923c1",
+      "quorumSig": "a6925742e00e06c97a81598fc32e643742ca4c0470701fd58caa50c1ce362a0b2a24d835d6e880c2a61999f49ef943a204f5a802630f6fa6b6685ae869fa28366871a4a7c68d90c24178f49ec137d1b6575849c97d82b9e737afc36fe04bfa74",
+      "membersSig": "ab00c5867fd33b683d941a2bb8b0614c52a29f73ff5f92de10ee6506ed3a2548886875ea8c05485fe7a258257d030358086550e228db41d108450831ee826af5d35a6485b2add5e1f77920402941a45913a44ea1f09e437e74728fbb05ee644b"
+    },
+    {
+      "version": 3,
+      "llmqType": 102,
+      "quorumHash": "2a093741cdd6f6b427a04b1faf371372bb763dbc6b666ccea634c450e5aa3623",
+      "quorumIndex": 0,
+      "signers": "07",
+      "validMembers": "07",
+      "quorumPublicKey": "8f2b547ea45f6cf458f7487c26961c0097e6e4794d89b091591202138671dad24086fb2cf13247a522514ce2b76b5a28",
+      "quorumVvecHash": "c55e5e59ef5860752b50e4924e616202b05989d7dfc4dc7570caa11a73d54a6b",
+      "quorumSig": "b47b25a86f05e78c13828aabef75df4fbb894760432f0fef73f6f3b3de2b3aa2ab8601aa4145fdd35ead3d0f9fcf853501de24eafa10033f5c22cf25869f266d61ffb83a8dee0cec6a78f4c705fad907c84884454fdd1825baf50eea278e1518",
+      "membersSig": "8a67138d6498f7b1ce71bd4655c22eeb667550181b83f800a4b6128bfff6c870b765b000a2a34851fb32f3f585a718b21331f1090d906a60d2f30fe6e4071bc2beddf17b93e7c53e9a3d211cd42db8248ddce67ffdd686360776512bcc836568"
+    },
+    {
+      "version": 3,
+      "llmqType": 102,
+      "quorumHash": "1f34dfc9f1e5eb86c34e042d0c94791aa15556bd222ede67038f186ee07fcd7b",
+      "quorumIndex": 0,
+      "signers": "07",
+      "validMembers": "07",
+      "quorumPublicKey": "8bcf984cf615826423a6461dc2c1058ad7cfa09fd2ac3d452aacb63687eab3c1497ee00e9da42b6d4a8b4d0a59642d02",
+      "quorumVvecHash": "9181d769092fb49f049745fee033dd79d6112bfad585cff244b3f5649f7e93f7",
+      "quorumSig": "91a93c84d7577bd5156fd5e37add9579860b17bf915c90f98f15e9661ca8feb73aa5a79c1e43c3c3f0a593c39f85a9300d863453b001683121fa036d64ec94a167f582efd02faf317dc88c54d6cc4cd00ccb2d16f4de50beb89df3cbbdbb6422",
+      "membersSig": "b223fdab2f2dc1c22801ce981389fa5be49a2ea8da236dbc62adec9d6642508fbd1cd0fba9a61d3ce8711e46ad6c6f5d02220e404a4f61f78f912b17945b7f0a67f6b95af4535b5cfb6501388737ec2bed87236cac6c5e6a0788025d1a20cfaa"
+    },
+    {
+      "version": 3,
+      "llmqType": 104,
+      "quorumHash": "2a093741cdd6f6b427a04b1faf371372bb763dbc6b666ccea634c450e5aa3623",
+      "quorumIndex": 0,
+      "signers": "07",
+      "validMembers": "07",
+      "quorumPublicKey": "945cf64752fd6b218db62e3c1f36ffeb460bf8ba14852417ee99722e64ca2d31394d08510ab0adc7f6898255eae8f26e",
+      "quorumVvecHash": "689773d845b44b4ca56241c03bc4d6b16b4e5a157c6f4afa1fb3e04cd0a4a262",
+      "quorumSig": "99947dfcb49bbfd433f775f9964b05009fdc270550271da9bbfd1ad0f8cfaa2a84085caa24785bd49bcc68a5b9226e62114f09fbc8c2b757ff376bccf567cbc2cee46394d6267946727adb01d63aabb0895203d7d086c83db63c9f5feba8ee92",
+      "membersSig": "b1f556022857c213657f96aced75a3998cc0f417054042e2262c2c6d0f21b360e7cbbcb3b330717ee4acd0fd196629600cde6eb829415b250327e4467d602d8bc7977e784f34a6c03ceddd999b42f89c4d0317aa53b3151a842d3ed5ed5a8f08"
+    },
+    {
+      "version": 3,
+      "llmqType": 104,
+      "quorumHash": "1f34dfc9f1e5eb86c34e042d0c94791aa15556bd222ede67038f186ee07fcd7b",
+      "quorumIndex": 0,
+      "signers": "07",
+      "validMembers": "07",
+      "quorumPublicKey": "8da1a5f92ed0945bd85a717531f614fb7a03e52bd198469bce3802f712ae2d144d92dd2a697ab3c6aca8ba6403dcb0b2",
+      "quorumVvecHash": "0f2678bf96443b7a953eaf2da57fe7f4afd764765198f1da7af419f82cd4e10c",
+      "quorumSig": "a048d6fa52b59ed56d637c2ec49a5a301bef3a781dc4a2b0961a33c300b5b328164eb4c0f7f9182e4eb99e602c05470d15c418a348cdd24c2bd63f3a8e7ff5551b6bbabd333612e0f601a5e22531df8d2e2c03b822105712ecd402e00c204de4",
+      "membersSig": "96c40100c1bd44d3f08ec2eab3f895796326b6cc92bb2231e687b48dc0ec8650bf5f8c4c781a13002d5af1a4b43a5ae6069e8c5f42a2cc7c10623e5d671c0e596241892053a54ce0b33321d14134bf57dab590474073ae66048bdd68585bc180"
+    },
+    {
+      "version": 3,
+      "llmqType": 106,
+      "quorumHash": "2a093741cdd6f6b427a04b1faf371372bb763dbc6b666ccea634c450e5aa3623",
+      "quorumIndex": 0,
+      "signers": "07",
+      "validMembers": "07",
+      "quorumPublicKey": "8a07c54fc7ed896e47909309bef633ae0a883c5c1420fb38dda76c716f053fcbe16aabca5ab62281b8c7a87a7c65827d",
+      "quorumVvecHash": "c9bfd24bd37e6f8c599a266933395ff42762c16fb7f5b91e1b35c9b762a7640f",
+      "quorumSig": "82a4f55e547093415cab3f7b6e699941e58c35c2eaae75ec14087fc364abe6328cdd854a94c5d89023ff5e02bbe854a505bca88b296d2d64c4d8d4267feceb4c59c3906146e8831b529f5a399df288444f569da9df466a94f58a60e82e66fc56",
+      "membersSig": "aa2f40ed23813b4219e8750a5460f89259a9ab5ecb11cf7edf72f38102a36f30073d7f3c787fee973c22b98df72a378b024054bcc98a38b070ec49d7727bb0b9585a7304e2c8c89a1ba3a5b7b2648b337d25676a7576fcbeb4ea0efc168703da"
+    },
+    {
+      "version": 3,
+      "llmqType": 106,
+      "quorumHash": "1f34dfc9f1e5eb86c34e042d0c94791aa15556bd222ede67038f186ee07fcd7b",
+      "quorumIndex": 0,
+      "signers": "07",
+      "validMembers": "07",
+      "quorumPublicKey": "919d85d290df4f6998232009ade93e4dd1d5c7a982218c8c72a02d4ecc270a985abf97d4192ec95c678a8e7b0e2a7770",
+      "quorumVvecHash": "0a8599f2283a3e878e1c5db01b4ba6fdfbe450b4fb4bb7edf51978b87da4477e",
+      "quorumSig": "807643e3996786e319b144ca2fb269c30a921e6ec857dd02a2da4f8c85445fabce0563e4d57c7002da1773bebec88fe80ce1cae07916604a242ab9868db75aa59aff6b2ee1f396bc1bd0427d7d8053cc755dcb4ae6afbf39e97e9f6efc54e40a",
+      "membersSig": "afc976ce958bd8a95b9baf89ab81effd9e7fa7d8496da77bc323700ce9146e9ac8c1f5dca35cd055a3b865ea0c932262039514cd49f9f3e1301a8e611ff5961ea3f835cdb0aa344062b4b39384dae54597ce973da7dddc9121ab268659cc809f"
+    }
+  ]
+}
