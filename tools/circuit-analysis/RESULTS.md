@@ -67,6 +67,21 @@ was less constrained than the production circuit's. A different-model review cau
 added, and the run was redone. The verdict shape was identical both times (the same four inverse witnesses
 and nothing else), but only the corrected run is the recorded result.
 
+- The two-tier `mno_registration` path, all of it except the ECDSA scalar multiplication, by the same
+  construction. The wrapper `tools/circuit-analysis/ecne/wrappers/mno_registration_nonecdsa.circom`
+  mirrors the body of `circuits/mno_registration.circom` verbatim at the same (treeDepth, n, k) =
+  (16, 64, 4), reproduces the internal `Num2Bits(64)` privkey range checks (from the start this time),
+  and supplies the public key as the trusted input. Ecne solved 299,521 of 299,525 variables and reported
+  BOTH outputs uniquely determined (2 of 2 target variables): the member `commitment` (Poseidon of the
+  member secret) and the `regNullifier` (the per-season, per-context registration spend tag). The only
+  four underdetermined signals are again the `main.dlt.eq[i].isz.inv` inverse witnesses inside the
+  `BigLessThan` M1 bound, free by construction with their dependent `isz.out` uniquely determined in
+  every case. No other signal is underdetermined.
+
+With this, the non-ECDSA logic of ALL THREE production circuits is verified determinate: `mno_members`
+directly (no trusted functions), and `mno_membership` and `mno_registration` under the trusted
+`ECDSAPrivToPub` decomposition. The single residual component is unchanged.
+
 ## The residual, and the one component it names
 
 The single-tier `mno_membership` and the two-tier `mno_registration` circuits both derive the public key
@@ -99,6 +114,7 @@ What that leaves for a specialist, unchanged in kind and narrowed to one named c
     bash tools/circuit-analysis/ecne/run.sh circuits/mno_members.circom
     bash tools/circuit-analysis/ecne/run.sh test/hash160/hash160_test.circom
     bash tools/circuit-analysis/ecne/run.sh tools/circuit-analysis/ecne/wrappers/mno_membership_nonecdsa.circom
+    bash tools/circuit-analysis/ecne/run.sh tools/circuit-analysis/ecne/wrappers/mno_registration_nonecdsa.circom
 
 The single-tier composition wrapper (`mno_membership_nonecdsa.circom`) runs through the same `run.sh` as
 any other circuit, because it supplies the ECDSA output as an ordinary input rather than as a trusted

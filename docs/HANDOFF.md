@@ -5,18 +5,24 @@ counts and supersedes everything below it. Historical sections are append-only a
 only marked superseded. Read this first when picking the project back up, then `TODO.md` for the full
 prioritized punch list.
 
-## CURRENT STATE, 2026-08-11 (single-tier non-ECDSA determinism closed by a composition wrapper; the prior handoff push landed). THIS SUPERSEDES EVERY SECTION BELOW IT
+## CURRENT STATE, 2026-08-11 (both ECDSA circuits' non-ECDSA determinism closed by composition wrappers; the prior handoff push landed). THIS SUPERSEDES EVERY SECTION BELOW IT
 
 This state is written into the commit it describes, so at write time that commit is by definition not yet
 pushed. The push protocol applies to it like any other: leak scan, explicit per-push approval, fast-forward
 push, then read the CI conclusions on all three jobs (`circuits`, `checks`, `full`) rather than assuming
-them. If this section is being read from `origin/main`, that protocol completed for it. Two things landed
+them. If this section is being read from `origin/main`, that protocol completed for it. Three things landed
 this session. First, the prior session's handoff commit `b3925bc` (docs-only) was one commit ahead of
 `origin` because the prior session wrote it but did not push it, so the authoritative handoff was
 local-only. It was leak-scanned by hand, pushed fast-forward with no force, and its CI was confirmed green
 on all three jobs. Second, the one circuit item the free tools had NOT closed is now closed: the
 single-tier `mno_membership` path is verified determinate everywhere except the ECDSA scalar
-multiplication, by a small composition wrapper rather than the OOM-prone full-circuit run.
+multiplication, by a small composition wrapper rather than the OOM-prone full-circuit run (`8fbc33b`,
+pushed, CI green on all three jobs). Third, the same wrapper treatment was applied to the two-tier
+`mno_registration` circuit and produced the same clean verdict, so the non-ECDSA logic of ALL THREE
+production circuits is now verified determinate. That closes the last named DETERMINISM gap outside
+`ECDSAPrivToPub`. Determinism is what these tools measure, not full soundness, so the specialist scope
+(component soundness as used, the trusted-setup assumption, a novel attack) stands as recorded in the
+punch list.
 
 ### 0. FOLLOW ALL THE PLAYBOOK RULES. THIS IS MANDATORY, NOT A REMINDER, AND IT IS THE FIRST INSTRUCTION
 
@@ -52,7 +58,7 @@ covers, not after. The rules, self-contained so nothing has to be hunted:
 
 ### 1. WHAT THIS SESSION DID
 
-Two things.
+Three things.
 
 THE PRIOR HANDOFF COMMIT `b3925bc` WAS PUSHED. It was one docs-only commit ahead of `origin` (the prior
 session wrote it but did not push it), so the authoritative handoff was local-only. It was leak-scanned by
@@ -75,21 +81,30 @@ took about two minutes and the solve about thirteen on the 12 GiB VM, no OOM, so
 Ecne establishes output determinism, not correspondence to the intended function, and the wrapper does NOT
 check `pubkey = privkey * G`; that binding is `ECDSAPrivToPub` and stays the residual.
 
+THE SAME WRAPPER TREATMENT CLOSED `mno_registration`, the two-tier registration circuit and the last of
+the three production circuits with any unverified non-ECDSA logic. The wrapper
+`tools/circuit-analysis/ecne/wrappers/mno_registration_nonecdsa.circom` mirrors the production body
+verbatim at (16, 64, 4), includes the internal `Num2Bits(64)` privkey range checks from the start (the
+lesson the membership wrapper's review taught), and supplies the public key as the trusted input. Ecne
+solved 299,521 of 299,525 variables with BOTH outputs uniquely determined (2 of 2 targets, the member
+commitment and the registration nullifier), and the only four underdetermined signals are again the
+`IsZero` inverse witnesses inside the `BigLessThan` M1 bound, free by construction with `isz.out` uniquely
+determined in every case. The solve took about 40 minutes of solver time on the shared VM (a concurrent
+build from another project was competing for CPU; the membership wrapper's solo solve was about 13), no
+OOM. Recorded in `tools/circuit-analysis/RESULTS.md`.
+
 ### 2. WHERE TO START (punch list, ordered)
 
 Nothing is half-done (and if this section is being read from `origin/main`, nothing is unpushed either,
 per the push protocol above). Everything here is optional deepening the operator can pick up anytime.
 
-1. The same trusted-decomposition wrapper on the two-tier `mno_registration` circuit (also ECDSA), which
-   would verify its non-ECDSA components the way the single-tier wrapper just did. Build the analogous
-   `mno_registration_nonecdsa.circom` and run it through `ecne/run.sh`.
-2. Attempt `ECDSAPrivToPub` determinism itself with Ecne's `secp_solve` mode, or the full single-tier
+1. Attempt `ECDSAPrivToPub` determinism itself with Ecne's `secp_solve` mode, or the full single-tier
    circuit including ECDSA on a larger VM (`colima stop; colima start --memory 24`). Neither resolves the
    real residual, which is whether `circom-ecdsa` computes the correct curve operation, a soundness
    question rather than a determinism one, so this is lower value than it looks.
-3. Extend the differential-testing pattern (the hash160 vectors, the X11 harness) to nullifier and
+2. Extend the differential-testing pattern (the hash160 vectors, the X11 harness) to nullifier and
    commitment derivation. Picus (SMT) is an alternative to Ecne if wanted.
-4. The residual tier-1 items no free tool closes stay for a specialist IF ever funded: `ECDSAPrivToPub`
+3. The residual tier-1 items no free tool closes stay for a specialist IF ever funded: `ECDSAPrivToPub`
    soundness as used, the trusted-setup ceremony assumption, a novel attack. The operator has declined to
    fund a specialist, so the operational options stand: do not gate real value yet, small anonymity set,
    capped grants, contingent bug bounty over a retainer.
@@ -113,6 +128,10 @@ per the push protocol above). Everything here is optional deepening the operator
   output as an ordinary input, not as a trusted R1CS function. So no Julia driver and no
   `solveWithTrustedFunctions` are needed for this path, unlike the isolated `ecdsa_privtopub.circom`
   decomposition.
+- Solver wall-time varies with VM load, not circuit size alone. The registration wrapper (299,525 wires)
+  took about 40 minutes of solver time against the membership wrapper's 13 (298,945 wires), because a
+  concurrent container build from another project was competing for the VM's CPU the whole run. Slow
+  progress with healthy memory is contention, not a hang; check `docker stats` before concluding anything.
 - Include resolution in the wrapper: the repo's own components are reached by a file-relative path
   (`../../../../circuits/hash160/hash160.circom`, four levels up from `ecne/wrappers/`), while circomlib and
   circom-ecdsa resolve through `run.sh`'s `-l node_modules -l circuits/.deps`, the same flags the other
