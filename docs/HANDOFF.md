@@ -5,7 +5,60 @@ counts and supersedes everything below it. Historical sections are append-only a
 only marked superseded. Read this first when picking the project back up, then `TODO.md` for the full
 prioritized punch list.
 
-## CURRENT STATE, 2026-08-11/12 (circuit determinism closed by wrappers, then a claims-verification round run as the auditor substitute with four findings folded). THIS SUPERSEDES EVERY SECTION BELOW IT
+## CURRENT STATE, 2026-08-12 (trustless-anchor work started: ChainLock verification de-risked, quorum-key anchoring built and committed local-only). THIS SUPERSEDES EVERY SECTION BELOW IT
+
+FOLLOW ALL THE PLAYBOOK RULES (the mandatory block is spelled out in the superseded 2026-08-11/12
+section just below, and it still applies verbatim). Read it before the kind of work it covers.
+
+STATE. `origin/main` is at `045de65` (CI green, all five claims-round commits pushed and confirmed).
+Local `main` is ONE commit ahead at `4f04fbe`, NOT PUSHED, tree clean, full suite 670 green. That commit
+is the quorum-key anchoring module. It is held unpushed ON PURPOSE until its mainnet parameters are
+validated against a live mainnet node (see below).
+
+WHAT THIS LEG IS. Closing the trustless-anchor gap, the last real trust limitation. Direct-node mode
+(`MNO_DML_SOURCE=node`) is already wired and already checks the DML against the coinbase's
+`merkleRootMNList`, names the block with X11, and floors proof of work at powLimit. What it still trusts
+is the node's word that a block is ChainLocked. Closing that means verifying the ChainLock SIGNATURE
+against the signing quorum, whose public key the chain commits via `merkleRootQuorums`.
+
+BOTH CRUX ASSUMPTIONS ARE PROVEN with running slices (kept in scratch, `scratchpad/chainlock-spike/`:
+`slice.mjs`, `quorum_root.mjs`, and `confirmed.json`/`quorums.json` captured from a live regtest node):
+1. A real ChainLock BLS-verifies in JS against the quorum public key, using `@noble/curves` (already a
+   dep, NO new library). Basic scheme, DST `BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_NUL_`. signHash =
+   SHA256d( u8(llmqType) quorumHash(internal) requestId(internal) blockHash(internal) ), requestId =
+   SHA256d( 0x05 "clsig" int32LE(height) ). Cross-checked with the node's `quorum getrecsig`.
+2. `merkleRootQuorums` is reproduced exactly from the `protx diff` quorum commitments, so a quorum's
+   public key is chain-anchored. Committed as `oracle/quorum_commitment.js` + a `cbTxCommitment` edit to
+   parse `merkleRootQuorums` + `test/quorum_commitment.test.js` on a real regtest vector. Two
+   different-family review rounds converged (folded: a permissive-hex trust-boundary bug, a duplicate
+   leaf gap, the size tables). CFinalCommitment serialization matches Dash Core v23.1.3
+   `src/llmq/commitment.h`; the merkle matches `src/evo/cbtx.cpp`.
+
+THE MAINNET NODE. `dash-mno-node` (mainnet, dashpay/dashd:latest, RPC creds probe/probe from
+`docker inspect`) was hard-killed earlier and is REINDEXING from genesis (~1.6M of ~2.5M at handoff
+time, ~1 hour left). On laptop wake, colima may need `colima start`; the reindex resumes from disk. A
+background watcher was polling for sync but does not survive sleep, so on resume just check
+`docker exec dash-mno-node dash-cli getblockchaininfo` for `initialblockdownload: false`.
+
+NEXT STEPS (ordered), all gated on the mainnet node reaching tip:
+1. VALIDATE the two mainnet parameters against the live synced node, then push `4f04fbe` (with any
+   correction): (a) `MAINNET_LLMQ_SIZES` in `oracle/quorum_commitment.js` (from Dash consensus, marked
+   PENDING) against the node's actual active-set member counts per type; (b) which LLMQ type signs
+   mainnet ChainLocks (regtest used type 100; mainnet is a real type, historically llmq_400_60 = 2, but
+   confirm on the node, it may be a rotated type post-DIP24). Capture a mainnet quorum vector while there.
+2. BUILD `oracle/chainlock.js`: compute requestId + signHash (formulas above), and verify the signature
+   against the chain-anchored active quorums of the ChainLock type (verify against ALL active quorums of
+   that type and accept if one matches, which avoids reimplementing Dash's quorum selection). Test with a
+   captured mainnet ChainLock vector. Handle scheme version (assert v19+/basic, refuse legacy).
+3. WIRE into `oracle/diff_snapshot.js`: after `getbestchainlock`, call the verifier against the same
+   `protx diff`'s chain-anchored quorums, replacing "trust known_block". Run the review loop. This closes
+   the ChainLock-signature and A->B->A residuals. The powLimit-floor residual is then largely subsumed (a
+   ChainLock is a live quorum signature, stronger finality than PoW difficulty).
+
+The `TODO.md` "STARTED, DIRECT NODE MODE" note that says it is NOT WIRED is STALE (it is wired); worth
+correcting when convenient.
+
+## CURRENT STATE, 2026-08-11/12 (circuit determinism closed by wrappers, then a claims-verification round run as the auditor substitute with four findings folded). SUPERSEDED BY THE SECTION ABOVE
 
 This state is written into the commit it describes, so at write time that commit is by definition not yet
 pushed. The push protocol applies to it like any other: leak scan, explicit per-push approval, fast-forward
