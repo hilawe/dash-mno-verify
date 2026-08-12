@@ -54,7 +54,7 @@ primitives above are correct building blocks for that design, but they are not a
 The slices are kept in `scratchpad/chainlock-spike/` (`slice.mjs`, `quorum_root.mjs`, `confirmed.json`,
 `quorums.json`).
 
-THE MAINNET NODE. `dash-mno-node` (mainnet, dashpay/dashd:latest, RPC creds probe/probe from
+THE MAINNET NODE. `dash-mno-node` (mainnet, dashpay/dashd:latest, RPC creds read from
 `docker inspect`) was hard-killed earlier and is REINDEXING from genesis (~1.6M of ~2.5M at handoff
 time, ~1 hour left). On laptop wake, colima may need `colima start`; the reindex resumes from disk. A
 background watcher was polling for sync but does not survive sleep, so on resume just check
