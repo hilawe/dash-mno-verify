@@ -1,0 +1,114 @@
+{
+  "_comment": "Real Dash regtest: a ChainLock plus the protx-diff quorum set active for it (base 1). The quorum commitments reproduce merkleRootQuorums, and the ChainLock BLS-verifies against the chain-anchored signing quorum. dashd v23.1.7 (post-v19 basic BLS). ChainLock llmqType is 100.",
+  "chainlock": {
+    "height": 9729,
+    "blockhash": "5d1230c1f957c0dc94442fa4c47349549fabf785392225d09a2037b30490d3e0",
+    "signature": "93e711902485739ee9b080cc504a96f94d336a6ed02bcf5294bee93be45252c28800f4fc55e5be065d7c2b9e675c1eaa0a2317ca211066fbc83920fbeab796b44a63dd77ca22e9de7b17605ba230ecbc09382193804e000e534fb89e837c037d"
+  },
+  "chainlockLlmqType": 100,
+  "merkleRootQuorums": "7ef3f525623e3dcf6ae6c04bc2b39274a4fbf565b0f4009d174dcce8adfbb298",
+  "memberSizes": {
+    "100": 3,
+    "102": 3,
+    "104": 3,
+    "106": 3
+  },
+  "newQuorums": [
+    {
+      "version": 3,
+      "llmqType": 100,
+      "quorumHash": "093f42978436f0882a98fe548e3e0e282ff1aef9211aa411cd045c3eaf60f918",
+      "quorumIndex": 0,
+      "signers": "07",
+      "validMembers": "07",
+      "quorumPublicKey": "a183a33c98f39c5af54294ed671fc1fa8e1ff4da335a0df67d2300a827d780ef1ad78b1b0ac95d03e182e4b18c13b0bf",
+      "quorumVvecHash": "304f4e9699e3606251179deaa13f38eb0bcafad29fe05cb7f9f3269aa3c5d510",
+      "quorumSig": "afbe2dda5ea974933e70cabf0c83b918693557edbf349fa18345baa09dff4cc0ffd756526977800da23f9607f71340980b47a3a68e19bf5ea41432eda5f506ce0639e054b5e8ba4ce3991141d9059f96281f4eb62b354a1d10b7e2b8ba756ed8",
+      "membersSig": "8b46df90de3235dfe66db5a3218fe3c84db6f6c38ffa51833afeaeccc73bc0cab2e6106165081593c641b797ad4404890dfe0a48e34cd37ca5b99bc082b50986f83c6b7ac2d3f95c837a7e9ba0dbbf7d09e725c381d360253cf956b5c0dc96f1"
+    },
+    {
+      "version": 3,
+      "llmqType": 100,
+      "quorumHash": "0138558f864d110985a034823a22d9c98cf0aa4f1727014f56761f878e8351b7",
+      "quorumIndex": 0,
+      "signers": "07",
+      "validMembers": "07",
+      "quorumPublicKey": "b60b08bf11157ae0fee101b879b1bc01b67d22adac40e6fee39e86f3cd740283a9bf7ce45dc541a89d17a42ff61c9ff9",
+      "quorumVvecHash": "843953d1df38c1d04b3279ac63ffe00059a650fff6dde656a200ee8564dd0192",
+      "quorumSig": "a8cda2f74706ad409c124c7950dcb8e2c2987b2df55b5ab0a57aa8161082e9b3962eaad20f1d298f4552c90b5a0dbdf4194e88b799faff134433166a4fd9d09a84377b1a41e02ef33a69577fc10de4697cc97be80503944161a20c516f070c26",
+      "membersSig": "b5d5562c689b4d1b5853cac97d8da70d4fc69cefdcd9b89bd353152f9c84baf679fb777464d982552a34f62752ac79560f3a731794147a5af964d8d400e6533117a2d37b6c2d0a06d1d72a327323b1a4b85f845dd4f5b21d1c501ba1422b225e"
+    },
+    {
+      "version": 3,
+      "llmqType": 102,
+      "quorumHash": "093f42978436f0882a98fe548e3e0e282ff1aef9211aa411cd045c3eaf60f918",
+      "quorumIndex": 0,
+      "signers": "07",
+      "validMembers": "07",
+      "quorumPublicKey": "a17619c0bd6fd8add2c36385e80c39ced973b64f8b8a585a5bd29333c4620fabcaa87206dad7b2ce66ac50c48892eb79",
+      "quorumVvecHash": "0ab79fb564f894c8a9b5ce536d7997a2b8a4582bf21b718666c9d432874606f8",
+      "quorumSig": "9815818ec4a143bb3f4506337ad48f59b98531c321f0c065d09d1d3f49af1dd9fbd7fd1d71f19a1aca218362c8d1edc811b6c6548850a792fd87f835e536f080964ce96976c66d0a26df75e1e6ebd4ed6c789531a17681ae92c441219e18be24",
+      "membersSig": "8aff3a7a1b5f64431011d4d34dace8de84eee4b3a128d83a0ce5d08034d820f97cbc709b4ff9eaaa4af2ca858e4ce82913d5f25c5c09b9f5ad94eb258f6db0b364fa647d286cc4ff659a1e488092518f4a553d0dbf661ad52e7d1bd8633a8858"
+    },
+    {
+      "version": 3,
+      "llmqType": 102,
+      "quorumHash": "0138558f864d110985a034823a22d9c98cf0aa4f1727014f56761f878e8351b7",
+      "quorumIndex": 0,
+      "signers": "07",
+      "validMembers": "07",
+      "quorumPublicKey": "95b76dcff28edd9c56ecb0a341823569670527fa14ac2b97bc870ce368218f306859dd78d93fd5aaf976af67774ff95f",
+      "quorumVvecHash": "3ea02440782e77c63ed8ffc0db1355296b634b8f6ea008df4c809ae0724406cd",
+      "quorumSig": "88c502c67f04618095544e6d57099b70845014c0c78964907e8326e08ca917c9edcf867ef557f433de13b1ef4233aacb0df17ffb56bee6e62a55cf116c99a72c60716e4e957c72e7ae00430084ad93740384ea2d41cb7dbba7f81dea32a1efd9",
+      "membersSig": "b29356fa551f348d18ecf94d3ad405198145a2f190afe8664ad860c72fb7c969ccf2ccc8c99a91758e92797f5eb8ba3509b8c9540a5f97da48e8d42515e82a112977527f2496288f458b35720df70ed9bb88a513fbab747033b27b9db90ab84d"
+    },
+    {
+      "version": 3,
+      "llmqType": 104,
+      "quorumHash": "093f42978436f0882a98fe548e3e0e282ff1aef9211aa411cd045c3eaf60f918",
+      "quorumIndex": 0,
+      "signers": "07",
+      "validMembers": "07",
+      "quorumPublicKey": "a8cebbe4b1b8615f7d123dc92fd6ffdb80252677c419e629edf280744da2360073f12264428922f8d834d284c4ab7ccf",
+      "quorumVvecHash": "3be0ee55c2c93a97fd34a5cc3d0851cda04abff3af7f4d350f700fc9b9cdc1dd",
+      "quorumSig": "b742ed8db301aba910605ea9eb3812fdf874a8564d9e6c9042c0fe0d63d5a2b29106e5b9e3c053ba63f8d936e8f35cef0ac74a7306b3a0c1d4a8d8cdafdabddaa516ce0111217af6bf77c7dda2f27a926b814de0ed16a9f05f0a6c4564317a2a",
+      "membersSig": "852aeb0710049ad14e469ad95b7fab5e546fef568c8e4ab939cf19d94f65fd87b936e3573c8cddb6ab49737c4e800c7612ae6e7294ab18faa7e57eeec45f67d117f9eb42d688123940444d87968380062b911b2d376d90fb0616e39ade1a2ba8"
+    },
+    {
+      "version": 3,
+      "llmqType": 104,
+      "quorumHash": "0138558f864d110985a034823a22d9c98cf0aa4f1727014f56761f878e8351b7",
+      "quorumIndex": 0,
+      "signers": "07",
+      "validMembers": "07",
+      "quorumPublicKey": "a20de9f06c83bf326c1efc6fcabdc97cd4432db5810de7828c141f98a64909880f286fc5f1a77f529568f71d101bd5c5",
+      "quorumVvecHash": "eb646207e9b9eb6cf25bc117b81165b1c5fc0951b91c00f69faca1e4d7813bba",
+      "quorumSig": "a9ef52344ab2c98703fd97246086839d646c96df36464fec886b04865faa19c6d61409aca1ed32a146b0be34c75b4e110eb43152f9cf050b31543ecfaebec0f57df2d7c094512a91c9eebcdf5e7cb228d01539bc0887b32ab1d6f6ae88d61fcb",
+      "membersSig": "a366499a22a8ccee689f9cdbed7cfadd15e1259bca0ee3f9cfe7dff3a5ced172b9c12aa0ae659521a7a4a0521c2fb2e315dd1b60e83b99ebb7b162af8188c98ac62981639d9acf0610b2fb238835117ea5dc395784aa81d71611e7e1bf0d5b71"
+    },
+    {
+      "version": 3,
+      "llmqType": 106,
+      "quorumHash": "093f42978436f0882a98fe548e3e0e282ff1aef9211aa411cd045c3eaf60f918",
+      "quorumIndex": 0,
+      "signers": "07",
+      "validMembers": "07",
+      "quorumPublicKey": "8d89cdbc26f651aa3e0cd22b8c28921b20ef65cf19d094e756f9ccb0aa9371295b6faddececb57d4b524647e062c27ca",
+      "quorumVvecHash": "b4d7f0c37e57fac41dc2ee23957c7616c65339c0aa73508c15bedd80e42e3cd9",
+      "quorumSig": "a41367cdf5b1744e5e80677c0032890c55a2e75c63debccad22503c1aca33c76c12e4289e47e01e693cba59c8b837c970a03a99921fe35885eb675d89f40755e4aed06346390a0491e93aad16cf9f68292e6b2c4178c00386b7b82b768bcb679",
+      "membersSig": "9822c85a01c9e5bb3835415ed2a73e59dee774ae8a0b6291a9dc8f45d2a38acf4ccb35e7093a5dbdf9243bbb31251c310dda7c50a001c812adf9cf7d6fb749e1508cd921aac042270ec3610d118cddf81266831373f7d71d72cc62576f775f51"
+    },
+    {
+      "version": 3,
+      "llmqType": 106,
+      "quorumHash": "0138558f864d110985a034823a22d9c98cf0aa4f1727014f56761f878e8351b7",
+      "quorumIndex": 0,
+      "signers": "07",
+      "validMembers": "07",
+      "quorumPublicKey": "acedf59cd9d7972258a1f033ae05cce68fa1674a6b3616caf9bc821c544d0999775b9dc0d4f550951c57d3c349870b53",
+      "quorumVvecHash": "ed2819a127350c254a6967eb99b0e926a259e94975d4530a1af362db0572a4f4",
+      "quorumSig": "821d31628be6835ca1d71bc429a6e5f86a85e4809cf5f4853c243b046a9c0bdc4bf8edd436ba0859a8aa2e325e0b47170912d6d18f1200f71ee2c45a37af6ceb6bd88279bc006c0e57188c990196e4fceed861a0dedd4c1286f1b5581f65c810",
+      "membersSig": "b30b4880ccc242a32936446b08bb33ec9f7963c18eec10795875cc5ec2f6c0f14d539303bd4936df05b27e126e701e4a10d709fd94e3990a13a732f368a5b958c1d3c60b63f5661b0bec73383bdc7f8116f124cfbe54c6a97ace370734c2483f"
+    }
+  ]
+}
