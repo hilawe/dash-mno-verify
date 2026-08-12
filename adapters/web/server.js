@@ -12,9 +12,10 @@ import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
 import process from "node:process";
 import { proveInstructions } from "../../common/prover_instructions.js";
+import { assertSafeGatewayUrl } from "../../common/gateway_url.js";
 
 const PORT = Number(process.env.MNO_WEB_PORT ?? 8080);
-const GATEWAY = process.env.MNO_GATEWAY_URL ?? "http://127.0.0.1:8787";
+const GATEWAY = assertSafeGatewayUrl(process.env.MNO_GATEWAY_URL ?? "http://127.0.0.1:8787");
 // Adapter bearer token the gateway requires when MNO_ADAPTER_SECRET is set there (review B1/M5).
 // Server-side only; it is never exposed to the browser.
 const ADAPTER_SECRET = process.env.MNO_ADAPTER_SECRET;
@@ -130,6 +131,7 @@ const server = createServer(async (req, res) => {
     if (req.method === "POST" && req.url === "/api/start") {
       const r = await fetch(`${GATEWAY}/v1/challenge`, {
         method: "POST",
+        redirect: "error", // never follow a redirect off the guarded origin (it would carry the body in the clear)
         headers: { "content-type": "application/json", ...authHeaders },
         body: JSON.stringify({ platform: "web", communityId: COMMUNITY_ID, roleId: ROLE_ID, account: sid }),
       });
@@ -145,6 +147,7 @@ const server = createServer(async (req, res) => {
       // Submit the session id as the account. The gateway binds the verify to it (review B1).
       const r = await fetch(`${GATEWAY}/v1/verify`, {
         method: "POST",
+        redirect: "error", // never follow a redirect off the guarded origin (it would carry the body in the clear)
         headers: { "content-type": "application/json", ...authHeaders },
         body: JSON.stringify({ ...payload, account: sid }),
       });

@@ -7,6 +7,7 @@
 import process from "node:process";
 import { randomUUID } from "node:crypto";
 import { proveInstructions } from "../../common/prover_instructions.js";
+import { assertSafeGatewayUrl } from "../../common/gateway_url.js";
 import { RoomStateTracker, isPrivateDirectRoomState } from "./room_privacy.js";
 import { GrantLedger } from "../common/grant_ledger.js";
 import { markReconciled, reconciliationDone } from "../common/reconcile.js";
@@ -16,7 +17,7 @@ const HS = process.env.MATRIX_HOMESERVER; // e.g. https://matrix.org
 const TOKEN = process.env.MATRIX_ACCESS_TOKEN;
 const USER_ID = process.env.MATRIX_USER_ID; // @yourbot:matrix.org
 const GATED_ROOM = process.env.MATRIX_GATED_ROOM; // !roomid:matrix.org, bot must be able to invite
-const GATEWAY = process.env.MNO_GATEWAY_URL ?? "http://127.0.0.1:8787";
+const GATEWAY = assertSafeGatewayUrl(process.env.MNO_GATEWAY_URL ?? "http://127.0.0.1:8787");
 // Adapter bearer token the gateway requires when MNO_ADAPTER_SECRET is set there (review B1/M5).
 // This is the gateway token, distinct from the Matrix access token used by api() below.
 const ADAPTER_SECRET = process.env.MNO_ADAPTER_SECRET;
@@ -63,6 +64,7 @@ async function handle(roomId, sender, body, state) {
     if (!isPrivate()) return sendText(roomId, DM_ONLY);
     const res = await fetch(`${GATEWAY}/v1/challenge`, {
       method: "POST",
+      redirect: "error", // never follow a redirect off the guarded origin (it would carry the body in the clear)
       headers: { "content-type": "application/json", ...authHeaders },
       body: JSON.stringify({ platform: "matrix", communityId: COMMUNITY, roleId: ROLE, account: sender }),
     });
@@ -102,6 +104,7 @@ async function handle(roomId, sender, body, state) {
   try {
     const res = await fetch(`${GATEWAY}/v1/verify`, {
       method: "POST",
+      redirect: "error", // never follow a redirect off the guarded origin (it would carry the body in the clear)
       headers: { "content-type": "application/json", ...authHeaders },
       body: JSON.stringify({ ...payload, account: sender }),
     });

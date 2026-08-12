@@ -11,7 +11,7 @@ This is the opinionated, copy-paste path for one setup, a Discord channel that o
 ## Before you start
 
 - A synced Dash mainnet node, reachable by `dash-cli` or JSON-RPC.
-- A host that stays up (a small VPS or a Pi), with Node.js 20 or newer and git.
+- A host that stays up (a small VPS or a Pi), with Node.js 22.13 or newer (per `package.json` engines) and git.
 - A Discord application and bot in your server.
 - The private masternode channel you already use, with `@everyone` denied View Channel. The bot adds people to it.
 
@@ -78,8 +78,10 @@ bash scripts/fetch_keys.sh --large    # the 2.3 GB keys, if you host them (see b
 # bash scripts/rebuild_proving_keys.sh
 ```
 
-- Once a season, on the node: `npm run register -- --gateway https://your-gateway --platform discord --community <guild id> --role mn-members --voting-key-file key.wif`. This needs the 2.3 GB registration key.
-- Every epoch, in Discord: `/verify` gives a challenge, the member runs `npm run prove-epoch -- --gateway https://your-gateway --challenge challenge.json` on the node, and `/submit` hands the resulting `proof.json` back. The bot adds them to the channel.
+- Once a season: `npm run register -- --gateway https://your-gateway --platform discord --community <guild id> --role mn-members --voting-key-file key.wif`. This needs the 2.3 GB registration key. See the network-path warning below.
+- Every epoch, in Discord: `/verify` gives a challenge, the member runs `npm run prove-epoch -- --gateway https://your-gateway --challenge challenge.json`, and `/submit` hands the resulting `proof.json` back. The bot adds them to the channel.
+
+Network-path warning for two-tier: both the seasonal register and the per-epoch prove connect to the gateway directly (register posts to it, prove fetches the members tree from it), so the gateway sees the source address on both. If you run either on the masternode, that address is the node's own advertised service address, which is in the public masternode list, and the gateway operator can learn which node it is. The proof stays zero-knowledge, so this is a network-path exposure only, but it applies to BOTH two-tier steps, not registration alone. Run them over an anonymizing path (for example Tor) or from a machine whose public egress address cannot be matched to the node (a machine behind the same network address is not separation). The prover prints a reminder when the gateway is not loopback. Single-tier proving contacts no gateway and has no such exposure. See `docs/THREAT_MODEL.md` ("What each party learns").
 
 To make the 2.3 GB a download instead of a rebuild, host each large key once on object storage or IPFS and fill in its `url` and `sha256` under `largeFiles` in `keys.manifest.json`, then members get it with `fetch_keys.sh --large`. PLONK setup is deterministic, so the rebuilt key is byte-identical and its checksum is stable. See `docs/PROVING_KEY.md`.
 

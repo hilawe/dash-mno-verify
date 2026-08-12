@@ -19,6 +19,7 @@ import { randomBytes } from "node:crypto";
 import { buildPoseidon } from "circomlibjs";
 import { wifToPriv, leafFromPriv } from "../common/dml.js";
 import { contextHash } from "../common/index.js";
+import { assertSafeGatewayUrl } from "../common/gateway_url.js";
 import { loadVotingKey } from "./voting_key.js";
 import {
   defaultSecretPath,
@@ -31,6 +32,31 @@ import {
 const TREE_DEPTH = 16;
 const B = "circuits/build";
 
+// BOTH two-tier CLI steps connect to the gateway directly: register posts to /v1/register, and prove
+// fetches /v1/members to build its path. So the gateway sees this machine's source address on either.
+// If the machine is the masternode, that address is the node's advertised service address, which is in
+// the public masternode list, so the gateway operator can join the two and learn which node this is.
+// The proof stays zero-knowledge; the network path is the leak. Warn on a non-loopback gateway so the
+// member runs over a relay or from a machine whose egress cannot be matched to the node. Only the
+// account-bearing challenge and verify calls are relayed by the adapter, not these public reads.
+// See docs/THREAT_MODEL.md ("What each party learns") and docs/RUNBOOK.md.
+function warnIfContactingRemoteGateway(gateway, step) {
+  let host;
+  try {
+    host = new URL(gateway).hostname;
+  } catch {
+    return;
+  }
+  const loopback = host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]";
+  if (loopback) return;
+  console.error(
+    `note: ${step} connects to the gateway directly, so it sees this machine's network address. ` +
+      "If this machine is the masternode, that address can be matched to the node in the public list. " +
+      "To stay unlinkable, run over an anonymizing path (for example Tor) or from a machine whose " +
+      "public address cannot be matched to the node (behind the same address is not enough).",
+  );
+}
+
 function flags(argv) {
   const o = {};
   for (let i = 0; i < argv.length; i += 2) o[argv[i].replace(/^--/, "")] = argv[i + 1];
@@ -42,9 +68,21 @@ function flags(argv) {
 // The account-bearing endpoints (/v1/challenge, /v1/verify) belong to the adapter: it mints the
 // challenge, hands it to the member, and submits the resulting proof. So `prove` consumes a challenge
 // and emits a proof file, exactly like the single-tier prover.
-const get = async (url) => (await fetch(url)).json();
+// redirect: "error" so an https gateway that answers with a 3xx to a plaintext or foreign origin
+// cannot pull the request body (voting key material is never sent, but the registration and members
+// reads still should not silently follow a redirect off the guarded origin). fetch preserves a POST
+// body across a 307/308, so the transport guard on the configured URL is only sound if no redirect is
+// followed. The gateway API never legitimately redirects, so refusing all redirects is safe.
+const get = async (url) => (await fetch(url, { redirect: "error" })).json();
 const post = async (url, body) =>
-  (await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })).json();
+  (
+    await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+      redirect: "error",
+    })
+  ).json();
 
 function privToLimbs(priv) {
   const d = BigInt("0x" + Buffer.from(priv).toString("hex"));
@@ -77,6 +115,8 @@ function buildPath(poseidon, leavesDec, index) {
 }
 
 async function register(a) {
+  assertSafeGatewayUrl(a.gateway);
+  warnIfContactingRemoteGateway(a.gateway, "registering");
   const priv = wifToPriv(await loadVotingKey(a));
   const ctx = contextHash({ platform: a.platform, communityId: a.community, roleId: a.role }).toString();
 
@@ -167,6 +207,8 @@ async function register(a) {
 }
 
 async function prove(a) {
+  assertSafeGatewayUrl(a.gateway);
+  warnIfContactingRemoteGateway(a.gateway, "the per-epoch prove step (it fetches the members tree)");
   // The adapter mints the challenge (it authenticates the platform account and holds the gateway
   // token) and hands challenge.json to the member. This CLI consumes it and never calls the
   // account-bearing endpoints.

@@ -24,7 +24,7 @@ Raspberry Pi:
 
 ```bash
 npm run register -- \
-  --gateway http://your-gateway:8787 \
+  --gateway https://your-gateway \
   --platform discord --community <guildId> --role <roleId> \
   --voting-key-file key.wif
 ```
@@ -37,12 +37,15 @@ on a Pi:
 
 ```bash
 npm run prove-epoch -- \
-  --gateway http://your-gateway:8787 \
-  --platform discord --community <guildId> --role <roleId>
+  --gateway https://your-gateway \
+  --challenge challenge.json
 ```
 
-It fetches a challenge and the members tree from the gateway, builds the membership proof,
-and submits it. On success the gateway grants access for the epoch.
+It reads the challenge the adapter gave you (`challenge.json`), fetches the members tree from
+the gateway to build the Merkle path, builds the membership proof, and writes `proof.json`. You
+hand that back to the adapter (for example Discord `/submit`), which calls the gateway's verify
+endpoint and grants access for the epoch. The prover itself does not submit the proof, and it
+never sends your platform account.
 
 Note there is no `--secret`. Registration names your secret per platform, community, role, and
 season, so the prover finds the right one from the challenge's own context rather than making you

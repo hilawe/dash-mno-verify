@@ -23,6 +23,7 @@ import {
 } from "discord.js";
 import process from "node:process";
 import { proveInstructions } from "../../common/prover_instructions.js";
+import { assertSafeGatewayUrl } from "../../common/gateway_url.js";
 import {
   GrantLedger,
   authorizesTarget,
@@ -42,7 +43,7 @@ import { contextHash } from "../../common/index.js";
 const TOKEN = process.env.DISCORD_TOKEN;
 const APP_ID = process.env.DISCORD_APP_ID;
 const GUILD_ID = process.env.DISCORD_GUILD_ID;
-const GATEWAY = process.env.MNO_GATEWAY_URL ?? "http://127.0.0.1:8787";
+const GATEWAY = assertSafeGatewayUrl(process.env.MNO_GATEWAY_URL ?? "http://127.0.0.1:8787");
 // Adapter bearer token the gateway requires when MNO_ADAPTER_SECRET is set there. Sent on the
 // account-bearing calls so the gateway trusts the account this adapter vouches for (review B1/M5).
 const ADAPTER_SECRET = process.env.MNO_ADAPTER_SECRET;
@@ -526,6 +527,7 @@ async function handleInteraction(i) {
     await i.deferReply({ flags: MessageFlags.Ephemeral });
     const res = await fetch(`${GATEWAY}/v1/challenge`, {
       method: "POST",
+      redirect: "error", // never follow a redirect off the guarded origin (it would carry the body in the clear)
       headers: { "content-type": "application/json", ...authHeaders },
       body: JSON.stringify({ platform: "discord", communityId: GUILD_ID, roleId: CONTEXT_ID, account: i.user.id }),
     });
@@ -566,6 +568,7 @@ async function handleInteraction(i) {
     // Submit the account this user is identified by. The gateway binds the verify to it (review B1).
     const res = await fetch(`${GATEWAY}/v1/verify`, {
       method: "POST",
+      redirect: "error", // never follow a redirect off the guarded origin (it would carry the body in the clear)
       headers: { "content-type": "application/json", ...authHeaders },
       body: JSON.stringify({ ...payload, account: i.user.id }),
     });

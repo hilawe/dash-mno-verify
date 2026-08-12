@@ -20,6 +20,7 @@
 import { Bot, InputFile } from "grammy";
 import process from "node:process";
 import { proveInstructions } from "../../common/prover_instructions.js";
+import { assertSafeGatewayUrl } from "../../common/gateway_url.js";
 import { GrantLedger } from "../common/grant_ledger.js";
 import { requireReconciled } from "../common/reconcile.js";
 import { contextHash } from "../../common/index.js";
@@ -28,7 +29,7 @@ const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const GROUP_ID = process.env.TELEGRAM_GROUP_ID;
 const COMMUNITY_ID = process.env.TELEGRAM_COMMUNITY ?? String(GROUP_ID);
 const ROLE_ID = process.env.TELEGRAM_ROLE ?? "member";
-const GATEWAY = process.env.MNO_GATEWAY_URL ?? "http://127.0.0.1:8787";
+const GATEWAY = assertSafeGatewayUrl(process.env.MNO_GATEWAY_URL ?? "http://127.0.0.1:8787");
 // Adapter bearer token the gateway requires when MNO_ADAPTER_SECRET is set there (review B1/M5).
 const ADAPTER_SECRET = process.env.MNO_ADAPTER_SECRET;
 const authHeaders = ADAPTER_SECRET ? { authorization: `Bearer ${ADAPTER_SECRET}` } : {};
@@ -94,6 +95,7 @@ bot.command("verify", async (ctx) => {
   try {
     res = await fetch(`${GATEWAY}/v1/challenge`, {
     method: "POST",
+    redirect: "error", // never follow a redirect off the guarded origin (it would carry the body in the clear)
     headers: { "content-type": "application/json", ...authHeaders },
     body: JSON.stringify({
       platform: "telegram",
@@ -143,6 +145,7 @@ bot.on("message:document", async (ctx) => {
   try {
     const res = await fetch(`${GATEWAY}/v1/verify`, {
       method: "POST",
+      redirect: "error", // never follow a redirect off the guarded origin (it would carry the body in the clear)
       headers: { "content-type": "application/json", ...authHeaders },
       body: JSON.stringify({ ...payload, account: String(ctx.from.id) }),
     });
