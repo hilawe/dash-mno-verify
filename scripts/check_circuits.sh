@@ -35,6 +35,36 @@ echo "--- compile mno_members (Poseidon recurring circuit) ---"
 "$CIRCOM" circuits/mno_members.circom --r1cs --wasm -o "$BUILD" -l node_modules >/dev/null
 echo "  compiled"
 
+# Differential derivation check: witness a circuit on the valid input its make_input.mjs wrote and
+# compare the circuit's emitted outputs against the independently spelled JS derivations in
+# test/derivations.mjs (written to expected_outputs.json by the same make_input run). The witness
+# vector lays out as [1, outputs in declaration order, public inputs, private inputs], so output i
+# is w[1 + i]. Each argument after the circuit name is key:index into that layout. This pins the
+# circomlibjs-vs-circomlib agreement production already depends on (the prover derives the
+# commitment in JS to find its leaf, the gateway builds members roots in JS), and it makes a
+# derivation rewiring (input order, arity, limb order) fail CI rather than strand members.
+derivation_check() {
+  local circuit="$1"; shift
+  echo "--- derivations: $circuit emits the independently derived outputs ---"
+  node "$BUILD/${circuit}_js/generate_witness.js" "$BUILD/${circuit}_js/${circuit}.wasm" \
+    "$BUILD/input.json" "$BUILD/d.wtns"
+  node_modules/.bin/snarkjs wtns export json "$BUILD/d.wtns" "$BUILD/d.json" >/dev/null
+  local pair
+  for pair in "$@"; do
+    local key="${pair%%:*}" idx="${pair##*:}"
+    node -e "
+      const w = require('$BUILD/d.json');
+      const exp = require('$BUILD/expected_outputs.json')['$key'];
+      const got = BigInt(w[$idx]).toString();
+      if (got !== exp) { console.error('  MISMATCH $key', got, 'vs', exp); process.exit(1); }
+      console.log('  ok $key ' + got.slice(0, 20) + '...');
+    "
+  done
+}
+
+node test/members/make_input.mjs "$BUILD" >/dev/null
+derivation_check mno_members nullifier:1
+
 echo "--- compile full mno_membership + mno_registration (fetches circom-ecdsa) ---"
 bash scripts/setup_circom_ecdsa.sh >/dev/null 2>&1
 "$CIRCOM" circuits/mno_membership.circom   --r1cs --wasm -o "$BUILD" -l node_modules -l circuits/.deps >/dev/null
@@ -56,7 +86,9 @@ m1_reject() {
   echo "  ok, d >= n rejected"
 }
 m1_reject mno_membership   test/membership/make_input.mjs
+derivation_check mno_membership nullifier:1
 m1_reject mno_registration test/registration/make_input.mjs
+derivation_check mno_registration commitment:1 regNullifier:2
 
 rm -rf "$BUILD"
 echo "ALL CIRCUIT CHECKS PASSED"

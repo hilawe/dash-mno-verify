@@ -7,6 +7,7 @@
 // Usage: node test/members/make_input.mjs [outDir]   (default outDir: current dir)
 import { buildPoseidon } from "circomlibjs";
 import { contextHash, signalHash } from "../../common/index.js";
+import { membersNullifier } from "../derivations.mjs";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -50,4 +51,12 @@ const input = {
 };
 
 writeFileSync(join(outDir, "input.json"), JSON.stringify(input));
+
+// the independently spelled derivation, for the differential check against the circuit's output
+writeFileSync(
+  join(outDir, "expected_outputs.json"),
+  JSON.stringify({
+    nullifier: membersNullifier(poseidon, secret, BigInt(input.epoch), BigInt(input.contextHash)),
+  })
+);
 console.log("members witness input written; membersRoot", membersRoot.slice(0, 14) + "...");

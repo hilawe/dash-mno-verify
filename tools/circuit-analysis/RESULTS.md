@@ -108,6 +108,28 @@ What that leaves for a specialist, unchanged in kind and narrowed to one named c
   not check the `pubkey = privkey * G` binding it is responsible for.
 - The trusted-setup ceremony assumption, which no constraint-level tool addresses.
 
+## Differential derivation checks, in CI
+
+Determinism says the circuits compute ONE function of their inputs. The differential derivation checks in
+`scripts/check_circuits.sh` address the adjacent question of whether it is the INTENDED function, the same
+way the hash160 vector and the X11 reference harness do for their components. Each production circuit is
+witnessed on a valid input and the outputs it emits are compared against an independently spelled JS
+derivation (`test/derivations.mjs`, written against circomlibjs):
+
+- `mno_members`: the per-epoch nullifier, Poseidon3(secret, epoch, contextHash).
+- `mno_membership`: the nullifier, Poseidon3(Poseidon4(privkey limbs), epoch, contextHash).
+- `mno_registration`: the commitment, Poseidon1(secret), and the registration nullifier,
+  Poseidon3(Poseidon4(privkey limbs), season, contextHash).
+
+The seam this pins is the circomlibjs-versus-circomlib agreement production already depends on: the prover
+derives the commitment in JS to find its members-tree leaf, and the gateway builds members roots in JS
+that the in-circuit Merkle check must reproduce. Every comparison was mutation-checked at write time
+(swapped input order, a dropped key limb, a wrong witness index, a perturbed commitment input, each
+watched failing and each mutant confirmed to parse and apply). What this does not establish: anything
+about Poseidon itself, or about the ECDSA component. The chains are checked as wirings of Poseidon against
+an independent spelling of the same wiring, on fixed vectors, and the chains have no input-dependent
+branching.
+
 ## How to reproduce
 
     bash tools/circuit-analysis/run.sh output/circomspect.txt         # static pass

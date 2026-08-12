@@ -28,6 +28,7 @@ data/
 # transient witness inputs written by circuit make_input helpers
 input.json
 expected.txt
+expected_outputs.json
 witness.json
 
 # rendered doc artifacts (PDFs generated from committed markdown), regenerable, not source

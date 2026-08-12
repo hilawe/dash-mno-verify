@@ -10,7 +10,7 @@ prioritized punch list.
 This state is written into the commit it describes, so at write time that commit is by definition not yet
 pushed. The push protocol applies to it like any other: leak scan, explicit per-push approval, fast-forward
 push, then read the CI conclusions on all three jobs (`circuits`, `checks`, `full`) rather than assuming
-them. If this section is being read from `origin/main`, that protocol completed for it. Three things landed
+them. If this section is being read from `origin/main`, that protocol completed for it. Four things landed
 this session. First, the prior session's handoff commit `b3925bc` (docs-only) was one commit ahead of
 `origin` because the prior session wrote it but did not push it, so the authoritative handoff was
 local-only. It was leak-scanned by hand, pushed fast-forward with no force, and its CI was confirmed green
@@ -22,7 +22,10 @@ pushed, CI green on all three jobs). Third, the same wrapper treatment was appli
 production circuits is now verified determinate. That closes the last named DETERMINISM gap outside
 `ECDSAPrivToPub`. Determinism is what these tools measure, not full soundness, so the specialist scope
 (component soundness as used, the trusted-setup assumption, a novel attack) stands as recorded in the
-punch list.
+punch list. Fourth, the differential-testing pattern was extended to the nullifier and commitment
+derivations: CI now witnesses each production circuit and compares its emitted outputs against an
+independent JS spelling of the chains, every comparison mutation-checked at write time (see
+`tools/circuit-analysis/RESULTS.md`, "Differential derivation checks").
 
 ### 0. FOLLOW ALL THE PLAYBOOK RULES. THIS IS MANDATORY, NOT A REMINDER, AND IT IS THE FIRST INSTRUCTION
 
@@ -93,6 +96,18 @@ determined in every case. The solve took about 40 minutes of solver time on the 
 build from another project was competing for CPU; the membership wrapper's solo solve was about 13), no
 OOM. Recorded in `tools/circuit-analysis/RESULTS.md`.
 
+THE DIFFERENTIAL DERIVATION CHECKS LANDED IN CI, extending the hash160-vector and X11-harness pattern to
+the nullifier and commitment chains. `scripts/check_circuits.sh` now witnesses each production circuit on
+its valid test input and compares the emitted outputs against `test/derivations.mjs`, an independent JS
+spelling of the chains built on circomlibjs: the members nullifier, the membership nullifier, and the
+registration commitment and nullifier. This complements the determinism results (Ecne proves ONE function
+is computed, the differential check pins WHICH wiring), and it protects the seam production already
+depends on, the prover deriving the commitment in JS to find its members-tree leaf against the circuit
+recomputing it. All four comparisons were mutation-checked at write time (a swapped input order, a dropped
+key limb, a wrong witness index, and a perturbed commitment input, each watched failing, each mutant
+confirmed parsed and applied, and every baseline re-confirmed after revert). The full
+`scripts/check_circuits.sh` passed end to end with the checks in place.
+
 ### 2. WHERE TO START (punch list, ordered)
 
 Nothing is half-done (and if this section is being read from `origin/main`, nothing is unpushed either,
@@ -101,10 +116,9 @@ per the push protocol above). Everything here is optional deepening the operator
 1. Attempt `ECDSAPrivToPub` determinism itself with Ecne's `secp_solve` mode, or the full single-tier
    circuit including ECDSA on a larger VM (`colima stop; colima start --memory 24`). Neither resolves the
    real residual, which is whether `circom-ecdsa` computes the correct curve operation, a soundness
-   question rather than a determinism one, so this is lower value than it looks.
-2. Extend the differential-testing pattern (the hash160 vectors, the X11 harness) to nullifier and
-   commitment derivation. Picus (SMT) is an alternative to Ecne if wanted.
-3. The residual tier-1 items no free tool closes stay for a specialist IF ever funded: `ECDSAPrivToPub`
+   question rather than a determinism one, so this is lower value than it looks. Picus (SMT) is an
+   alternative to Ecne if wanted.
+2. The residual tier-1 items no free tool closes stay for a specialist IF ever funded: `ECDSAPrivToPub`
    soundness as used, the trusted-setup ceremony assumption, a novel attack. The operator has declined to
    fund a specialist, so the operational options stand: do not gate real value yet, small anonymity set,
    capped grants, contingent bug bounty over a retainer.

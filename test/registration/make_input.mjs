@@ -9,6 +9,7 @@
 import { buildPoseidon } from "circomlibjs";
 import { leafFromPriv } from "../../common/dml.js";
 import { contextHash } from "../../common/index.js";
+import { keyNullifier, commitment } from "../derivations.mjs";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -55,4 +56,13 @@ const input = {
 };
 
 writeFileSync(join(outDir, "input.json"), JSON.stringify(input));
+
+// the independently spelled derivations, for the differential check against the circuit's outputs
+writeFileSync(
+  join(outDir, "expected_outputs.json"),
+  JSON.stringify({
+    commitment: commitment(poseidon, BigInt(input.secret)),
+    regNullifier: keyNullifier(poseidon, privkey, BigInt(input.season), BigInt(input.contextHash)),
+  })
+);
 console.log("registration witness input written; root", root.slice(0, 14) + "...");
