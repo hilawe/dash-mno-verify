@@ -22,6 +22,16 @@ risk. Anchoring on `keyIDVoting` therefore proves "owner or their voting delegat
 is the right granularity for a social channel. Anchor on `keyIDOwner` instead if you need
 the owner specifically.
 
+Evonodes (the high-performance masternodes that host Dash Platform, 4,000 DASH collateral)
+are included on the same terms as regular masternodes. The oracle's only filter is the
+ENABLED status, evonodes carry a votingaddress like any other node, and the DIP-4
+commitment code serializes their version-2 entries with the type field and Platform port
+(validated against a mainnet block holding 2,627 regular and 344 evo entries). Membership
+is per voting key, not collateral-weighted, so an evonode earns exactly one membership per
+epoch, the same as a regular node, despite the larger collateral behind it. A community
+that wants evonode-only gating, or separate tiers by node type, would get it by having the
+oracle publish a type-filtered tree as its own context rather than by changing the proof.
+
 ## The three pieces
 
 1. Oracle. Reads the DML and publishes a Poseidon Merkle root over the voting-key hashes, alongside the ordered real leaves. Public input, deterministic function, so the root is reproducible. The gateway recomputes the root from the published leaves and rejects any snapshot whose root does not hash from them, which catches an inconsistent or transport-corrupted snapshot. Recomputation only proves internal consistency, so the oracle also signs the snapshot (Ed25519 over the root, height, block hash, depth, and timestamp), and the gateway adopts a snapshot only when a quorum of pinned oracle keys has signed it (`MNO_ORACLE_PUBKEYS`, `MNO_ORACLE_QUORUM`). The signature covers the root, which commits to the leaves, so a host that merely serves the JSON cannot forge a membership set. The gateway fails closed, refusing to start without pinned keys unless `MNO_ALLOW_UNSIGNED_ORACLE` is set. This authenticates the leaf set against a trusted key, not yet against the chain's own masternode-list commitment, which the signed block hash is the anchor for (see the threat model). A URL source must be https, is fetched with a timeout and a streaming size cap, and an accepted root is dropped once its snapshot ages past `MNO_ORACLE_MAX_AGE`.

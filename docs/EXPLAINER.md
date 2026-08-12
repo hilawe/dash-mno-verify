@@ -34,7 +34,7 @@ An operator who runs their own Dash node can now skip the list keeper altogether
 ## What it guarantees
 
 - Privacy. The bot learns only that some masternode vouched for this person. It never learns which one, and never an address.
-- One membership per node. Each masternode can claim only one membership in a given time window, so a single node cannot farm many. Each proof carries a unique anonymous tag that the doorman tracks to block a second claim, and that tag cannot be traced back to a node.
+- One membership per node. Each masternode can claim only one membership in a given time window, so a single node cannot farm many. Each proof carries a unique anonymous tag that the doorman tracks to block a second claim, and that tag cannot be traced back to a node. This covers every kind of masternode, including evonodes, the larger nodes that run Dash Platform. An evonode owner proves and joins the same way, and gets the same single membership, even though an evonode has four times the collateral of a regular node. Membership counts nodes, not the money behind them.
 - Access that tracks current control. If the masternode is sold, the seller cannot produce a valid proof in the next window, so their access lapses on its own.
 - No tracking across communities. The same person produces a different anonymous tag in each community, so memberships in different places cannot be linked together.
 
