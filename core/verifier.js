@@ -59,6 +59,28 @@ export function readSignals(publicSignals) {
 // verifyProof is injected so the proof check can be stubbed in unit tests. It defaults to PLONK,
 // whose verification key comes from a universal trusted setup (the public Hermez Powers of Tau),
 // reused across circuits with no per-circuit ceremony.
+
+// Run the proof check through the concurrency gate, treating a THROW as a failed check. The proof and
+// public signals are entirely client-supplied, so a malformed input that makes the prover library
+// throw (rather than return false) is a client fault, an invalid proof, not a server error. Catching
+// it here keeps it a 400 invalid-proof at the gateway instead of leaking out as an internal 500. The
+// gate's own throw (the overloaded load-shed) is OUTSIDE the inner try, so it still propagates and is
+// reported as 503.
+async function checkProof(gate, run) {
+  return gate(async () => {
+    try {
+      return await run();
+    } catch (err) {
+      // A malformed client proof is the common cause and needs no operator attention, but a persistent
+      // internal fault (a structurally invalid verification key, a verifier runtime error) also lands
+      // here and would otherwise look like an ordinary invalid proof with no signal. Log it so a
+      // recurring internal failure is visible to the operator, without changing the client outcome.
+      console.error("[verifier] proof check threw, treating as invalid-proof:", err && err.message ? err.message : String(err));
+      return false;
+    }
+  });
+}
+
 export async function verifyMembership({
   vkey,
   proof,
@@ -143,7 +165,7 @@ export async function verifyMembership({
   //    proof. The has() check rejects an ordinary replay before the expensive proof verify.
   if (await readBeforeSpend(() => nullifiers.has(s.epoch, s.contextHash, s.nullifier))) {
     if (!(await claimedBySameAccount())) return { ok: false, reason: "already-used" };
-    if (!(await gate(() => verifyProof(vkey, publicSignals, proof)))) return { ok: false, reason: "invalid-proof" };
+    if (!(await checkProof(gate, () => verifyProof(vkey, publicSignals, proof)))) return { ok: false, reason: "invalid-proof" };
     // Re-grants are period-checked too. Handing back a grant whose epoch ended is the same defect as
     // issuing one, and the adapter is told it may trust the response without re-checking expiry.
     const staleRegrant = await periodStillCurrent();
@@ -152,7 +174,7 @@ export async function verifyMembership({
   }
 
   // 6) first claim: verify the proof, then record the spend and the granting account together.
-  if (!(await gate(() => verifyProof(vkey, publicSignals, proof)))) return { ok: false, reason: "invalid-proof" };
+  if (!(await checkProof(gate, () => verifyProof(vkey, publicSignals, proof)))) return { ok: false, reason: "invalid-proof" };
 
   // BEFORE the spend, not after. The nullifier write is the irreversible step, so a period that
   // moved while the proof ran must refuse here rather than burn the member's one membership for an
@@ -353,7 +375,7 @@ export async function verifyRegistrationCore({ claims, verifyProof, expected, re
   // 5) the proof itself (PLONK verify, or the zkVM receipt verify against the pinned image id). Run
   //    it through `gate` so the gateway can bound global concurrency of the expensive verify. The
   //    gate wraps ONLY this crypto check, so the cheap policy rejections above never consume a slot.
-  if (!(await gate(verifyProof))) return { ok: false, reason: "invalid-proof" };
+  if (!(await checkProof(gate, verifyProof))) return { ok: false, reason: "invalid-proof" };
 
   // 5.5) THE ANCHOR IS RE-ASKED AFTER THE PROOF, before the durable commit. Check 1 ran before a
   //      verification that takes real time, and the root can age out or be evicted inside it, so

@@ -123,6 +123,20 @@ test("missing fields are rejected", async () => {
   assert.equal(v.body.error, "missing fields");
 });
 
+test("a malformed json body keeps its intended message, not the generic one", async () => {
+  // "invalid json" is marked clientSafe, so the caller still gets that specific message. This guards
+  // the finding-4 change: the generic "bad request" is only for UNEXPECTED throws, which carry
+  // internal diagnostics, not for the expected malformed-body case.
+  const res = await fetch(gw.base + "/v1/challenge", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: "{ not valid json",
+  });
+  assert.equal(res.status, 400);
+  const body = await res.json();
+  assert.equal(body.error, "invalid json");
+});
+
 test("an over-cap body is rejected cleanly, not hung or OOM", async () => {
   // Post a body larger than the 2 MB general cap to /v1/challenge (the small-cap endpoint). The
   // reader must reject (400 body too large) and destroy the request rather than keep buffering.

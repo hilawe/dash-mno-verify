@@ -1078,7 +1078,7 @@ async function bootGateway({ config = buildConfig(process.env) } = {}, release) 
         if (total > maxBytes) {
           chunks.length = 0; // drop what we have, keep no more
           req.destroy(); // stop receiving so the caller cannot keep growing the body
-          settle(reject, new Error("body too large"));
+          settle(reject, Object.assign(new Error("body too large"), { clientSafe: true }));
           return;
         }
         chunks.push(c);
@@ -1088,7 +1088,7 @@ async function bootGateway({ config = buildConfig(process.env) } = {}, release) 
           const raw = Buffer.concat(chunks).toString("utf8");
           settle(resolve, raw ? JSON.parse(raw) : {});
         } catch {
-          settle(reject, new Error("invalid json"));
+          settle(reject, Object.assign(new Error("invalid json"), { clientSafe: true }));
         }
       });
       req.on("error", (e) => settle(reject, e));
@@ -1112,12 +1112,28 @@ async function bootGateway({ config = buildConfig(process.env) } = {}, release) 
 
   const server = createServer(async (req, res) => {
     inFlightRequests += 1;
+    // The only request-derived VALUES the unexpected-error log may use are the method (constrained by
+    // HTTP parsing, not sensitive) and this pathname. It starts as a placeholder and is set to the
+    // PARSED pathname once the target parses, so the log never carries a raw target (its query, and for
+    // an absolute-form target its scheme, authority, or userinfo). A failure before the parse logs the
+    // placeholder rather than the raw target.
+    let loggedPath = "(unparsed)";
     try {
       // Enforce DML freshness on every request, so a refresh interval longer than the freshness bound
       // cannot serve a root that aged out since the last tick.
       enforceDmlFreshness();
-      const url = new URL(req.url, "http://localhost");
+      // Parse the target defensively: a malformed request target makes new URL throw ERR_INVALID_URL
+      // whose `.input` is the raw target (query and all). Converting it to a clientSafe error here keeps
+      // that raw string out of the unexpected-error log below, whose diagnostics are meant to be safe to
+      // record. The caller gets a generic message rather than its own malformed input echoed back.
+      let url;
+      try {
+        url = new URL(req.url, "http://localhost");
+      } catch {
+        throw Object.assign(new Error("invalid request target"), { clientSafe: true });
+      }
       const path = url.pathname;
+      loggedPath = path;
 
       // Refuse the state-bearing endpoints if the clock has stepped backwards. Observing both periods
       // here is what detects it, so this runs before any handler reads an epoch or a season. The read
@@ -1572,7 +1588,18 @@ async function bootGateway({ config = buildConfig(process.env) } = {}, release) 
       // The verify concurrency gate sheds load with an "overloaded" error when its wait queue is full;
       // report that as 503 (try again) rather than 400 (bad request), since the request was well-formed.
       if (err && err.overloaded) return send(res, 503, { error: "overloaded, retry later" });
-      return send(res, 400, { error: err.message });
+      // The unexpected-error path. Most expected client errors above return their own explicit send()
+      // with an intended message; a few (the readBody validation errors, "invalid json" and "body too
+      // large") reach here by throwing and are marked clientSafe, so their message is meant for the
+      // caller. Everything else can carry an internal diagnostic (a store path, a database driver
+      // string), so it is logged for the operator but NOT returned to the caller, which gets a generic
+      // message. The log uses the pathname, never the raw url, and omits account and nonce, per the
+      // privacy rule in the threat model; an unexpected error's own text is the diagnostic, not the request.
+      // A clientSafe error is an expected client fault, so it stays 400; everything else reaching here is
+      // an unexpected server-side fault (a store, filesystem, or verifier failure), which is a 500.
+      if (err && err.clientSafe) return send(res, 400, { error: err.message });
+      console.error(`[gateway] unexpected error handling ${req.method} ${loggedPath}:`, err);
+      return send(res, 500, { error: "internal error" });
     } finally {
       // Whatever the outcome, including a throw the catch above re-raises, so a handler that fails
       // cannot leave the count permanently above zero and hang every future teardown.

@@ -30,6 +30,27 @@ const args = (account, { nullifiers, verifyProof = () => true }) => ({
   expected: baseExpected(account),
 });
 
+test("a proof check that THROWS is treated as an invalid proof, not propagated as a server error", async () => {
+  // The proof and public signals are client-supplied, so a malformed proof that makes the verify
+  // library throw is a client fault (an invalid proof), not an internal error. verifyMembership must
+  // return the invalid-proof reason rather than letting the throw reach the gateway's generic 500 path.
+  const nullifiers = {
+    has: async () => false,
+    get: async () => null,
+    add: async () => ({ duplicate: false }),
+  };
+  const res = await verifyMembership(
+    args("alice", {
+      nullifiers,
+      verifyProof: () => {
+        throw new TypeError("Cannot read properties of undefined (a malformed proof)");
+      },
+    }),
+  );
+  assert.equal(res.ok, false);
+  assert.equal(res.reason, "invalid-proof");
+});
+
 test("A7: a nullifier read that fails BEFORE the spend tags the error beforeSpend, so the caller can restore the nonce", async () => {
   // A transient store read failure (a SQLite read error, a Platform round-trip blip) before the
   // irreversible nullifier spend must not burn the member's one-time challenge. verifyMembership tags
