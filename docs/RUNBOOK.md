@@ -35,6 +35,16 @@ npm run oracle                                       # local dash-cli, or set MN
 
 Run `npm run oracle` from cron every few minutes. It writes `oracle/root.json`.
 
+If `dash-cli` is not on your PATH, for example your node runs in a container or you use a hosted RPC (remote procedure call) endpoint, the oracle can reach the node over JSON-RPC instead. Set `MNO_RPC_URL`, plus `MNO_RPC_USER` and `MNO_RPC_PASS` for a node with an rpc password. For a node in a local Docker container, a one-line `dash-cli` shim on your PATH that proxies into it also works:
+
+```bash
+printf '#!/bin/sh\nexec docker exec YOUR_CONTAINER dash-cli "$@"\n' > ~/bin/dash-cli
+chmod +x ~/bin/dash-cli
+export PATH="$HOME/bin:$PATH"           # add to your shell profile to persist it
+```
+
+Only the oracle talks to the node. The gateway reads the `oracle/root.json` file, so it needs neither the node nor the shim.
+
 ## 3. Run the gateway
 
 Pick one strong secret shared by the gateway and the bot, and pin the oracle public key.
@@ -48,6 +58,31 @@ npm run gateway                                       # listens on :8787
 ```
 
 The gateway boots straight from the repo, because the verification keys are committed, and it reads `oracle/root.json` on its own.
+
+### Check the gateway is up before wiring Discord
+
+Confirm the gateway booted and is serving the list before you add the bot, so a problem shows up here rather than deep in the adapter. For a quick LOCAL check, without a signed oracle or an adapter token, start the gateway in demo mode:
+
+```bash
+MNO_ALLOW_UNSIGNED_ORACLE=1 MNO_ALLOW_UNAUTH_GATEWAY=1 npm run gateway
+```
+
+Both flags are local-only. `MNO_ALLOW_UNSIGNED_ORACLE=1` trusts the unsigned `root.json` from step 2, and `MNO_ALLOW_UNAUTH_GATEWAY=1` drops the adapter-token requirement so a plain curl can reach the account-bearing endpoints. A real deployment uses neither, and instead pins `MNO_ORACLE_PUBKEYS` and sets `MNO_ADAPTER_SECRET` as in step 3. Then, from another terminal:
+
+```bash
+curl -s http://127.0.0.1:8787/v1/health; echo
+curl -s -X POST http://127.0.0.1:8787/v1/challenge \
+  -H 'content-type: application/json' \
+  -d '{"platform":"test","communityId":"c","roleId":"r","account":"me"}'; echo
+```
+
+`/v1/health` should return `ok:true` with the current root, and `/v1/challenge` should return a nonce, a signal hash, an epoch, and that same root. That confirms the oracle-to-gateway path end to end.
+
+Three things commonly trip up a first run:
+
+- Environment variables do not cross terminals. The shared `MNO_ADAPTER_SECRET` must be set in every terminal that uses it (the gateway and the bot), and the gateway reads its settings once at startup, so any change to a variable takes effect only after you stop and restart the gateway.
+- The gateway is a long-running server. Stop it with Ctrl-C in its own terminal. Closing the terminal window does not always kill it, which can leave a stale process holding port 8787. If a restart fails to bind, find and stop the old one with `lsof -iTCP:8787 -sTCP:LISTEN` then `kill <pid>`.
+- An `{"error":"unauthorized"}` from `/v1/challenge` means the bearer token is missing or does not match `MNO_ADAPTER_SECRET`, not that the gateway is down. Use the same secret the gateway was started with, or the demo flags above.
 
 ## 4. Discord bot in channel mode (the no-roles part)
 
