@@ -2,6 +2,34 @@
 
 This is the opinionated, copy-paste path for one setup, a Discord channel that only verified masternode holders can see, granted with no public role, so nothing on a member's profile reveals to the wider server that they hold a masternode. Server admins, the bot operator, and the other members already in the channel can still see who has access. For the full reference with every option, see [DEPLOY.md](DEPLOY.md).
 
+## Just testing the core, without Discord?
+
+If you only want to confirm the pipeline works against your own Dash node, with no Discord and no zero-knowledge proving, this is the whole path. It reads the masternode list from your node and serves it, which is the part worth smoke-testing first.
+
+```bash
+git clone https://github.com/hilawe/dash-mno-verify
+cd dash-mno-verify
+npm ci --omit=optional                                   # oracle and gateway only, no proving toolchain
+
+npm run oracle                                            # reads your node, writes oracle/root.json
+
+# in the same terminal, or a second one:
+MNO_ALLOW_UNSIGNED_ORACLE=1 MNO_ALLOW_UNAUTH_GATEWAY=1 npm run gateway   # listens on :8787
+```
+
+Then, from another terminal, confirm it is serving the list:
+
+```bash
+curl -s http://127.0.0.1:8787/v1/health; echo
+curl -s -X POST http://127.0.0.1:8787/v1/challenge \
+  -H 'content-type: application/json' \
+  -d '{"platform":"test","communityId":"c","roleId":"r","account":"me"}'; echo
+```
+
+`/v1/health` should return `ok:true` with a root, and `/v1/challenge` should return a nonce, a signal hash, an epoch, and that same root. That is the core proven end to end. You need no Discord application, no channel, no oracle signing key, no adapter secret, and no proving keys. If your Dash node runs on the same box, `dash-cli` is already on your PATH and the oracle finds it. The one prerequisite is Node.js 22.13 or newer, which is often newer than the version a Raspberry Pi ships, so check `node --version` first. Stop after the gateway check. The numbered steps below add the signed oracle, the shared secret, and the Discord bot for a full deployment.
+
+Details on the flags, the smoke-test, and the common first-run gotchas are in "Check the gateway is up before wiring Discord" under step 3.
+
 ## What you end up with
 
 - A private channel that a member can only see after proving they control a masternode.
