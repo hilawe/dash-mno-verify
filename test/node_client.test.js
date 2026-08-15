@@ -104,3 +104,28 @@ test("A3: the command-line node path runs asynchronously and does not block the 
   assert.equal(result, 1234, "the parsed stdout is returned");
   assert.equal(ticked, true, "a concurrent timer fired while the node call was outstanding, so the loop was not blocked");
 });
+
+test("the cli path returns a bare string result, not just JSON (getblockhash prints an unquoted hash)", async () => {
+  // dash-cli prints a string result with no quotes, so JSON.parse would throw on it. The oracle's
+  // buildSnapshot calls getblockhash, so a naive JSON.parse of every response broke the whole dash-cli
+  // path. A bare hash must come back as the string; a JSON result must still parse.
+  const hash = "417d23676eb0aada3c523e4718e1f3fa31a936a76f562c583311d9167b0cf8c6";
+  const execImpl = async (cmd, args) => {
+    assert.equal(cmd, "dash-cli");
+    if (args[0] === "getblockhash") return { stdout: hash + "\n" };
+    if (args[0] === "getblockcount") return { stdout: "15754\n" };
+    if (args[0] === "masternodelist") return { stdout: JSON.stringify({ "a-0": { status: "ENABLED" } }) };
+    throw new Error(`unexpected ${args[0]}`);
+  };
+  const call = makeNodeCall({ execImpl });
+  assert.equal(await call("getblockhash", [100]), hash, "a bare hash is returned as the string");
+  assert.equal(await call("getblockcount"), 15754, "a JSON number still parses");
+  assert.deepEqual(await call("masternodelist", ["json"]), { "a-0": { status: "ENABLED" } }, "a JSON object still parses");
+});
+
+test("empty dash-cli output is rejected, not returned as an empty string", async () => {
+  // A command that produced nothing is a node error; returning "" would let a stable malformed value
+  // flow into the snapshot and hide the real failure.
+  const call = makeNodeCall({ execImpl: async () => ({ stdout: "\n  \n" }) });
+  await assert.rejects(() => call("getblockhash", [100]), /returned no output/);
+});

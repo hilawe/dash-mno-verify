@@ -113,7 +113,21 @@ export function makeNodeCall({
 
   async function cli(args) {
     const { stdout } = await execImpl("dash-cli", args, { encoding: "utf8", timeout: timeoutMs, maxBuffer });
-    return JSON.parse(stdout);
+    // dash-cli prints a JSON value for object, array, number, and boolean results, but a BARE string for
+    // a string result (getblockhash and getbestblockhash return the hash with no quotes), which is not
+    // valid JSON. Parse when the output is JSON, and fall back to the trimmed raw string otherwise, so a
+    // string result is returned as-is rather than throwing. This matches the RPC path, which returns the
+    // JSON-RPC result value directly (a string stays a string there).
+    const out = stdout.trim();
+    // Empty output is a node error (a command that produced nothing), not a valid string result. Reject
+    // it, so a real failure surfaces here rather than flowing on as a stable "" that the snapshot builder
+    // would compare and carry. Every method the oracle calls returns a non-empty hash, number, or object.
+    if (out === "") throw new Error(`dash-cli ${args[0] ?? ""} returned no output`);
+    try {
+      return JSON.parse(out);
+    } catch {
+      return out;
+    }
   }
 
   return (method, params = []) => (rpcUrl ? rpc(method, params) : cli([method, ...params.map(String)]));
