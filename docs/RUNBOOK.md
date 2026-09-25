@@ -137,7 +137,7 @@ On the masternode, once:
 git clone https://github.com/hilawe/dash-mno-verify && cd dash-mno-verify
 npm ci --omit=optional
 bash scripts/fetch_keys.sh            # the 35 MB per-epoch key and the wasms, always
-bash scripts/fetch_keys.sh --large    # the 2.3 GB keys, if you host them (see below); else rebuild:
+bash scripts/fetch_keys.sh --large    # the two 2.3 GB keys, each checked against its sha256, or rebuild them with
 # bash scripts/rebuild_proving_keys.sh
 ```
 
@@ -146,7 +146,7 @@ bash scripts/fetch_keys.sh --large    # the 2.3 GB keys, if you host them (see b
 
 Network-path warning for two-tier: both the seasonal register and the per-epoch prove connect to the gateway directly (register posts to it, prove fetches the members tree from it), so the gateway sees the source address on both. If you run either on the masternode, that address is the node's own advertised service address, which is in the public masternode list, and the gateway operator can learn which node it is. The proof stays zero-knowledge, so this is a network-path exposure only, but it applies to BOTH two-tier steps, not registration alone. Run them over an anonymizing path (for example Tor) or from a machine whose public egress address cannot be matched to the node (a machine behind the same network address is not separation). The prover prints a reminder when the gateway is not loopback. Single-tier proving contacts no gateway and has no such exposure. See `docs/THREAT_MODEL.md` ("What each party learns").
 
-To make the 2.3 GB a download instead of a rebuild, host each large key once on object storage or IPFS and fill in its `url` and `sha256` under `largeFiles` in `keys.manifest.json`, then members get it with `fetch_keys.sh --large`. PLONK setup is deterministic, so the rebuilt key is byte-identical and its checksum is stable. See `docs/PROVING_KEY.md`.
+The two large keys are hosted on Cloudflare R2 and listed with their `url` and `sha256` under `largeFiles` in `keys.manifest.json`, so `fetch_keys.sh --large` downloads them and refuses any copy whose checksum differs. PLONK setup is deterministic, so a rebuilt key is byte-identical and matches the same checksum. See `docs/PROVING_KEY.md`.
 
 ## How access ends
 

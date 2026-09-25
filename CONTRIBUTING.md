@@ -24,7 +24,8 @@ things stand.
 
 The gateway boots from verification keys committed under `circuits/build`. The cheaper members proving
 key and the wasm files come from a checksummed release fetched by `scripts/fetch_keys.sh`, and the two
-large proving keys are rebuilt with `scripts/build_proving_key.sh`. See `docs/PROVING_KEY.md`.
+large proving keys are fetched with `scripts/fetch_keys.sh --large` or rebuilt with
+`scripts/build_proving_key.sh`. See `docs/PROVING_KEY.md`.
 
 ## Running it
 

@@ -140,9 +140,9 @@ npm run prove-epoch -- --gateway https://the-gateway --challenge challenge.json
 # then submit the resulting proof.json back through the adapter (it calls /v1/verify with the token).
 ```
 
-Registration needs the 2.3 GB registration proving key, which you rebuild once with
-`scripts/build_proving_key.sh` on a machine with enough memory, or download if the operator
-hosts it. The per-epoch key is the 35 MB one from `fetch_keys.sh`.
+Registration needs the 2.3 GB registration proving key, which `scripts/fetch_keys.sh --large`
+downloads and checks against its sha256, or which you rebuild once with
+`scripts/build_proving_key.sh <circuit>` on a machine with enough memory. The per-epoch key is the 35 MB one from `fetch_keys.sh`.
 
 In single-tier mode it is one command, `npm run prove`, against the challenge the adapter
 gives you. The voting key controls only governance votes, never funds, so it is the low-risk
@@ -158,8 +158,8 @@ key to use, and it never leaves your machine.
 
 - The oracle signing key is yours to generate (`scripts/gen_oracle_key.mjs`). The private half signs snapshots on the oracle (`MNO_ORACLE_SIGNING_KEY`); the public half is pinned on the gateway (`MNO_ORACLE_PUBKEYS`). It is a separate operational identity, unrelated to any masternode key.
 - The gateway's verification keys are committed, so the gateway is turnkey.
-- The cheap members proving key and all three circuit wasms are on the `circuit-keys-v1` release. Get them with `scripts/fetch_keys.sh`, which checks each file's sha256 against `keys.manifest.json`.
-- The two large proving keys (membership and registration, about 2.3 GB each) are over GitHub's release limit. Rebuild them deterministically with `scripts/build_proving_key.sh`, which verifies the rebuilt key against the committed verification key, or host them yourself on object storage or IPFS and add them to `keys.manifest.json`. See `docs/PROVING_KEY.md`.
+- The cheap members proving key and all three circuit wasms are on the release named in `keys.manifest.json` (`circuit-keys-v2`). Get them with `scripts/fetch_keys.sh`, which checks each file's sha256 against `keys.manifest.json`.
+- The two large proving keys (membership and registration, about 2.3 GB each) are over GitHub's release limit, so they are hosted on Cloudflare R2 and listed in `keys.manifest.json`. `scripts/fetch_keys.sh --large` downloads them and checks each sha256. They can also be rebuilt deterministically with `scripts/build_proving_key.sh`, which verifies the rebuilt key against the committed verification key, or mirrored on other object storage or IPFS. See `docs/PROVING_KEY.md`.
 
 ## Status to be honest about
 

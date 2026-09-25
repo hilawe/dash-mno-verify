@@ -5,8 +5,9 @@
 # (this repo's circuits, the pinned circom-ecdsa, the public Hermez Powers of Tau). For
 # mno_membership the script also proves a test witness and verifies it against the exported key.
 #
-# That is the distribution model: the multi-GB proving key is not hosted. It is rebuilt from public
-# inputs and the small verification key is committed. See docs/PROVING_KEY.md.
+# Rebuilding is the route that takes nothing on trust from a host. The two large keys are also hosted
+# (keys.manifest.json, fetched with scripts/fetch_keys.sh --large), and a faithful rebuild is
+# byte-identical to the hosted file. The small verification key is committed. See docs/PROVING_KEY.md.
 #
 # Usage: scripts/build_proving_key.sh [circuit]
 #   circuit is mno_membership (default) or mno_registration. See scripts/rebuild_proving_keys.sh to
@@ -77,6 +78,6 @@ fi
 
 echo
 echo "Artifacts ready in $OUT:"
-echo "  $CIRCUIT.zkey                 PLONK proving key (~2.3 GB, distribute out of band)"
+echo "  $CIRCUIT.zkey                 PLONK proving key (~2.3 GB, also hosted, see keys.manifest.json)"
 echo "  ${CIRCUIT}_js/$CIRCUIT.wasm   witness generator"
 echo "  $VKEY                         verification key (committed)"

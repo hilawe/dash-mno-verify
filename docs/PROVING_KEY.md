@@ -5,7 +5,7 @@ The full membership circuit needs three artifacts to make a proof: the circuit w
 verification key (about 2 KB). Only the verification key is in the repo. This page explains
 how the large proving key reaches provers.
 
-## The key is reproducible, not hosted
+## The key is reproducible
 
 PLONK setup is deterministic. Given the same r1cs and the same universal SRS, it always
 produces the same proving and verification keys. Every input to that is public:
@@ -17,7 +17,7 @@ produces the same proving and verification keys. Every input to that is public:
   back to the original Hermez bucket, and refuses any copy whose hash differs. The original bucket
   began refusing downloads in September 2026, which is why the repository keeps its own copy.
 
-So the proving key does not need to be hosted at all. A prover rebuilds it locally:
+So the proving key never has to be taken on trust from a host. A prover can rebuild it locally:
 
 ```bash
 npm ci
@@ -60,9 +60,10 @@ only when asked:
 bash scripts/fetch_keys.sh --large
 ```
 
-Until a large key is hosted, that `largeFiles` entry has an empty `url` and `sha256`, so
-`--large` prints how to proceed and exits rather than downloading nothing. To host one,
-rebuild it once with `scripts/rebuild_proving_keys.sh`, upload the `.zkey` to object storage
+Both large keys are hosted on Cloudflare R2, at the `url` in each `largeFiles` entry, and
+`--large` downloads each one and refuses it unless its sha256 matches the manifest. An entry with
+an empty `url` and `sha256` is treated as not hosted, and `--large` prints how to proceed and exits
+rather than downloading nothing. To host a copy elsewhere, rebuild it once with `scripts/rebuild_proving_keys.sh`, upload the `.zkey` to object storage
 (S3, R2) or IPFS, compute its sha256, and fill in the `url` and `sha256` for that entry.
 Because PLONK setup is deterministic given the same circuit and universal SRS, every builder
 produces a byte-identical key, so one published sha256 verifies a rebuilt key too. Each

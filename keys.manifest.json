@@ -1,6 +1,6 @@
 {
   "tag": "circuit-keys-v2",
-  "note": "Hostable circuit artifacts for dash-mno-verify, matching the current circuit build. `files` are the small always-hosted artifacts (the members proving key and the wasms), fetched by scripts/fetch_keys.sh. `largeFiles` are the two ~2.3GB proving keys (membership, registration), over the GitHub 2GB asset limit. Host them on object storage or IPFS, fill in each entry's sha256 and a url (or set MNO_KEYS_BASE_URL), and fetch with `scripts/fetch_keys.sh --large`, or rebuild them with scripts/rebuild_proving_keys.sh. PLONK setup is deterministic, so a rebuilt key is byte-identical and its sha256 is stable across builders. The membership and registration wasms changed with the M1 d<n constraint, so the circuit-keys-v2 release must be published with the rebuilt artifacts before fetch_keys.sh can install them, and until then rebuild locally. mno_members is unchanged by M1.",
+  "note": "Hostable circuit artifacts for dash-mno-verify, matching the current circuit build. `files` are the small always-hosted artifacts (the members proving key and the wasms), fetched by scripts/fetch_keys.sh. `largeFiles` are the two ~2.3GB proving keys (membership, registration), over the GitHub 2GB asset limit. They are hosted on Cloudflare R2 at each entry's url, and `scripts/fetch_keys.sh --large` downloads them and checks each sha256, or they can be rebuilt with scripts/rebuild_proving_keys.sh. PLONK setup is deterministic, so a rebuilt key is byte-identical and its sha256 is stable across builders. The circuit-keys-v2 release carries the membership and registration wasms rebuilt for the M1 d<n constraint. mno_members is unchanged by M1.",
   "files": [
     {
       "name": "mno_members.zkey",
@@ -31,16 +31,18 @@
     {
       "name": "mno_membership.zkey",
       "dest": "circuits/build/mno_membership.zkey",
-      "note": "~2.3GB single-tier and registration-verify proving key. Rebuild once with scripts/rebuild_proving_keys.sh, or host it and fill in url + sha256 to fetch with --large.",
-      "sha256": "",
-      "url": ""
+      "note": "~2.3GB single-tier and registration-verify proving key, hosted on Cloudflare R2. Fetch and verify with --large, or rebuild once with scripts/rebuild_proving_keys.sh.",
+      "sha256": "fa311d1e8833f3edf407fb924528d13b60b490e650dea1304af394c8a6ddf88f",
+      "url": "https://pub-351d9fe984f640f7a25be9a8c1c201f6.r2.dev/mno_membership.zkey",
+      "bytes": 2283303004
     },
     {
       "name": "mno_registration.zkey",
       "dest": "circuits/build/mno_registration.zkey",
-      "note": "~2.3GB two-tier registration proving key. Rebuild once with scripts/rebuild_proving_keys.sh, or host it and fill in url + sha256 to fetch with --large.",
-      "sha256": "",
-      "url": ""
+      "note": "~2.3GB two-tier registration proving key, hosted on Cloudflare R2. Fetch and verify with --large, or rebuild once with scripts/rebuild_proving_keys.sh.",
+      "sha256": "ad88ad97b88616efe619a0efc04a8bc007ff064c85d1f5998c2e19e14d5bddae",
+      "url": "https://pub-351d9fe984f640f7a25be9a8c1c201f6.r2.dev/mno_registration.zkey",
+      "bytes": 2283307972
     }
   ]
 }

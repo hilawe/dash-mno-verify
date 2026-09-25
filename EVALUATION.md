@@ -36,11 +36,12 @@ The prior adversarial review and the fixes are recorded in `REVIEW_FINDINGS_dash
 
 ## Seeing a real proof end to end
 
-This needs the large proving key (about 2.3 GB), which is over the release size limit and is rebuilt locally. This is the main rough edge, and it is honest to treat it as the open adoption question.
+This needs the large proving key (about 2.3 GB). It is too big for a GitHub release, so it is hosted separately and fetched with `--large`, or it can be rebuilt locally. Its size, and the memory a proof takes, is still the main rough edge, and it is fair to treat it as the open adoption question.
 
 ```bash
 bash scripts/fetch_keys.sh           # pulls the circuit wasm and the small per-epoch key
-bash scripts/build_proving_key.sh    # rebuilds the large key, verified against the committed vkey
+bash scripts/fetch_keys.sh --large   # downloads the two large keys, each checked against its sha256
+# bash scripts/build_proving_key.sh mno_registration  # instead of --large, rebuilds the key the demo needs and checks it against the committed vkey
 node scripts/two_tier_demo.mjs       # registration, then a per-epoch members proof, verified
 ```
 
