@@ -38,9 +38,26 @@ Not enforced by anything, so they depend on the session:
 
 ## CURRENT STATE, 2026-09-25 (re-entry after six idle weeks, stale state corrected, a testnet VPS identified). THIS SUPERSEDES EVERY SECTION BELOW IT
 
-STATE. `main` equals `origin/main` at `5016a79` before this handoff commit, and the tree was clean. The
-last CI run (for `5016a79`, 2026-08-15) concluded success. `npm test` on 2026-09-25 with the full
-install gave 678 pass and 0 fail.
+STATE. `main` was at `5016a79` (CI green 2026-08-15) when this session started. The first handoff
+commit of the session, `8054c67`, was docs-only and still turned CI red, because the `circuits` job's
+setup-file download had died (next paragraph). The fix is `932407c`. With it, `npm test` gives 686
+pass and 0 fail on the full install, and the pre-commit gate ran the same.
+
+THE SETUP-FILE OUTAGE, found 2026-09-25. The Hermez Powers of Tau bucket (`storage.googleapis.com/
+zkevm/ptau`) answers HTTP 403 for every file, and the official snarkjs README still links there. That
+broke CI's members prove-and-verify and the documented rebuild of the two large proving keys. Both
+local copies (`circuits/build/pot15.ptau`, `pot20.ptau`) matched the blake2b-512 hashes the snarkjs
+README publishes, so they were published as the `ptau-hermez-v1` release (not marked Latest), and
+`scripts/fetch_ptau.sh` now fetches from there, falls back to the original bucket, and refuses any copy
+whose hash differs. Five review passes by a different model family found twelve issues in the helper
+and its tests, all folded, the last three passes minor-only. A wrong file was already caught later by
+the committed-key comparison in the default scripted builds, but not in promote mode or the manual
+recipe, so the hash is a real addition and not only a nicer error.
+
+ONE UNEXPLAINED TEST FAILURE. One of seven full-suite runs during that work had a single failure whose
+name was not captured. The next six runs passed 686 of 686, one of them under load, and the new test
+file passed 25 of 25 runs under load. The likeliest source is one of this suite's known timing-sensitive
+tests, but that is an inference. If it recurs, capture the test name before re-running.
 
 THE 2026-08-12 SECTION BELOW IS WRONG ON THREE POINTS, corrected here:
 
@@ -154,6 +171,13 @@ WHAT FORCED REWORK SINCE THE LAST HANDOFF:
 - The 2026-09-25 assessment first quoted 19 npm advisories without naming the install profile. That is
   the gateway count, and the full install has 34 with two critical. Feeds "name the install profile" in
   the checks block.
+- A docs-only push went red because a third-party download the build depended on had died, and
+  nothing had pinned or mirrored it. Feeds the dependency hygiene item. Any other unpinned external
+  fetch in the build is the same shape. circom-ecdsa is pinned by commit. The circom binary CI
+  downloads (`.github/workflows/ci.yml`, v2.2.3) is pinned by version tag but not by hash.
+- The first version of a test for a `new/..` destination passed against the defect it was written
+  for, because `path.join` normalized the path away. Only the mutation check caught it. Feeds the
+  mutation-check line in the checks block.
 
 ## SUPERSEDED, 2026-08-12 (trustless-anchor work started: ChainLock verification de-risked, quorum-key anchoring built and committed local-only). Corrected by the section above
 
