@@ -10,9 +10,12 @@ evidence, not a substitute for a specialist on the one named residual (`circom-e
 trusted setup), and the operational mitigations still apply: keep the anonymity set large and
 grants capped.
 
-STARTED, DIRECT NODE MODE ON protx diff (2026-08-02). `oracle/diff_snapshot.js` and
-`test/diff_snapshot.test.js` are the block-bound, ChainLock-gated read. NOT WIRED into the oracle CLI
-or the gateway yet, deliberately, because the transition below is a decision rather than a detail.
+DIRECT NODE MODE ON protx diff, started 2026-08-02 and now WIRED as `MNO_DML_SOURCE=node`.
+`oracle/diff_snapshot.js` and `test/diff_snapshot.test.js` are the block-bound, ChainLock-gated read.
+This entry first said it was not wired, deliberately, because the transition below was a decision
+rather than a detail. Both items below are done and the mode is wired, so the history that follows is
+kept as the record of why. It remains a trusted-node read floored at powLimit (see "CHAINLOCK
+VERIFICATION, PROTOTYPED AND STOPPED" further down).
 
 WHAT IT IS WORTH, corrected. An earlier version of this entry said the block-bound check closes the
 A to B to A residual. Against an HONEST node it does, which is a real gain over bracketing that could
@@ -164,8 +167,8 @@ to a hardcoded checkpoint followed forward through verified `mnlistdiff`s agains
 mitigations rather than build the bootstrap. The two primitives are kept as correct building blocks
 (committed, not wired into `diff_snapshot`, mainnet parameters unvalidated). Reopen only if this system
 will gate something of value. The direct-node read (`MNO_DML_SOURCE=node`) IS wired and remains a
-trusted-node read floored at powLimit. This note supersedes the stale "NOT WIRED" line at the top of this
-file.
+trusted-node read floored at powLimit. The "NOT WIRED" line at the top of this file was corrected on
+2026-09-25.
 
 What this changes here: the oracle stops being a trusted publisher and becomes a snapshot whose
 correctness a verifier can check for itself. `docs/DESIGN.md` currently says the leaf set is

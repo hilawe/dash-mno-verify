@@ -5,7 +5,157 @@ counts and supersedes everything below it. Historical sections are append-only a
 only marked superseded. Read this first when picking the project back up, then `TODO.md` for the full
 prioritized punch list.
 
-## CURRENT STATE, 2026-08-12 (trustless-anchor work started: ChainLock verification de-risked, quorum-key anchoring built and committed local-only). THIS SUPERSEDES EVERY SECTION BELOW IT
+## CHECKS THIS PROJECT REQUIRES (read this block first, every session)
+
+This block is a reminder, which is the weakest form of control. It exists only for obligations no gate
+can reach. When an item below can be turned into a hook, a suite assertion, or a line in a review brief,
+do that and delete it from here.
+
+Already enforced, so do not re-verify these by hand:
+
+- `tools/hooks/pre-commit` blocks a commit that touches gated paths unless the test suite passes. It is
+  active only after `git config core.hooksPath tools/hooks` in a checkout (set in the primary one).
+- CI (`.github/workflows/ci.yml`) runs on every push. `checks` is the install without optional packages,
+  `full` is the complete install that also exercises the adapters, and `circuits` compiles the circuits,
+  runs the differential derivation checks, and runs the members prove-and-verify with the key-drift check.
+
+Not enforced by anything, so they depend on the session:
+
+- Read `docs/PRECOMMIT_ADOPTION.md` and the relevant playbook BEFORE a behavior-changing commit.
+- After any push, read the CI conclusion, and the `full` job specifically. CI running is enforced. CI
+  being read is not, and it stayed red for five days once because nobody looked.
+- Leak-scan every commit by hand. This is a public, direct-push repository with no automated leak gate.
+  No credentials (throwaway node RPC ones included), no server addresses, no AI-tool names, no AI
+  co-author trailers. Never push without explicit approval for that push.
+- Mutation-check each new test, and confirm the mutant applied before counting it as caught.
+- When a defect is found, search for its SHAPE across the tree rather than fixing only the named
+  instance, and ask who consumes what changed.
+- A non-trivial change gets a review from a different model family. Use the full pool when it touches the
+  trust model, the cryptography, a canonical encoding, the contract schema, or durable state.
+- State no claim wider than its evidence, and name the network it was checked on (regtest, testnet,
+  mainnet) and the install profile where it matters.
+- Stage exact paths, never a directory and never `-A`.
+
+## CURRENT STATE, 2026-09-25 (re-entry after six idle weeks, stale state corrected, a testnet VPS identified). THIS SUPERSEDES EVERY SECTION BELOW IT
+
+STATE. `main` equals `origin/main` at `5016a79` before this handoff commit, and the tree was clean. The
+last CI run (for `5016a79`, 2026-08-15) concluded success. `npm test` on 2026-09-25 with the full
+install gave 678 pass and 0 fail.
+
+THE 2026-08-12 SECTION BELOW IS WRONG ON THREE POINTS, corrected here:
+
+- It says the quorum-key anchoring commit `4f04fbe` is local-only. Both ChainLock primitives (`4f04fbe`,
+  `5a4187f`) are on `origin/main`. They are NOT wired into `diff_snapshot`, nothing reads them, and their
+  mainnet parameters (`MAINNET_LLMQ_SIZES` and the mainnet ChainLock quorum type) are still unvalidated.
+- It says the trustless-anchor decision is open. It was decided on 2026-08-12 to STOP, rely on the
+  operational mitigations, and reopen only if this system will gate something of value. The record is
+  the "CHAINLOCK VERIFICATION, PROTOTYPED AND STOPPED" entry in `TODO.md` (`f8ddb5c`), with matching
+  edits in `docs/EXPLAINER.md` and `docs/THREAT_MODEL.md`.
+- It describes the local mainnet container `dash-mno-node` as reindexing. It was stopped on request
+  before the reindex finished and has been exited since mid-August. Restarting it resumes the reindex
+  from disk.
+
+WHAT HAPPENED 2026-08-12 TO 2026-08-15, not recorded here until now:
+
+- A collaborator pilot. Pasta (the Dash Core lead) was given write access on 2026-08-12 and invited to
+  run the gate against his own node and file issues and pull requests. `CONTRIBUTING.md` was added for
+  that (`79f1729`). As of 2026-09-25 the repository shows no activity from him.
+- The first real run of `docs/RUNBOOK.md` from a fresh clone, by the operator, against a local regtest
+  node. It reached a working gateway (health OK, DML height 16678, a challenge issued at epoch 2954). It
+  found one code defect, which was that `dash-cli` prints a bare string rather than JSON for
+  `getblockhash` and `getbestblockhash`, so the command-line node path threw on `JSON.parse`. Fixed in
+  `2ff6962` with tests, and empty output is now refused rather than returned as an empty string. The
+  run also found five documentation gaps, all folded into the RUNBOOK (`496cecd`):
+  - `dash-cli` not on the PATH for a node in a container.
+  - `npm run` issued from outside the repository.
+  - Environment variables not crossing terminals.
+  - A stale gateway still holding port 8787.
+  - `unauthorized` meaning a token mismatch rather than a gateway that is down.
+- A core-only path at the top of the RUNBOOK (`5016a79`), for a tester running a Dash node on a
+  Raspberry Pi with no Discord and no proving. It names the Node.js 22.13 minimum, which is often newer
+  than what a Pi ships.
+
+THE LARGE KEYS. Hosting is prepared and not finished. The operator is uploading both 2.3 GB keys to
+Cloudflare R2, and the R2 credentials stay with the operator, never in a session or the repository. Both
+keys were re-hashed on 2026-09-25, and an earlier session checked both against the committed
+verification keys.
+
+- `mno_membership.zkey`, 2,283,303,004 bytes, sha256
+  `fa311d1e8833f3edf407fb924528d13b60b490e650dea1304af394c8a6ddf88f`
+- `mno_registration.zkey`, 2,283,307,972 bytes, sha256
+  `ad88ad97b88616efe619a0efc04a8bc007ff064c85d1f5998c2e19e14d5bddae`
+
+When the two public URLs arrive, fill `url` and `sha256` under `largeFiles` in `keys.manifest.json`, run
+`bash scripts/fetch_keys.sh --large` from a scratch clone to prove the round trip against the hosted
+copies, add the hosting note to `docs/PROVING_KEY.md`, and commit. The small artifacts are already on
+the `circuit-keys-v2` release (four assets, sizes match the manifest), so `fetch_keys.sh` without
+`--large` works today.
+
+THE VPS. The operator's VPS for this project is the crono project's testnet server (6 vCPU, 12 GB RAM,
+200 GB disk, 2 GB swap, running a dashmate testnet Evolution fullnode). The crono project owns it, so any
+install there is agreed with that project first. Core RPC stays closed and is reached over an SSH tunnel.
+Its address and access details stay out of this public repository. Its sync state was NOT checked on
+2026-09-25. What it is for, in order:
+
+1. A testnet real-proof session. Nobody has yet produced a proof with a real voting key on a live
+   network. CI exercises the circuits only with synthetic keys. Once the crono project's planned testnet
+   masternode is registered, its voting key is in the testnet list. Key decoding (`wifToPriv` in
+   `common/dml.js`) and the prover do not depend on the network, so SNAPSHOT mode is expected to work on
+   testnet as it did on regtest. That expectation is untested. DIRECT-NODE mode will not work there as written,
+   because `oracle/proof_of_work.js` floors headers at `MAINNET_POW_LIMIT`. Testnet needs snapshot mode
+   or a network-aware floor.
+2. The operator benchmark. Time a registration prove and record its peak memory on that box, which
+   resembles a typical masternode VPS. Check free memory first, since the testnet node shares the 12 GB.
+3. Later, a public HTTPS home for a pilot gateway (adapters and provers refuse plain HTTP to a remote
+   gateway), and a testnet Dash API (DAPI) endpoint for the Platform store.
+
+DEPENDENCY ADVISORIES, from `npm audit` on 2026-09-25. The count depends on the install profile.
+
+- Oracle and gateway install (`npm ci --omit=optional`, what a gateway or the Pi tester runs). 19 in
+  total, 12 low, 2 moderate, 5 high, 0 critical. The highs are `underscore`, `jsonpath`, and `bfj` (one
+  chain under snarkjs), `brace-expansion` (also under snarkjs), and `ws` (under circomlibjs, through
+  ethers).
+- Full install. 34 in total, 14 low, 4 moderate, 14 high, 2 critical. Both criticals (`protobufjs`,
+  `tar`) come only through the optional official `dash` SDK 4.8.0, which only the Platform store mode
+  uses, and that mode is not live. That is a concrete reason to evaluate `dash-platform-sdk` (pshenmic)
+  when the Platform path is next touched.
+
+No reachability triage has been done on either set.
+
+DASH CORE VERSION. The X11 reference harness pins v23.1.3 (`tools/x11-reference/Dockerfile`). The latest
+release is v23.1.8 (2026-08-03). The DIP4 entry serialization was confirmed against live mainnet in early
+August. A patch release is unlikely to change it, but that stays an assumption until it is re-run against
+a current mainnet node.
+
+PUNCH LIST, in the recommended order:
+
+1. Finish large-key hosting. It waits on the operator's two URLs, then the round-trip fetch, the
+   manifest, the `docs/PROVING_KEY.md` note, a commit, and a push with approval.
+2. The testnet real-proof session and benchmark on the crono VPS, once the crono testnet masternode is
+   registered and the crono project has agreed. Record wall time and peak memory for `register` and
+   `prove-epoch`.
+3. Reachability triage of the 19 gateway-profile advisories before any public gateway.
+4. Re-confirm the DIP4 serialization on current mainnet. It needs a synced mainnet node, either by
+   restarting `dash-mno-node` locally or on the VPS after a disk check.
+5. A one-line nudge to Pasta, carrying the result of item 2.
+6. Deferred items, none of which blocks a pilot, are the ChainLock light-client bootstrap (stopped),
+   the Platform registration store (multi-gateway only), and simplified payment verification (SPV).
+
+WHAT FORCED REWORK SINCE THE LAST HANDOFF:
+
+- A throwaway local-node RPC credential went into this file and needed its own scrub commit
+  (`de52493`). Feeds the manual leak scan in the checks block.
+- The bare-string `dash-cli` defect reached a user because the node test stubbed `dash-cli` with JSON
+  output whatever the method, so no test could tell a string result from a JSON one. Feeds the global rule
+  that a control cannot support a claim that varies within what it observes.
+- This CURRENT STATE went six weeks stale while it still called a pushed commit unpushed and a made
+  decision open. Feeds the session-log rule that the handoff is updated at the end of every session,
+  doc-only sessions included.
+- The 2026-09-25 assessment first quoted 19 npm advisories without naming the install profile. That is
+  the gateway count, and the full install has 34 with two critical. Feeds "name the install profile" in
+  the checks block.
+
+## SUPERSEDED, 2026-08-12 (trustless-anchor work started: ChainLock verification de-risked, quorum-key anchoring built and committed local-only). Corrected by the section above
 
 FOLLOW ALL THE PLAYBOOK RULES (the mandatory block is spelled out in the superseded 2026-08-11/12
 section just below, and it still applies verbatim). Read it before the kind of work it covers.
