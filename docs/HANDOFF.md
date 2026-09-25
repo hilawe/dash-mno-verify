@@ -92,21 +92,37 @@ WHAT HAPPENED 2026-08-12 TO 2026-08-15, not recorded here until now:
   Raspberry Pi with no Discord and no proving. It names the Node.js 22.13 minimum, which is often newer
   than what a Pi ships.
 
-THE LARGE KEYS. Hosting is prepared and not finished. The operator is uploading both 2.3 GB keys to
-Cloudflare R2, and the R2 credentials stay with the operator, never in a session or the repository. Both
-keys were re-hashed on 2026-09-25, and an earlier session checked both against the committed
-verification keys.
+THE LARGE KEYS ARE HOSTED (2026-09-25, `6a49aae`). Both 2.3 GB keys are in the operator's Cloudflare
+R2 bucket `dash-mno-keys`, public at `https://pub-351d9fe984f640f7a25be9a8c1c201f6.r2.dev/<name>`. The
+R2 credentials stay with the operator. `keys.manifest.json` carries each key's url, sha256, and bytes. A
+fresh scratch clone ran `bash scripts/fetch_keys.sh --large`, which fetched all six artifacts from their
+public homes, passed every sha256 check, and exited 0, repeated after each change to the script. The
+docs that said the keys were not hosted are updated.
 
 - `mno_membership.zkey`, 2,283,303,004 bytes, sha256
   `fa311d1e8833f3edf407fb924528d13b60b490e650dea1304af394c8a6ddf88f`
 - `mno_registration.zkey`, 2,283,307,972 bytes, sha256
   `ad88ad97b88616efe619a0efc04a8bc007ff064c85d1f5998c2e19e14d5bddae`
 
-When the two public URLs arrive, fill `url` and `sha256` under `largeFiles` in `keys.manifest.json`, run
-`bash scripts/fetch_keys.sh --large` from a scratch clone to prove the round trip against the hosted
-copies, add the hosting note to `docs/PROVING_KEY.md`, and commit. The small artifacts are already on
-the `circuit-keys-v2` release (four assets, sizes match the manifest), so `fetch_keys.sh` without
-`--large` works today.
+THE DOWNLOADER FIXES (`08481c5`). Using `fetch_keys.sh` end to end for the first time exposed
+pre-existing defects, all fixed with offline tests (`test/fetch_keys.test.js`, driven by
+`test/run_script.mjs`, which kills the process group at its deadline), each watched failing against a
+mutation:
+
+- Every fully successful run exited 1 while printing that everything was verified, since `cc02bbf`
+  (2026-06-30). The EXIT trap ended in a false `&&` test.
+- Tab-joined manifest fields collapsed an empty sha256 (tab is IFS whitespace). Now 0x1f, with fields
+  holding it, a line break, or NUL refused.
+- A manifest that made the list producer throw was read as empty and reported success. Now validated,
+  with the status checked.
+- A fixed `$dest.download` temp name let concurrent runs install partial bytes. Now mktemp plus rename(2).
+- Symlink or directory destinations, before or during a download, are refused. A failed chmod is caught.
+  INT and TERM stop the run. `fetch_ptau.sh` got the same symlink refusal and re-check.
+
+Four review passes by a different model family went into these two commits, the last two minor-only.
+The final two minors (a pre-install re-check and a stricter `pgrep` check in a test) were folded and
+mutation-checked and were not re-reviewed. The `fetch_ptau.sh` pre-install re-check has no automated
+test, because its accept path needs the real 36 MB file.
 
 THE VPS. The operator's VPS for this project is the crono project's testnet server (6 vCPU, 12 GB RAM,
 200 GB disk, 2 GB swap, running a dashmate testnet Evolution fullnode). The crono project owns it, so any
@@ -146,8 +162,9 @@ a current mainnet node.
 
 PUNCH LIST, in the recommended order:
 
-1. Finish large-key hosting. It waits on the operator's two URLs, then the round-trip fetch, the
-   manifest, the `docs/PROVING_KEY.md` note, a commit, and a push with approval.
+1. Push `08481c5`, `6a49aae`, and this handoff with the operator's approval, then read CI. After that the
+   operator deletes the R2 upload token in Cloudflare and runs `rclone config delete r2`, since
+   downloads use the public URLs and need no token.
 2. The testnet real-proof session and benchmark on the crono VPS, once the crono testnet masternode is
    registered and the crono project has agreed. Record wall time and peak memory for `register` and
    `prove-epoch`.
@@ -178,6 +195,13 @@ WHAT FORCED REWORK SINCE THE LAST HANDOFF:
 - The first version of a test for a `new/..` destination passed against the defect it was written
   for, because `path.join` normalized the path away. Only the mutation check caught it. Feeds the
   mutation-check line in the checks block.
+- The operator's rclone endpoint held the R2 Access Key ID where the Account ID belongs (both are 32
+  hex characters), so every call hung on a host that does not exist. The Account ID is the host part
+  of the bucket's "S3 API" line in its settings. Worth one line in any future hosting instructions.
+- Writing the hosting tests surfaced three more pre-existing `fetch_keys.sh` defects beyond the one
+  the first real run showed (listed above). A script that had never been run end to end had never
+  been tested end to end either. Feeds "search for the defect's shape", since two of them were
+  shapes already fixed in `fetch_ptau.sh` that same day.
 
 ## SUPERSEDED, 2026-08-12 (trustless-anchor work started: ChainLock verification de-risked, quorum-key anchoring built and committed local-only). Corrected by the section above
 
