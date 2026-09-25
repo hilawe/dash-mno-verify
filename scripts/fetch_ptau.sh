@@ -73,6 +73,14 @@ if [ -f "$DEST" ]; then
   exit 1
 fi
 
+# A symlink at the destination that did not verify above would be REPLACED by the rename below, which
+# silently undoes an operator's choice to keep the file elsewhere. Refuse it instead. (A link to a
+# verified copy was already accepted above, since that branch only reads through it.)
+if [ -L "$DEST" ]; then
+  echo "fetch_ptau: $DEST is a symbolic link to something other than a verified copy. Fix or remove it." >&2
+  exit 2
+fi
+
 # Each attempt downloads to a temp file created EXCLUSIVELY (mktemp) beside the destination, so the
 # rename is atomic and no other writer shares it. A fixed name ($DEST.download) let a concurrent run
 # overwrite the file between the hash check and the rename, and let a symlink planted at that name
@@ -100,6 +108,13 @@ for src in "$MIRROR" "$UPSTREAM"; do
     continue
   fi
   if [ "$(blake2b_of "$TMP")" = "$BLAKE2B" ]; then
+    # Check the destination AGAIN just before installing, since a link or directory can appear there
+    # during a long download. This narrows the window to the moment before the rename. It does not
+    # close it.
+    if [ -L "$DEST" ] || { [ -e "$DEST" ] && [ ! -f "$DEST" ]; }; then
+      echo "fetch_ptau: $DEST changed during the download and is no longer a regular file" >&2
+      exit 2
+    fi
     chmod 0644 "$TMP"   # mktemp creates 0600, and curl's own output used to be world-readable
     # rename(2) rather than mv. mv moves a file INTO a destination that is a directory and reports
     # success, and a directory can appear at the destination while the download runs. rename(2)

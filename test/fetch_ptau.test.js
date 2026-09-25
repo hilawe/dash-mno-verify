@@ -1,10 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { mkdtempSync, writeFileSync, existsSync, readFileSync, rmSync, readdirSync, mkdirSync, symlinkSync } from "node:fs";
+import { mkdtempSync, writeFileSync, existsSync, readFileSync, rmSync, readdirSync, mkdirSync, symlinkSync, lstatSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { runScript } from "./run_script.mjs";
 
 // scripts/fetch_ptau.sh is the only gate between whatever a URL serves and the universal SRS every
 // proving key is built from. The accept path needs the real 36 MB file and is exercised by the CI
@@ -14,17 +15,10 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 // fileURLToPath, not .pathname, which leaves a space in the checkout path percent-encoded.
 const SCRIPT = fileURLToPath(new URL("../scripts/fetch_ptau.sh", import.meta.url));
 
-function run(args, env = {}) {
-  try {
-    const stdout = execFileSync("bash", [SCRIPT, ...args], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, ...env },
-    });
-    return { code: 0, stdout, stderr: "" };
-  } catch (e) {
-    return { code: e.status, stdout: e.stdout ?? "", stderr: e.stderr ?? "" };
-  }
+async function run(args, env = {}) {
+  const r = await runScript(SCRIPT, args, { env });
+  assert.equal(r.timedOut, false, "the script hung past its deadline");
+  return r;
 }
 
 function scratch() {
@@ -44,10 +38,10 @@ function scratch() {
 
 const NAME15 = "powersOfTau28_hez_final_15.ptau";
 
-test("an unsupported power is refused before anything is fetched", () => {
+test("an unsupported power is refused before anything is fetched", async () => {
   const s = scratch();
   try {
-    const r = run(["16", join(s.dir, "out.ptau")], s.env);
+    const r = await run(["16", join(s.dir, "out.ptau")], s.env);
     assert.equal(r.code, 2);
     assert.match(r.stderr, /unsupported power '16'/);
     assert.equal(existsSync(join(s.dir, "out.ptau")), false);
@@ -56,12 +50,12 @@ test("an unsupported power is refused before anything is fetched", () => {
   }
 });
 
-test("a mirror serving the wrong bytes is refused, and nothing is left at the destination", () => {
+test("a mirror serving the wrong bytes is refused, and nothing is left at the destination", async () => {
   const s = scratch();
   try {
     writeFileSync(join(s.mirror, NAME15), "not the ceremony output");
     const dest = join(s.dir, "pot15.ptau");
-    const r = run(["15", dest], s.env);
+    const r = await run(["15", dest], s.env);
     assert.equal(r.code, 1);
     assert.match(r.stderr, /does not match the published hash/);
     assert.match(r.stderr, /no source served a verified/);
@@ -72,13 +66,13 @@ test("a mirror serving the wrong bytes is refused, and nothing is left at the de
   }
 });
 
-test("when the mirror fails, the upstream is tried and held to the same hash", () => {
+test("when the mirror fails, the upstream is tried and held to the same hash", async () => {
   const s = scratch();
   try {
     // Nothing in the mirror, a wrong file upstream. The upstream fallback must not be a bypass.
     writeFileSync(join(s.upstream, NAME15), "also wrong");
     const dest = join(s.dir, "pot15.ptau");
-    const r = run(["15", dest], s.env);
+    const r = await run(["15", dest], s.env);
     assert.equal(r.code, 1);
     assert.match(r.stderr, /could not download from file:\/\/.*mirror/);
     assert.match(r.stderr, /upstream.*does not match the published hash/);
@@ -88,12 +82,12 @@ test("when the mirror fails, the upstream is tried and held to the same hash", (
   }
 });
 
-test("a cached file that fails the check is refused and left untouched, not replaced", () => {
+test("a cached file that fails the check is refused and left untouched, not replaced", async () => {
   const s = scratch();
   try {
     const dest = join(s.dir, "pot15.ptau");
     writeFileSync(dest, "stale or tampered cache");
-    const r = run(["15", dest], s.env);
+    const r = await run(["15", dest], s.env);
     assert.equal(r.code, 1);
     assert.match(r.stderr, /does not match the published hash/);
     assert.equal(readFileSync(dest, "utf8"), "stale or tampered cache", "the operator's file is not deleted or overwritten");
@@ -102,7 +96,7 @@ test("a cached file that fails the check is refused and left untouched, not repl
   }
 });
 
-test("a destination that is a directory is refused, and nothing is written inside it", () => {
+test("a destination that is a directory is refused, and nothing is written inside it", async () => {
   // Before the fix, -f was false for a directory, so the download ran and `mv` put the verified file
   // INSIDE the directory, exiting 0 with nothing verified at the path the caller named.
   const s = scratch();
@@ -110,7 +104,7 @@ test("a destination that is a directory is refused, and nothing is written insid
     const dest = join(s.dir, "pot15.ptau");
     mkdirSync(dest);
     writeFileSync(join(s.mirror, NAME15), "anything");
-    const r = run(["15", dest], s.env);
+    const r = await run(["15", dest], s.env);
     assert.equal(r.code, 2);
     assert.match(r.stderr, /exists and is not a regular file/);
     assert.deepEqual(readdirSync(dest), [], "nothing was moved into the directory");
@@ -119,7 +113,7 @@ test("a destination that is a directory is refused, and nothing is written insid
   }
 });
 
-test("a symlink planted at the old fixed temp name cannot steer rejected bytes onto the destination", () => {
+test("a symlink planted at the old fixed temp name cannot steer rejected bytes onto the destination", async () => {
   // The temp file used to be "$DEST.download". A symlink there pointing at the absent destination made
   // curl write THROUGH it, and the cleanup then removed only the link, leaving the rejected bytes at
   // the destination. The temp file is now created exclusively under a random name.
@@ -128,7 +122,7 @@ test("a symlink planted at the old fixed temp name cannot steer rejected bytes o
     const dest = join(s.dir, "pot15.ptau");
     symlinkSync(dest, `${dest}.download`);
     writeFileSync(join(s.mirror, NAME15), "rejected bytes");
-    const r = run(["15", dest], s.env);
+    const r = await run(["15", dest], s.env);
     assert.equal(r.code, 1);
     assert.equal(existsSync(dest), false, "the rejected bytes did not reach the destination");
   } finally {
@@ -207,7 +201,7 @@ test("an interruption stops the run nonzero instead of falling through to the ne
   }
 });
 
-test("a destination that only becomes a directory once its parent is created is refused", () => {
+test("a destination that only becomes a directory once its parent is created is refused", async () => {
   // "new/.." is not a directory until "new" exists. The check used to run before the parent was
   // created, so it passed, and the verified file then landed inside the directory with exit 0.
   const s = scratch();
@@ -216,10 +210,27 @@ test("a destination that only becomes a directory once its parent is created is 
     // Built as a raw string. path.join would normalize "new/.." away to the parent, which already
     // exists as a directory, and the test would then never exercise the ordering it is about.
     const dest = `${s.dir}/new/..`;
-    const r = run(["15", dest], s.env);
+    const r = await run(["15", dest], s.env);
     assert.equal(r.code, 2);
     assert.match(r.stderr, /exists and is not a regular file/);
     assert.deepEqual(readdirSync(s.dir).filter((f) => f.startsWith(".")), [], "nothing was written into the directory");
+  } finally {
+    s.done();
+  }
+});
+
+test("a dangling symlink at the destination is refused rather than replaced by a download", async () => {
+  // A link to a VERIFIED copy is accepted, since the cached branch only reads through it. A link that a
+  // download would replace is refused, so an operator's choice to keep the file elsewhere is not undone.
+  const s = scratch();
+  try {
+    const dest = join(s.dir, "pot15.ptau");
+    symlinkSync(join(s.dir, "missing.ptau"), dest);
+    writeFileSync(join(s.mirror, NAME15), "anything");
+    const r = await run(["15", dest], s.env);
+    assert.equal(r.code, 2);
+    assert.match(r.stderr, /is a symbolic link/);
+    assert.equal(lstatSync(dest).isSymbolicLink(), true, "the link was not replaced");
   } finally {
     s.done();
   }
