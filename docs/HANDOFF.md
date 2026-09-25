@@ -127,14 +127,24 @@ test, because its accept path needs the real 36 MB file.
 THE VPS. The operator's VPS for this project is the crono project's testnet server (6 vCPU, 12 GB RAM,
 200 GB disk, 2 GB swap, running a dashmate testnet Evolution fullnode). The crono project owns it, so any
 install there is agreed with that project first. Core RPC stays closed and is reached over an SSH tunnel.
-Its address and access details stay out of this public repository. Its sync state was NOT checked on
-2026-09-25. What it is for, in order:
+Its address and access details stay out of this public repository. Checked read-only on 2026-09-25,
+Core had finished syncing testnet (height 1,560,685, out of initial download), Platform was still
+syncing, and about 8 GB of the 12 GB was free. What it is for, in order:
 
 1. A testnet real-proof session. Nobody has yet produced a proof with a real voting key on a live
    network. CI exercises the circuits only with synthetic keys. Once the crono project's planned testnet
    masternode is registered, its voting key is in the testnet list. Key decoding (`wifToPriv` in
-   `common/dml.js`) and the prover do not depend on the network, so SNAPSHOT mode is expected to work on
-   testnet as it did on regtest. That expectation is untested. DIRECT-NODE mode will not work there as written,
+   `common/dml.js`) and the prover do not depend on the network. The ORACLE AND GATEWAY HALF IS NOW
+   CHECKED ON LIVE TESTNET (2026-09-25). The oracle ran in snapshot mode on this Mac, reading the crono
+   node's list through a `dash-cli` shim that forwards each call over ssh to `dashmate core cli` (which
+   takes the whole command as ONE quoted argument). It built a root over the 108 ENABLED of 390
+   testnet masternodes at height 1,560,685, all voting addresses `y`-prefixed (version 0x8c), and the
+   108 leaves equal the 108 voting keys decoded independently from the raw list. A throwaway gateway
+   booted on that root and issued a challenge tied to it. THE PROVING HALF IS NOT DONE, because it
+   needs the voting key of an ENABLED testnet masternode and the crono evonode is not registered yet
+   (its registration waits on Platform sync and the operator's approval). When it is, run the proof ON
+   THE BOX, in a Docker container with a memory cap so the prover cannot starve the node, so the
+   voting key never leaves the server. DIRECT-NODE mode will not work there as written,
    because `oracle/proof_of_work.js` floors headers at `MAINNET_POW_LIMIT`. Testnet needs snapshot mode
    or a network-aware floor.
 2. The operator benchmark. Time a registration prove and record its peak memory on that box, which
@@ -165,9 +175,10 @@ PUNCH LIST, in the recommended order:
 1. Push `08481c5`, `6a49aae`, and this handoff with the operator's approval, then read CI. After that the
    operator deletes the R2 upload token in Cloudflare and runs `rclone config delete r2`, since
    downloads use the public URLs and need no token.
-2. The testnet real-proof session and benchmark on the crono VPS, once the crono testnet masternode is
-   registered and the crono project has agreed. Record wall time and peak memory for `register` and
-   `prove-epoch`.
+2. The testnet real-proof session and benchmark on the crono VPS, once the crono evonode is registered
+   (its voting key is the input) and Platform has finished syncing, so the prover does not compete
+   with the sync. Run it in a memory-capped container on the box, and record wall time and peak memory
+   for `register` and `prove-epoch`. The oracle and gateway half already passed on live testnet.
 3. Reachability triage of the 19 gateway-profile advisories before any public gateway.
 4. Re-confirm the DIP4 serialization on current mainnet. It needs a synced mainnet node, either by
    restarting `dash-mno-node` locally or on the VPS after a disk check.
