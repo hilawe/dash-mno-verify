@@ -27,7 +27,6 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 OUT="circuits/build"
 PTAU="${PTAU:-$OUT/pot20.ptau}"
-PTAU_URL="https://storage.googleapis.com/zkevm/ptau/powersOfTau28_hez_final_20.ptau"
 export NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=12288}"
 
 mkdir -p "$OUT"
@@ -38,10 +37,8 @@ bash scripts/setup_circom_ecdsa.sh
 echo "--- compile $CIRCUIT ---"
 "$CIRCOM" "circuits/$CIRCUIT.circom" --r1cs --wasm -o "$OUT" -l node_modules -l circuits/.deps >/dev/null
 
-if [ ! -f "$PTAU" ]; then
-  echo "--- download universal SRS (2^20, ~1.15 GB) ---"
-  curl -fSL "$PTAU_URL" -o "$PTAU"
-fi
+echo "--- universal SRS (2^20, ~1.15 GB, verified against its published hash) ---"
+bash scripts/fetch_ptau.sh 20 "$PTAU"
 
 echo "--- PLONK setup (several minutes, ~12 GB heap) ---"
 "$SNARKJS" plonk setup "$OUT/$CIRCUIT.r1cs" "$PTAU" "$OUT/$CIRCUIT.zkey" >/dev/null

@@ -54,8 +54,9 @@ bash scripts/setup_circom_ecdsa.sh
 circom circuits/mno_membership.circom --r1cs --wasm -o circuits/build \
   -l node_modules -l circuits/.deps
 
-# 3. PLONK expands this to about 635k constraints, so it needs a 2^20 universal SRS
-curl -fsSL https://storage.googleapis.com/zkevm/ptau/powersOfTau28_hez_final_20.ptau -o pot20.ptau
+# 3. PLONK expands this to about 635k constraints, so it needs a 2^20 universal SRS. The helper
+#    downloads it and refuses any copy whose blake2b-512 differs from the one snarkjs publishes.
+bash scripts/fetch_ptau.sh 20 pot20.ptau
 snarkjs plonk setup circuits/build/mno_membership.r1cs pot20.ptau circuits/build/mno_membership.zkey
 snarkjs zkey export verificationkey circuits/build/mno_membership.zkey circuits/build/verification_key.json
 ```

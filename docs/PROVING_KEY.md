@@ -12,7 +12,10 @@ produces the same proving and verification keys. Every input to that is public:
 
 - the circuits in this repo,
 - circom-ecdsa pinned to a fixed commit by `scripts/setup_circom_ecdsa.sh`,
-- the public Hermez Powers of Tau (the 2^20 SRS).
+- the public Hermez Powers of Tau (the 2^20 SRS), pinned by the blake2b-512 hash snarkjs publishes
+  for it. `scripts/fetch_ptau.sh` fetches it from this repository's `ptau-hermez-v1` release, falling
+  back to the original Hermez bucket, and refuses any copy whose hash differs. The original bucket
+  began refusing downloads in September 2026, which is why the repository keeps its own copy.
 
 So the proving key does not need to be hosted at all. A prover rebuilds it locally:
 

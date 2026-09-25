@@ -13,7 +13,6 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 BUILD="$(mktemp -d)"
 PTAU="${PTAU:-circuits/build/pot15.ptau}"
-PTAU_URL="https://storage.googleapis.com/zkevm/ptau/powersOfTau28_hez_final_15.ptau"
 
 mkdir -p circuits/build
 
@@ -21,7 +20,7 @@ echo "--- compile mno_members ---"
 "$CIRCOM" circuits/mno_members.circom --r1cs --wasm -o "$BUILD" -l node_modules >/dev/null
 
 echo "--- universal SRS (public Hermez 2^15, ~36 MB, cached) ---"
-[ -f "$PTAU" ] || curl -fsSL "$PTAU_URL" -o "$PTAU"
+bash scripts/fetch_ptau.sh 15 "$PTAU"
 
 echo "--- PLONK setup and verification key ---"
 "$SNARKJS" plonk setup "$BUILD/mno_members.r1cs" "$PTAU" "$BUILD/members.zkey" >/dev/null
