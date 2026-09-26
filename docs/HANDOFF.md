@@ -140,11 +140,38 @@ syncing, and about 8 GB of the 12 GB was free. What it is for, in order:
    takes the whole command as ONE quoted argument). It built a root over the 108 ENABLED of 390
    testnet masternodes at height 1,560,685, all voting addresses `y`-prefixed (version 0x8c), and the
    108 leaves equal the 108 voting keys decoded independently from the raw list. A throwaway gateway
-   booted on that root and issued a challenge tied to it. THE PROVING HALF IS NOT DONE, because it
-   needs the voting key of an ENABLED testnet masternode and the crono evonode is not registered yet
-   (its registration waits on Platform sync and the operator's approval). When it is, run the proof ON
-   THE BOX, in a Docker container with a memory cap so the prover cannot starve the node, so the
-   voting key never leaves the server. DIRECT-NODE mode will not work there as written,
+   booted on that root and issued a challenge tied to it.
+
+   THE FIRST REAL END-TO-END PROOF PASSED (2026-09-26). The crono evonode registered and reached READY,
+   and its voting key is a leaf of a fresh snapshot (107 ENABLED at height 1,561,218). A single-tier
+   proof was made ON THE BOX with that key, in a Docker container (`node:22-bookworm`, Node 22.23.3)
+   capped at 3 CPUs and 7.5 GB. The key went from crono's wallet-only Core into the prover's stdin
+   (`--voting-key-stdin`) and was never printed or written to disk. Only `proof.json` left the box. A
+   test gateway on the Mac (unsigned snapshot, unauthenticated, challenge and snapshot age limits
+   raised to two hours, all demo-only settings) returned `ok: true` for epoch 2960. Replaying the same
+   proof was refused (`unknown-or-expired-challenge`), and the same proof against a fresh challenge was
+   refused (`wrong-signal`).
+
+   MEASURED. On the box the proof took 13 min 35 s from prover start to `proof.json` at 3 CPUs, and the
+   container's cgroup `memory.peak` reached the 7.5 GiB cap, which counts page cache from reading the
+   2.3 GB key, without an out-of-memory stop. A first attempt capped at 5 GB was stopped by the kernel
+   at the cap after 703 s. On the Mac (M1 Pro, 16 GB, under memory pressure from a 12 GiB colima VM) a
+   synthetic-key run of the same circuit through the snarkjs CLI took 530 s with a peak memory
+   footprint of 6.72 GiB (maximum resident set 3.34 GiB, understated by macOS memory compression). So
+   the heavy proof needs about 7 GB free, not the "few gigabytes" the RUNBOOK says.
+
+   TWO DEFECTS FOUND, NOT YET FIXED:
+   - `prover/prover.js` writes `proof.json` and then never exits, because snarkjs's worker threads are
+     left running. On the box it sat idle holding 5.8 GiB until the container was stopped. Check
+     `prover/two_tier.js` for the same shape.
+   - The RUNBOOK and DEPLOY memory guidance understates the heavy proof (see MEASURED).
+
+   HOW THE BOX WAS USED, so it can be repeated. The work folder is `~/mno-verify-bench` on the crono
+   box (public files only, about 4.5 GB: a `git archive` of the repo, the fetched keys, and the run
+   inputs and outputs). To fit the 7.5 GB cap, crono's wallet-only Core container was paused for the
+   run (18:29:56 to 19:02:48 UTC, longer than planned because of the prover hang) by a script whose
+   EXIT trap always starts it again. The evonode's own containers were not touched, and its PoSe
+   penalty was 0 with ban height -1 before and after both runs. DIRECT-NODE mode will not work there as written,
    because `oracle/proof_of_work.js` floors headers at `MAINNET_POW_LIMIT`. Testnet needs snapshot mode
    or a network-aware floor.
 2. The operator benchmark. Time a registration prove and record its peak memory on that box, which
@@ -172,17 +199,16 @@ a current mainnet node.
 
 PUNCH LIST, in the recommended order:
 
-1. Push `08481c5`, `6a49aae`, and this handoff with the operator's approval, then read CI. After that the
-   operator deletes the R2 upload token in Cloudflare and runs `rclone config delete r2`, since
-   downloads use the public URLs and need no token.
-2. The testnet real-proof session and benchmark on the crono VPS, once the crono evonode is registered
-   (its voting key is the input) and Platform has finished syncing, so the prover does not compete
-   with the sync. Run it in a memory-capped container on the box, and record wall time and peak memory
-   for `register` and `prove-epoch`. The oracle and gateway half already passed on live testnet.
+1. Fix the prover hang (`prover/prover.js`, and check `prover/two_tier.js`) with a test that the CLI
+   returns after writing its output, then correct the memory guidance in `docs/RUNBOOK.md` and
+   `docs/DEPLOY.md` to about 7 GB free for the heavy proof.
+2. The two-tier real run on the box (registration, then a per-epoch members proof). Registration posts
+   to the gateway, so the box needs a route to it (for example an SSH reverse tunnel to the Mac).
 3. Reachability triage of the 19 gateway-profile advisories before any public gateway.
 4. Re-confirm the DIP4 serialization on current mainnet. It needs a synced mainnet node, either by
    restarting `dash-mno-node` locally or on the VPS after a disk check.
-5. A one-line nudge to Pasta, carrying the result of item 2.
+5. A one-line nudge to Pasta. The result now exists, a real testnet evonode's proof verified end to
+   end, heavy proof about 14 minutes at 3 CPUs and about 7 GB.
 6. Deferred items, none of which blocks a pilot, are the ChainLock light-client bootstrap (stopped),
    the Platform registration store (multi-gateway only), and simplified payment verification (SPV).
 
