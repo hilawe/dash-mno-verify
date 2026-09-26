@@ -19,8 +19,8 @@ npm run prove -- --challenge challenge.json --voting-key-file key.wif --oracle o
 `prover/two_tier.js` is the prover for a gateway running in `MNO_MODE=two-tier`. It talks
 to the gateway directly, so a member does not assemble files by hand.
 
-Register once per season. This is the heavy proof, so it needs a few GB of RAM, not a
-Raspberry Pi:
+Register once per season. This is the heavy proof, so plan for about 7 GB of free memory, not a
+Raspberry Pi (measured figures in `docs/RUNBOOK.md`, step 5):
 
 ```bash
 npm run register -- \

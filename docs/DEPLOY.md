@@ -132,7 +132,7 @@ bash scripts/fetch_keys.sh         # downloads and checksum-verifies the members
    member hands back to the adapter, which submits it. The member never holds the adapter secret.
 
 ```bash
-# once a season, the heavy proof, needs a few GB of RAM
+# once a season, the heavy proof. Plan for about 7 GB of free memory (measured, docs/RUNBOOK.md step 5)
 npm run register -- --gateway https://the-gateway --platform discord --community <id> --role <id> --voting-key-file key.wif
 
 # every epoch, the cheap proof, fine on a Raspberry Pi. The adapter gave you challenge.json.
