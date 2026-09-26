@@ -14,6 +14,7 @@ import { MembersTree } from "../core/members_tree.js";
 import { RootStore, NullifierStore } from "../core/stores.js";
 import { RegistrationStore, MemoryRegistrationBackend } from "../core/registration_store.js";
 import { verifyRegistration, verifyMembership } from "../core/verifier.js";
+import { releaseProvingThreads } from "../prover/proving_threads.js";
 
 const TREE_DEPTH = 16;
 const B = "circuits/build";
@@ -70,11 +71,15 @@ const regResult = await verifyRegistration({
   vkey: JSON.parse(await readFile(`${B}/mno_registration_vkey.json`, "utf8")),
   proof: reg.proof,
   publicSignals: reg.publicSignals,
-  expected: { rootStore: dmlRoots, season, contextHash: ctx },
+  // The engine and statement are the caller's to name, as the gateway does from its config
+  // (plonk/derive by default). The verifier refuses a registration without them (engine-mismatch), and
+  // this demo, which CI does not run, went stale when that requirement was added.
+  expected: { rootStore: dmlRoots, season, contextHash: ctx, engine: "plonk", statement: "derive" },
   registrationStore,
   // Linear demo, no season rollover: the durable record and the tree mirror just run together.
-  commit: async ({ season: s, contextHash: c, regNullifier: n, commitment }) => {
-    const res = await registrationStore.append({ season: s, contextHash: c, regNullifier: n, commitment });
+  commit: async ({ season: s, contextHash: c, regNullifier: n, commitment, engine, statement }) => {
+    const res = await registrationStore.append({ season: s, contextHash: c, regNullifier: n, commitment, engine, statement });
+    if (res.invalid) return { ok: false, reason: res.reason ?? "invalid-registration-record" };
     if (res.duplicate) return { ok: false, reason: "already-registered" };
     membersTree.append(commitment);
     return { ok: true, index: res.index, membersRoot: membersTree.root(), size: membersTree.size() };
@@ -108,3 +113,6 @@ console.log("   verifyMembership:", memResult.ok ? `OK, epoch nullifier ${memRes
 if (!memResult.ok) process.exit(1);
 
 console.log("\nTwo-tier flow verified end to end: one heavy registration, then cheap per-epoch proofs.");
+// The proofs and the in-process verifies share snarkjs's worker threads, which keep Node alive until
+// released (see prover/proving_threads.js). The failure paths above exit explicitly.
+await releaseProvingThreads();

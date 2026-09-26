@@ -14,6 +14,7 @@ import * as snarkjs from "snarkjs";
 import { buildPoseidon } from "circomlibjs";
 import { wifToPriv, leafFromPriv } from "../common/dml.js";
 import { loadVotingKey } from "./voting_key.js";
+import { releaseProvingThreads } from "./proving_threads.js";
 
 const TREE_DEPTH = 16;
 const WASM = "circuits/build/mno_membership_js/mno_membership.wasm";
@@ -102,6 +103,12 @@ const input = {
   signalHash: challenge.signalHash,
 };
 
-const { proof, publicSignals } = await snarkjs.plonk.fullProve(input, WASM, ZKEY);
+// Released in a finally, or the CLI never exits after writing proof.json (see proving_threads.js).
+let proof, publicSignals;
+try {
+  ({ proof, publicSignals } = await snarkjs.plonk.fullProve(input, WASM, ZKEY));
+} finally {
+  await releaseProvingThreads();
+}
 await writeFile(values.out, JSON.stringify({ nonce: challenge.nonce, proof, publicSignals }, null, 2));
 console.log(`Wrote ${values.out}. Submit it through your adapter. Your voting key never left this machine.`);

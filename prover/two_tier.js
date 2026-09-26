@@ -1,7 +1,7 @@
 // Two-tier prover CLI. Runs on the member's own machine.
 //
 //   register: prove masternode control once per season. Heavy (it does the secp256k1 and
-//             hash160 work), so it needs a machine with several GB of RAM. It saves a
+//             hash160 work), so plan for about 7 GB of free memory. It saves a
 //             secret you keep, and registers your commitment with the gateway.
 //
 //   prove:    the per-epoch membership proof. Cheap (a few seconds, a small key), so it
@@ -21,6 +21,7 @@ import { wifToPriv, leafFromPriv } from "../common/dml.js";
 import { contextHash } from "../common/index.js";
 import { assertSafeGatewayUrl } from "../common/gateway_url.js";
 import { loadVotingKey } from "./voting_key.js";
+import { releaseProvingThreads } from "./proving_threads.js";
 import {
   defaultSecretPath,
   findSecretForContext,
@@ -181,11 +182,17 @@ async function register(a) {
   }
 
   console.log("generating registration proof (heavy, once per season) ...");
-  const { proof, publicSignals } = await snarkjs.plonk.fullProve(
-    { privkey: privToLimbs(priv), pathElements, pathIndices, secret, root, season, contextHash: ctx },
-    `${B}/mno_registration_js/mno_registration.wasm`,
-    `${B}/mno_registration.zkey`
-  );
+  // Released in a finally, or the CLI never exits (see proving_threads.js).
+  let proof, publicSignals;
+  try {
+    ({ proof, publicSignals } = await snarkjs.plonk.fullProve(
+      { privkey: privToLimbs(priv), pathElements, pathIndices, secret, root, season, contextHash: ctx },
+      `${B}/mno_registration_js/mno_registration.wasm`,
+      `${B}/mno_registration.zkey`
+    ));
+  } finally {
+    await releaseProvingThreads();
+  }
 
   const res = await post(`${a.gateway}/v1/register`, {
     platform: a.platform,
@@ -240,11 +247,17 @@ async function prove(a) {
 
   const { pathElements, pathIndices, root } = buildPath(poseidon, members.commitments, index);
   console.log("generating members proof (cheap, every epoch) ...");
-  const { proof, publicSignals } = await snarkjs.plonk.fullProve(
-    { secret, pathElements, pathIndices, membersRoot: root, epoch: String(ch.epoch), contextHash: ch.contextHash, signalHash: ch.signalHash },
-    `${B}/mno_members_js/mno_members.wasm`,
-    `${B}/mno_members.zkey`
-  );
+  // Released in a finally, or the CLI never exits (see proving_threads.js).
+  let proof, publicSignals;
+  try {
+    ({ proof, publicSignals } = await snarkjs.plonk.fullProve(
+      { secret, pathElements, pathIndices, membersRoot: root, epoch: String(ch.epoch), contextHash: ch.contextHash, signalHash: ch.signalHash },
+      `${B}/mno_members_js/mno_members.wasm`,
+      `${B}/mno_members.zkey`
+    ));
+  } finally {
+    await releaseProvingThreads();
+  }
 
   const out = a.out ?? "proof.json";
   await writeFile(out, JSON.stringify({ nonce: ch.nonce, proof, publicSignals }, null, 2));
