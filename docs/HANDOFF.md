@@ -99,6 +99,26 @@ review rejected its cross-project scope. Repository-root instructions were not e
   of the gateway that verifies a real proof must release snarkjs's threads to exit, which the new
   check does.
 - Add bounded adapter downloads and correct misleading exclusion and raw-key instructions.
+
+  UNIT DONE (2026-09-27), the operational fixes F3 to F6.
+  - F3. `common/merkle_path.js` builds a path from occupied branches only, used by `prover/prover.js`
+    and `prover/two_tier.js`. It is identical to the old padded build at every index and size tried
+    (depth 5 exhaustively, depth 16 once, and the reviewer checked full trees of 32,769 and 65,536
+    leaves), and a one-member path costs 32 hashes instead of 65,535. A real single-tier proof and the
+    real two-tier expiry check both verify on it.
+  - F4. `fetch_keys.sh --large registration|membership` fetches one key, skips a file already present
+    with the right sha256, retries transient failures, and checks free space per destination
+    directory. A real R2 run fetched only the registration key in 49 s, and a rerun skipped all in 4 s.
+  - F5. `common/bounded_fetch.js` caps a submitted proof.json while reading and under one deadline,
+    and the Discord and Telegram bots check a per-member rate and the reported size before any
+    download.
+  - F6. The bot no longer advises a role-level deny. The first replacement advice was itself wrong
+    (dropping a channel from the list leaves every grant in place), and the messages now route through
+    `npm run discord:decommission`.
+  Reviews: one execution review from a different model family (REVISE, one major and one minor, both
+  folded) and one focused confirmation (APPROVE-WITH-FIXES, one new minor, where Debian's mawk capped
+  an awk `%d` at 2,147,483,647). That last fix was proved in a Debian container under mawk, where the
+  regression test passes with the fix and fails with the old line, and it was not re-reviewed.
 - Improve local paths and circuit-specific downloads, then measure the supported member workflow.
 - Decide whether a per-circuit ceremony is acceptable before commissioning another engine experiment.
 
