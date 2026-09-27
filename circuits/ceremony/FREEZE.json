@@ -1,0 +1,71 @@
+{
+  "note": "Everything the Groth16 setup ceremony depends on (docs/CEREMONY.md). A change to any value voids every contribution made against it.",
+  "commit": "5ab338c877b27b90b9c6e58c89ec1af725cbc8bf",
+  "compiler": {
+    "name": "circom",
+    "version": "circom compiler 2.2.3",
+    "binarySha256": "e006332b3fe225f11c3b87bd2debbf5d7f568d6efbde25e5a6a12cd6988c8ecb",
+    "releaseBinaries": {
+      "circom-linux-amd64": "85342c7ff332d948df7c0c50ecf201e6129349aef550ce873f3c811b79fe53a3",
+      "circom-macos-amd64": "e006332b3fe225f11c3b87bd2debbf5d7f568d6efbde25e5a6a12cd6988c8ecb"
+    }
+  },
+  "snarkjs": {
+    "version": "0.7.6",
+    "integrity": "sha512-4uH1xA5JzVU5jaaWS2fXej3+RC6L5Erhr6INTJtUA27du4Elbh4VXCeeRjB4QiwL6N6y7SNKePw5prTxyEf4Zg=="
+  },
+  "circomlib": {
+    "version": "2.0.5",
+    "integrity": "sha512-O7NQ8OS+J4eshBuoy36z/TwQU0YHw8W3zxZcs4hVwpEll3e4hDm3mgkIPqItN8FDeLEKZFK3YeT/+k8TiLF3/A=="
+  },
+  "circomEcdsa": {
+    "repository": "https://github.com/0xPARC/circom-ecdsa",
+    "commit": "d87eb7068cb35c951187093abe966275c1839ead"
+  },
+  "phaseOne": {
+    "file": "powersOfTau28_hez_final_20.ptau",
+    "blake2b512": "89a66eb5590a1c94e3f1ee0e72acf49b1669e050bb5f93c73b066b564dca4e0c7556a52b323178269d64af325d8fdddb33da3a27c34409b821de82aa2bf1a27b"
+  },
+  "purposeTags": {
+    "singleTierAdmission": {
+      "label": "dash-mno-verify:purpose:single-tier-admission:v1",
+      "value": "2746475764083232086712230627440145149755258450541734044813292983362430706365"
+    },
+    "seasonalRegistration": {
+      "label": "dash-mno-verify:purpose:seasonal-registration:v1",
+      "value": "4412587802530862675250799606570235507701539531635883910631083162293640935633"
+    }
+  },
+  "circuits": {
+    "mno_membership": {
+      "source": "circuits/mno_membership.circom",
+      "r1csSha256": "4e1f519d1e92459a58844915774754ae24271663e40a9518b691005800ec8988",
+      "constraints": 253978,
+      "publicInputs": 4,
+      "outputs": 1,
+      "privateInputs": 36,
+      "publicSignals": [
+        "nullifier",
+        "root",
+        "epoch",
+        "contextHash",
+        "signalHash"
+      ]
+    },
+    "mno_registration": {
+      "source": "circuits/mno_registration.circom",
+      "r1csSha256": "4cadf74ebec6b62c7ad670ef3139254ead0288a14eb0579458139bf8a6f06247",
+      "constraints": 254392,
+      "publicInputs": 3,
+      "outputs": 2,
+      "privateInputs": 37,
+      "publicSignals": [
+        "commitment",
+        "regNullifier",
+        "root",
+        "season",
+        "contextHash"
+      ]
+    }
+  }
+}
