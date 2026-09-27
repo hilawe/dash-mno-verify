@@ -13,10 +13,12 @@ pragma circom 2.1.6;
 // revoked individually. Membership re-anchors to current ownership only at each season
 // boundary. See docs/DESIGN.md.
 include "circomlib/circuits/poseidon.circom";
+include "circomlib/circuits/comparators.circom"; // IsZero
 include "circom-ecdsa/circuits/ecdsa.circom";   // ECDSAPrivToPub(n, k)
 include "circom-ecdsa/circuits/bigint.circom";  // BigLessThan(n, k)
 include "./hash160/hash160.circom";              // CompressAndHash160
 include "./merkle.circom";                       // MerkleInclusion
+include "./purpose_tags.circom";                 // TAG_SEASONAL_REGISTRATION
 
 template MnoRegistration(treeDepth, n, k) {
     // private witness
@@ -64,13 +66,24 @@ template MnoRegistration(treeDepth, n, k) {
     for (var i = 0; i < k; i++) { dlt.a[i] <== privkey[i]; dlt.b[i] <== order[i]; }
     dlt.out === 1;
 
-    // registration nullifier tied to the voting key
+    // refuse a private key of 0. For it the curve component outputs the placeholder (0, 0), which is not
+    // a curve point, and whose hash160 anyone could prove (tools/circuit-analysis/RESULTS.md, item A2).
+    // ECDSAPrivToPub range-checks every limb to 64 bits, so their sum is below 2^66 and cannot wrap the
+    // field, so it is 0 exactly when every limb is.
+    component kz = IsZero();
+    kz.in <== privkey[0] + privkey[1] + privkey[2] + privkey[3];
+    kz.out === 0;
+
+    // registration nullifier tied to the voting key, Poseidon(TAG_SEASONAL_REGISTRATION, Poseidon(privkey),
+    // season, contextHash). The fixed tag and the four-input width separate it from the single-tier
+    // nullifier and from the three-input members nullifier (common/purpose_tags.js, item A3).
     component kh = Poseidon(k);
     for (var i = 0; i < k; i++) kh.inputs[i] <== privkey[i];
-    component rn = Poseidon(3);
-    rn.inputs[0] <== kh.out;
-    rn.inputs[1] <== season;
-    rn.inputs[2] <== contextHash;
+    component rn = Poseidon(4);
+    rn.inputs[0] <== TAG_SEASONAL_REGISTRATION();
+    rn.inputs[1] <== kh.out;
+    rn.inputs[2] <== season;
+    rn.inputs[3] <== contextHash;
     regNullifier <== rn.out;
 }
 

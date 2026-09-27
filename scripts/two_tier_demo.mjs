@@ -1,9 +1,11 @@
 // End-to-end two-tier demo. Register once (a heavy proof of masternode control that emits
 // a member commitment), then prove membership per epoch (a cheap proof against the members
-// tree). It runs real PLONK proofs through the actual gateway verify functions, so a pass
-// means the whole two-tier flow works, not just the circuits in isolation.
+// tree). It runs a real Groth16 registration proof and a real PLONK members proof through the actual
+// gateway verify functions, so a pass means the whole two-tier flow works, not just the circuits in
+// isolation.
 //
-// Needs the registration and members proving keys in circuits/build (build them first).
+// Needs the members keys in circuits/build (scripts/fetch_keys.sh) and a Groth16 registration key set in
+// MNO_CIRCUIT_DIR, default circuits/build/dev (scripts/groth16_dev_keys.sh, DEVELOPMENT ONLY).
 // Usage: node scripts/two_tier_demo.mjs
 import * as snarkjs from "snarkjs";
 import { readFile } from "node:fs/promises";
@@ -18,6 +20,7 @@ import { releaseProvingThreads } from "../prover/proving_threads.js";
 
 const TREE_DEPTH = 16;
 const B = "circuits/build";
+const HEAVY = process.env.MNO_CIRCUIT_DIR ?? "circuits/build/dev";
 
 const priv = Uint8Array.from(Buffer.from("00".repeat(31) + "01", "hex"));
 const secret = "987654321"; // a real member draws this randomly and keeps it
@@ -55,10 +58,10 @@ const privkey = [0, 1, 2, 3].map((i) => ((d >> (64n * BigInt(i))) & mask).toStri
 // 1) REGISTRATION (heavy, once per season)
 console.log("1. registration: proving masternode control, emitting a member commitment ...");
 const tReg = Date.now();
-const reg = await snarkjs.plonk.fullProve(
+const reg = await snarkjs.groth16.fullProve(
   { privkey, pathElements: dmlPathE, pathIndices: dmlPathI, secret, root: dmlRoot, season, contextHash: ctx },
-  `${B}/mno_registration_js/mno_registration.wasm`,
-  `${B}/mno_registration.zkey`
+  `${HEAVY}/mno_registration_js/mno_registration.wasm`,
+  `${HEAVY}/mno_registration.zkey`
 );
 console.log(`   registration proof generated in ${((Date.now() - tReg) / 1000).toFixed(1)}s (heavy, once per season)`);
 
@@ -68,13 +71,13 @@ const registrationStore = new RegistrationStore(new MemoryRegistrationBackend())
 const membersTree = await MembersTree.create();
 
 const regResult = await verifyRegistration({
-  vkey: JSON.parse(await readFile(`${B}/mno_registration_vkey.json`, "utf8")),
+  vkey: JSON.parse(await readFile(`${HEAVY}/mno_registration_vkey.json`, "utf8")),
   proof: reg.proof,
   publicSignals: reg.publicSignals,
   // The engine and statement are the caller's to name, as the gateway does from its config
-  // (plonk/derive by default). The verifier refuses a registration without them (engine-mismatch), and
+  // (groth16/derive by default). The verifier refuses a registration without them (engine-mismatch), and
   // this demo, which CI does not run, went stale when that requirement was added.
-  expected: { rootStore: dmlRoots, season, contextHash: ctx, engine: "plonk", statement: "derive" },
+  expected: { rootStore: dmlRoots, season, contextHash: ctx, engine: "groth16", statement: "derive" },
   registrationStore,
   // Linear demo, no season rollover: the durable record and the tree mirror just run together.
   commit: async ({ season: s, contextHash: c, regNullifier: n, commitment, engine, statement }) => {

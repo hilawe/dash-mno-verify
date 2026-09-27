@@ -30,6 +30,32 @@ export async function loadVerificationKey(path) {
   return JSON.parse(await readFile(path, "utf8"));
 }
 
+// THE PROOF SYSTEM IS A PROPERTY OF THE VERIFICATION KEY THE GATEWAY LOADED, NEVER OF THE PROOF. The
+// two heavy circuits (single-tier admission, registration) verify under Groth16 and the members circuit
+// under PLONK, each with its own key, so the key's own `protocol` field picks the verifier. A proof
+// carries a `protocol` field too, and it is client data. A proof that names a different system than
+// the key is refused here, before any verifier runs, rather than handed to one that might misread it.
+export const SUPPORTED_PROTOCOLS = Object.freeze(["groth16", "plonk"]);
+
+export function verifyWithKey(vkey, publicSignals, proof) {
+  const protocol = vkey?.protocol;
+  if (!SUPPORTED_PROTOCOLS.includes(protocol)) throw new Error(`verification key protocol ${JSON.stringify(protocol)} is not supported`);
+  if (proof === null || typeof proof !== "object" || proof.protocol !== protocol) return Promise.resolve(false);
+  return protocol === "groth16" ? snarkjs.groth16.verify(vkey, publicSignals, proof) : snarkjs.plonk.verify(vkey, publicSignals, proof);
+}
+
+// Boot-time check that a loaded key is for the proof system its role uses. Throws with the setting to
+// fix, so the gateway refuses to start rather than refusing every proof once it is running.
+export function requireProtocol(vkey, protocol, setting, role) {
+  const got = vkey?.protocol;
+  if (got !== protocol) {
+    throw new Error(
+      `${setting} holds a ${JSON.stringify(got)} verification key, but ${role} is proved under ${protocol}. ` +
+        `Point ${setting} at the ${protocol} key for that circuit.`,
+    );
+  }
+}
+
 export function readSignals(publicSignals) {
   return {
     nullifier: publicSignals[SIGNAL_INDEX.nullifier],
@@ -56,9 +82,10 @@ export function readSignals(publicSignals) {
 // whose get() returns null (the Platform-backed store, which does not persist the account) simply
 // never re-grants, so a spent tag is already-used there.
 //
-// verifyProof is injected so the proof check can be stubbed in unit tests. It defaults to PLONK,
-// whose verification key comes from a universal trusted setup (the public Hermez Powers of Tau),
-// reused across circuits with no per-circuit ceremony.
+// verifyProof is injected so the proof check can be stubbed in unit tests. It defaults to the proof
+// system the verification key names (verifyWithKey): Groth16 for the single-tier circuit, whose key
+// comes from its own setup ceremony, and PLONK for the two-tier members circuit, whose key comes from the
+// universal Hermez Powers of Tau.
 
 // Run the proof check through the concurrency gate, treating a THROW as a failed check. The proof and
 // public signals are entirely client-supplied, so a malformed input that makes the prover library
@@ -87,7 +114,7 @@ export async function verifyMembership({
   publicSignals,
   expected,
   nullifiers,
-  verifyProof = (vk, ps, pf) => snarkjs.plonk.verify(vk, ps, pf),
+  verifyProof = verifyWithKey,
   gate = (fn) => fn(),
 }) {
   // The public signals must be canonical before any of them is read or used as a nullifier key.
@@ -413,10 +440,12 @@ export async function verifyRegistrationCore({ claims, verifyProof, expected, re
   });
 }
 
-// The PLONK-facing registration verify, backward-compatible. Decodes the five-signal array to claims,
-// then runs the engine-neutral core with the PLONK crypto check. verifyProof is injectable (defaults
-// to snarkjs PLONK) so a unit test can drive the policy pipeline without a real proof, mirroring
-// verifyMembership. The zkVM registration path (deferred with the live receipt verifier and the
+// The circuit-registration verify, for the two engines that prove the registration circuit itself:
+// groth16 (the shipping engine, its key from the registration setup ceremony) and plonk (the same
+// circuit under the universal setup). Decodes the five-signal array to claims, then runs the
+// engine-neutral core with the crypto check the verification key names. verifyProof is injectable so a
+// unit test can drive the policy pipeline without a real proof, mirroring verifyMembership. The zkVM
+// registration path (deferred with the live receipt verifier and the
 // SHA-256 root store) decodes the journal with decodeZkvmRegistrationClaims and calls
 // verifyRegistrationCore with a receipt-verifying verifyProof and the SHA-256 root store.
 export async function verifyRegistration({
@@ -427,14 +456,16 @@ export async function verifyRegistration({
   registrationStore,
   commit,
   recover,
-  verifyProof = () => snarkjs.plonk.verify(vkey, publicSignals, proof),
+  verifyProof = () => (vkey?.protocol === expected.engine ? verifyWithKey(vkey, publicSignals, proof) : false),
   gate = (fn) => fn(),
 }) {
-  // This wrapper is the PLONK engine, so it pins its own engine, and a mismatched declaration from a
-  // mis-wired dispatcher is rejected before anything is decoded or committed. Otherwise the zkVM and
-  // PLONK wrappers could each commit a record under the other's label, corrupting the durable
-  // declaration and the seasonHasEngine downgrade signal.
-  if (expected.engine !== "plonk") return { ok: false, reason: "engine-mismatch" };
+  // This wrapper serves the circuit engines only, so a zkVM declaration from a mis-wired dispatcher is
+  // rejected before anything is decoded or committed. Otherwise the zkVM and circuit wrappers could each
+  // commit a record under the other's label, corrupting the durable declaration and the seasonHasEngine
+  // downgrade signal. The default crypto check also refuses a key whose protocol is not the declared
+  // engine, so a groth16 record can never be written on a PLONK verification or the reverse. The
+  // gateway refuses to boot on that mismatch as well.
+  if (expected.engine !== "groth16" && expected.engine !== "plonk") return { ok: false, reason: "engine-mismatch" };
   const decoded = decodePlonkRegistrationClaims(publicSignals);
   if (decoded.error) return { ok: false, reason: decoded.error };
   return verifyRegistrationCore({ claims: decoded.claims, verifyProof, expected, registrationStore, commit, recover, gate });

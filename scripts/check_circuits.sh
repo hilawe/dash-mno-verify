@@ -86,9 +86,34 @@ m1_reject() {
   fi
   echo "  ok, d >= n rejected"
 }
+# A2: both key-bearing circuits must refuse a private key of 0. The input puts the leaf key 0 proves
+# into the tree with a valid path, so every other constraint holds, and the failure must be reported at
+# the key-0 constraint's own line rather than anywhere else.
+zero_reject() {
+  local circuit="$1" mk="$2" line out
+  echo "--- A2: $circuit rejects a private key of 0 ---"
+  node "$mk" "$BUILD" >/dev/null
+  node test/zero_privkey.mjs "$BUILD/input.json" "$BUILD/zero_input.json"
+  line="$(grep -n 'kz.out === 0;' "circuits/${circuit}.circom" | cut -d: -f1 || true)"
+  if [ -z "$line" ]; then
+    echo "  A2 FAILED: $circuit has no key-0 constraint (kz.out === 0)"; rm -rf "$BUILD"; exit 1
+  fi
+  if out="$(node "$BUILD/${circuit}_js/generate_witness.js" "$BUILD/${circuit}_js/${circuit}.wasm" \
+       "$BUILD/zero_input.json" "$BUILD/zero.wtns" 2>&1)"; then
+    echo "  A2 FAILED: $circuit accepted a private key of 0"; rm -rf "$BUILD"; exit 1
+  fi
+  if ! grep -q "line: ${line}\b" <<<"$out"; then
+    echo "  A2 FAILED: $circuit refused key 0, but not at the key-0 constraint (line $line):"
+    echo "$out" | sed 's/^/    /'; rm -rf "$BUILD"; exit 1
+  fi
+  echo "  ok, key 0 rejected at line $line"
+}
+
 m1_reject mno_membership   test/membership/make_input.mjs
+zero_reject mno_membership test/membership/make_input.mjs
 derivation_check mno_membership nullifier:1
 m1_reject mno_registration test/registration/make_input.mjs
+zero_reject mno_registration test/registration/make_input.mjs
 derivation_check mno_registration commitment:1 regNullifier:2
 
 rm -rf "$BUILD"

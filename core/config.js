@@ -302,12 +302,14 @@ export function buildConfig(env = process.env) {
     membersVkeyPath: env.MNO_MEMBERS_VKEY ?? "circuits/build/mno_members_vkey.json",
     seasonSeconds: intEnv(env, "MNO_SEASON_SECONDS", 90 * 24 * 3600),
 
-    // The registration engine and statement this gateway offers (two-tier). "plonk"/"derive" is the
-    // shipping default (the compiled mno_registration circuit). "zkvm" selects the RISC Zero
+    // The registration engine and statement this gateway offers (two-tier). "groth16"/"derive" is the
+    // default, the compiled mno_registration circuit under its own Groth16 setup. "plonk" proves the
+    // same circuit under the universal setup, and needs a PLONK key built for that circuit (the gateway
+    // refuses to boot when the key's protocol is not the engine). "zkvm" selects the RISC Zero
     // registration path, which needs the live receipt verifier (deferred, artifact-gated), so a zkvm
     // gateway refuses to boot until one is wired. The pair binds each (season, context) this gateway
     // seeds, and it must be a valid engine/statement combination (validated at boot).
-    registrationEngine: env.MNO_REGISTRATION_ENGINE ?? "plonk",
+    registrationEngine: env.MNO_REGISTRATION_ENGINE ?? "groth16",
     registrationStatement: env.MNO_REGISTRATION_STATEMENT ?? "derive",
 
     // Durable, season-scoped registration records for the two-tier flow. Append-only JSON lines on

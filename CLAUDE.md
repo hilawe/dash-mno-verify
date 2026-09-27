@@ -36,7 +36,8 @@ until the blockers in REVIEW_FINDINGS_dash-mno-verify_2026-06-26.md are closed.
     guard at the foot of the file. The returned handle owns the server (built, not listening), the
     timers, and the stores. `close()` gives them back, walking the same release list a failed boot
     walks. Tests drive it in-process (`test/gateway_module.test.js`) rather than spawning it.
-  - `verifier.js` the policy checks plus the PLONK proof check. `verifyMembership` and
+  - `verifier.js` the policy checks plus the proof check, in the proof system the loaded verification
+    key names (Groth16 for the two heavy circuits, PLONK for members). `verifyMembership` and
     `verifyRegistration`.
   - `stores.js` the in-memory root, nullifier, and challenge stores.
   - `registration_store.js` durable, season-scoped registration records (file or memory backend),

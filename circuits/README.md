@@ -42,9 +42,11 @@ against the generated `public.json` and keep `core/verifier.js` in sync.
 ## Compile and set up
 
 The full single-tier circuit needs circom-ecdsa, fetched as an external build dependency.
-The proving system is PLONK, so the setup is universal rather than per-circuit. It reuses the
-public Hermez Powers of Tau structured reference string across circuits, with no per-circuit
-ceremony, and is secure as long as one participant in that one ceremony was honest.
+The two heavy circuits (`mno_membership`, `mno_registration`) are proved under Groth16, which needs
+a setup ceremony per circuit on top of the public Hermez Powers of Tau (`docs/CEREMONY.md`). Until
+that ceremony runs, `scripts/groth16_dev_keys.sh` builds development-only keys. The recurring
+members circuit stays on PLONK, whose setup is the universal Hermez one with no per-circuit ceremony.
+The PLONK commands below build keys for the pre-ceremony published artifacts.
 
 ```bash
 # 1. fetch circom-ecdsa (clones to circuits/.deps, symlinks this repo's circomlib)

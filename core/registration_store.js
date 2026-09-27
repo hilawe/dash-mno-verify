@@ -31,9 +31,10 @@ import { isCanonicalField } from "../common/field.js";
 // it on the private key, the custody statement cannot, so the two produce different nullifiers for
 // the same node. Mixing them in one (season, contextHash) would let one node register twice, so a
 // bucket is bound to a single statement, declared by its first registration and enforced on every
-// later one. The engine (which proof system produced it) is recorded alongside for observability, and
-// PLONK only supports derive.
+// later one. The engine (which proof system produced it) is recorded alongside for observability. The
+// two circuit engines, groth16 and plonk, prove the same registration circuit and only support derive.
 export const ENGINE_STATEMENTS = Object.freeze({
+  groth16: Object.freeze(["derive"]),
   plonk: Object.freeze(["derive"]),
   zkvm: Object.freeze(["derive", "custody"]),
 });

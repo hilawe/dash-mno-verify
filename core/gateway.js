@@ -29,7 +29,7 @@ import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { buildConfig, MAX_SNAPSHOT_SIGS } from "./config.js";
 import { leafSetCommitment, RootWindows, NullifierStore, ChallengeStore, RateLimiter, Semaphore, loadOracle, normalizeSnapshot, allowAll } from "./stores.js";
-import { loadVerificationKey, verifyMembership, verifyRegistration, readSignals } from "./verifier.js";
+import { loadVerificationKey, requireProtocol, verifyMembership, verifyRegistration, readSignals } from "./verifier.js";
 import { SeasonMembers } from "./season.js";
 import { makeDmlRootHasher } from "./dml_root.js";
 import { shaRootFromLeaves } from "../common/dml_sha_root.js";
@@ -927,11 +927,11 @@ async function bootGateway({ config = buildConfig(process.env) } = {}, release) 
   // The zkVM registration engine needs the live receipt verifier (a pinned r0vm subprocess or a WASM
   // build), which is deferred and artifact-gated. Refuse to boot in that mode rather than run a
   // registration path whose crypto check is unconfigured (verifyZkvmRegistration would fail closed on
-  // every request anyway). The PLONK engine is the shipping default. See docs/ZKVM_INTEGRATION.md.
+  // every request anyway). The groth16 engine is the default. See docs/ZKVM_INTEGRATION.md.
   if (twoTier && config.registrationEngine === "zkvm") {
     throw new Error(
       "MNO_REGISTRATION_ENGINE=zkvm needs the RISC Zero receipt verifier, which is not wired yet. " +
-        "Use the default plonk engine; the zkVM registration path is the tracked follow-up in " +
+        "Use the default groth16 engine; the zkVM registration path is the tracked follow-up in " +
         "docs/ZKVM_INTEGRATION.md (step 5, the live STARK verifier).",
     );
   }
@@ -940,6 +940,11 @@ async function bootGateway({ config = buildConfig(process.env) } = {}, release) 
     // The two-tier + Platform-store combination is rejected up front (see the guard near the top).
     regVkey = await loadVerificationKey(config.registrationVkeyPath);
     membersVkey = await loadVerificationKey(config.membersVkeyPath);
+    // Each key must be for the proof system its role uses, checked here so a mis-wired deployment
+    // refuses to boot instead of refusing every proof. The registration key must match the engine the
+    // durable records will name, and the members circuit is PLONK under the universal setup.
+    requireProtocol(regVkey, config.registrationEngine, "MNO_REG_VKEY", `the ${config.registrationEngine} registration engine`);
+    requireProtocol(membersVkey, "plonk", "MNO_MEMBERS_VKEY", "the two-tier members circuit");
     const { RegistrationStore, FileBackend } = await import("./registration_store.js");
     registrationStore = new RegistrationStore(new FileBackend(config.registrationStorePath, SCHEDULE, config.assumeSchedule));
     await registrationStore.ready();
@@ -1019,6 +1024,9 @@ async function bootGateway({ config = buildConfig(process.env) } = {}, release) 
     }
   } else {
     vkey = await loadVerificationKey(config.verificationKeyPath);
+    // The single-tier circuit is proved under its own Groth16 setup. A PLONK key here could only be
+    // for the circuit before the key-0 rejection and the purpose tag, so it is refused.
+    requireProtocol(vkey, "groth16", "MNO_VKEY", "the single-tier admission circuit");
   }
 
   await refreshRoots();

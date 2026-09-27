@@ -284,8 +284,10 @@ signals.
   leaves the leaf out rather than refusing the snapshot, because Dash Core accepts any non-null voting key
   id and a refusal would let that one owner stop the oracle. `KEY_ZERO_LEAF` in `common/dml.js` names the
   value, `test/hash160.test.js` derives it independently, and `scripts/check_circuits.sh` runs the real
-  hash160 circuit on (0, 0) in CI and checks it emits the same value. A circuit constraint
-  `privkey != 0` at the next rebuild would close it at the source.
+  hash160 circuit on (0, 0) in CI and checks it emits the same value. The Groth16 candidate closes it
+  at the source as well: both heavy circuits refuse key 0 (an `IsZero` on the sum of the four
+  range-checked limbs, which cannot wrap the field), and CI checks a key-0 witness with a valid path is
+  refused at that constraint's own line. The oracle exclusion stays.
 - A3, the single-tier nullifier Poseidon(Poseidon(privkey), epoch, context) and the registration nullifier
   Poseidon(Poseidon(privkey), season, context) share one layout, and `contextHash` does not record the mode,
   so the two are equal when an epoch number equals a season number for one context. Under the default
@@ -295,6 +297,11 @@ signals.
   stores could then tell that the same unnamed key used both. Adding the mode to `contextHash` separates
   them with no circuit change, at the cost of a context cutover at a season boundary. A domain tag inside
   the circuits does the same at the next rebuild.
+  RESOLVED IN THE GROTH16 CANDIDATE by fixed purpose tags: the single-tier and registration nullifiers are
+  now Poseidon(tag, keyHash, period, contextHash), a four-input Poseidon, so they differ from each other
+  by the tag and from the three-input members nullifier by arity. That also closes a case this item had
+  not named. The members circuit accepts any secret, so a member who chose secret = keyHash reproduced the
+  single-tier nullifier exactly (`common/purpose_tags.js`, `test/purpose_tags.test.js`).
 
 ### What this does not settle
 

@@ -1,5 +1,10 @@
 # Distributing the proving key
 
+THE HEAVY CIRCUITS ARE MOVING TO GROTH16. The single-tier and registration circuits are proved under
+Groth16 once their setup ceremony has run (`docs/CEREMONY.md`), with proving keys of about 120 MB. This
+page describes the published PLONK keys for the circuits before that change, which stay in place until
+the ceremony's keys are published.
+
 The full membership circuit needs three artifacts to make a proof: the circuit wasm
 (witness generator), the PLONK proving key (`mno_membership.zkey`, about 2.3 GB), and the
 verification key (about 2 KB). Only the verification key is in the repo. This page explains
