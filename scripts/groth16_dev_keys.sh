@@ -60,7 +60,10 @@ for c in "${CIRCUITS[@]}"; do
     --name="DEV ONLY, not a ceremony contribution" -e="$(od -An -tx1 -N64 /dev/urandom | tr -d ' \n')" >/dev/null
   rm -f "$OUT/${c}_0000.zkey"
   "$SNARKJS" zkey export verificationkey "$OUT/$c.zkey" "$OUT/${c}_vkey.json" >/dev/null
-  echo "    $OUT/$c.zkey and $OUT/${c}_vkey.json (DEV ONLY)"
+  # Mark the key, so the gateway refuses it unless MNO_ALLOW_DEV_KEYS=1 (core/verifier.js,
+  # requireNotDevKey). Deleting the mark by hand defeats this. It guards against an accident, not intent.
+  node -e 'const fs=require("fs"),p=process.argv[1],k=JSON.parse(fs.readFileSync(p,"utf8"));k.devOnly=true;fs.writeFileSync(p,JSON.stringify(k,null,1))' "$OUT/${c}_vkey.json"
+  echo "    $OUT/$c.zkey and $OUT/${c}_vkey.json (DEV ONLY, marked devOnly)"
 done
 
 echo

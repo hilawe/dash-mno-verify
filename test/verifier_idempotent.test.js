@@ -162,7 +162,7 @@ test("verifyRegistration rejects a non-canonical public signal before the store 
     vkey: {},
     proof: {},
     publicSignals: ["1", "01", "3", "4", "5"],
-    expected: { rootStore: { isRecent: () => true }, season: "3", contextHash: "5", engine: "plonk", statement: "derive" },
+    expected: { rootStore: { isRecent: () => true }, season: "3", contextHash: "5", engine: "groth16", statement: "derive" },
     registrationStore,
     commit,
   });
@@ -329,7 +329,7 @@ const regArgs = (over = {}) => ({
   verifyProof: () => true,
   registrationStore: { has: async () => false },
   commit: async () => ({ ok: true, index: 0, membersRoot: "r", size: 1 }),
-  expected: { rootStore: { isRecent: () => true }, season: "4", contextHash: "5", engine: "plonk", statement: "derive" },
+  expected: { rootStore: { isRecent: () => true }, season: "4", contextHash: "5", engine: "groth16", statement: "derive" },
   ...over,
 });
 
@@ -343,7 +343,7 @@ test("a root that ages out DURING the registration proof does not buy a season",
       rootStore: { isRecent: () => true },
       season: "4",
       contextHash: "5",
-      engine: "plonk",
+      engine: "groth16",
       statement: "derive",
       // Eligible when asked before the proof, no longer eligible when asked after it.
       rootEligible: () => !proved,
@@ -360,7 +360,7 @@ test("a tighter registration anchor rule refuses a root the membership window st
       rootStore: { isRecent: () => true }, // the membership window is happy
       season: "4",
       contextHash: "5",
-      engine: "plonk",
+      engine: "groth16",
       statement: "derive",
       rootEligible: () => false, // the registration rule is not
     },
@@ -375,7 +375,7 @@ test("an eligible root still registers, so the anchor rule has an exit", async (
       rootStore: { isRecent: () => true },
       season: "4",
       contextHash: "5",
-      engine: "plonk",
+      engine: "groth16",
       statement: "derive",
       rootEligible: () => true,
     },
@@ -387,7 +387,7 @@ test("a caller supplying no anchor rule falls back to the membership window exac
   const r = await verifyRegistration(regArgs());
   assert.equal(r.ok, true);
   const stale = await verifyRegistration(regArgs({
-    expected: { rootStore: { isRecent: () => false }, season: "4", contextHash: "5", engine: "plonk", statement: "derive" },
+    expected: { rootStore: { isRecent: () => false }, season: "4", contextHash: "5", engine: "groth16", statement: "derive" },
   }));
   assert.equal(stale.reason, "stale-or-unknown-root");
 });
@@ -401,7 +401,7 @@ test("the anchor rule is ADDITIONAL to the window, never a replacement for it", 
       rootStore: { isRecent: () => false }, // the window says no
       season: "4",
       contextHash: "5",
-      engine: "plonk",
+      engine: "groth16",
       statement: "derive",
       rootEligible: () => true, // and the tighter rule says yes
     },

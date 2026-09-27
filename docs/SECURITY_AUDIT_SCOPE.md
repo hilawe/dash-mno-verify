@@ -51,8 +51,9 @@ auditor can locate in the code.
    over a root that commits to the leaves. (`core/gateway.js` snapshot validation, `oracle/`.)
 6. TRUSTED SETUP. Groth16 for the two heavy circuits, with a per-circuit phase two run as in
    `docs/CEREMONY.md`, and PLONK for the members circuit, both over the public Hermez Powers of Tau, are
-   used correctly, and
-   its security rests only on the stated one-honest-participant assumption of that universal ceremony.
+   used correctly. Soundness rests on two one-honest-participant assumptions: one for the universal Hermez
+   ceremony, which all three circuits share, and one for each heavy circuit's own phase two, which needs at
+   least one of its contributors to have discarded their randomness.
 
 ## Audit targets, in priority order
 

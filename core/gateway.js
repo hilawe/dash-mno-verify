@@ -29,7 +29,7 @@ import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { buildConfig, MAX_SNAPSHOT_SIGS } from "./config.js";
 import { leafSetCommitment, RootWindows, NullifierStore, ChallengeStore, RateLimiter, Semaphore, loadOracle, normalizeSnapshot, allowAll } from "./stores.js";
-import { loadVerificationKey, requireProtocol, verifyMembership, verifyRegistration, readSignals } from "./verifier.js";
+import { loadVerificationKey, requireProtocol, requireNotDevKey, verifyMembership, verifyRegistration, readSignals } from "./verifier.js";
 import { SeasonMembers } from "./season.js";
 import { makeDmlRootHasher } from "./dml_root.js";
 import { shaRootFromLeaves } from "../common/dml_sha_root.js";
@@ -945,6 +945,7 @@ async function bootGateway({ config = buildConfig(process.env) } = {}, release) 
     // durable records will name, and the members circuit is PLONK under the universal setup.
     requireProtocol(regVkey, config.registrationEngine, "MNO_REG_VKEY", `the ${config.registrationEngine} registration engine`);
     requireProtocol(membersVkey, "plonk", "MNO_MEMBERS_VKEY", "the two-tier members circuit");
+    requireNotDevKey(regVkey, "MNO_REG_VKEY", config.allowDevKeys);
     const { RegistrationStore, FileBackend } = await import("./registration_store.js");
     registrationStore = new RegistrationStore(new FileBackend(config.registrationStorePath, SCHEDULE, config.assumeSchedule));
     await registrationStore.ready();
@@ -1027,6 +1028,7 @@ async function bootGateway({ config = buildConfig(process.env) } = {}, release) 
     // The single-tier circuit is proved under its own Groth16 setup. A PLONK key here could only be
     // for the circuit before the key-0 rejection and the purpose tag, so it is refused.
     requireProtocol(vkey, "groth16", "MNO_VKEY", "the single-tier admission circuit");
+    requireNotDevKey(vkey, "MNO_VKEY", config.allowDevKeys);
   }
 
   await refreshRoots();

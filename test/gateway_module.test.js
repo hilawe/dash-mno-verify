@@ -213,6 +213,20 @@ test("a boot refused for a key of the wrong proof system releases the store it h
   }
 });
 
+test("a development-only key is refused at boot unless the gateway opts in", async () => {
+  // scripts/groth16_dev_keys.sh marks its keys devOnly, since their setup had one local contribution.
+  const { dir, env } = await envWithSnapshot();
+  const devVkey = join(dir, "dev_vkey.json");
+  await writeFile(devVkey, JSON.stringify({ ...PROTOCOL_VECTORS.groth16.vkey, devOnly: true }));
+  try {
+    await assert.rejects(createGateway({ config: buildConfig({ ...env, MNO_VKEY: devVkey }) }), /MNO_VKEY is a development-only key/);
+    const gateway = await createGateway({ config: buildConfig({ ...env, MNO_VKEY: devVkey, MNO_ALLOW_DEV_KEYS: "1" }) });
+    await gateway.close();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("close() is idempotent against the durable store, not only the in-memory one", async () => {
   // The first version of this contract was written and tested against MNO_STORE=memory, whose store
   // has no close() at all, so the second call was a no-op for a reason that had nothing to do with

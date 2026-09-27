@@ -8,8 +8,10 @@
 //
 //   CIRCOM=/path/to/circom-2.2.3 node scripts/freeze_candidate.mjs [--check]
 //
-// With --check it writes nothing, and exits nonzero if a fresh compile or any pinned value differs from
-// the committed FREEZE.json. That is the check a contributor, or CI, runs against the freeze.
+// With --check it writes no freeze file, and exits nonzero if a fresh compile or any pinned value differs
+// from the committed FREEZE.json, or if the compiler it ran is not one of the frozen binaries. That is the
+// check a contributor, or CI, runs against the freeze. Like every build here it still fetches the pinned
+// circom-ecdsa into circuits/.deps (scripts/setup_circom_ecdsa.sh).
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -121,6 +123,13 @@ if (CHECK) {
   }
   if (frozen.compiler?.version !== freeze.compiler.version) {
     console.error(`MISMATCH compiler version: frozen ${frozen.compiler?.version}, now ${freeze.compiler.version}`);
+    bad++;
+  }
+  // The compiler that produced these hashes must be one the freeze names, not merely the same version
+  // string, which any build of the source can print.
+  const allowedBinaries = [frozen.compiler?.binarySha256, ...Object.values(frozen.compiler?.releaseBinaries ?? {})].filter(Boolean);
+  if (!allowedBinaries.includes(freeze.compiler.binarySha256)) {
+    console.error(`MISMATCH compiler binary: ${circomPath} is ${freeze.compiler.binarySha256}, which the freeze does not name`);
     bad++;
   }
   if (bad) process.exit(1);

@@ -56,6 +56,19 @@ export function requireProtocol(vkey, protocol, setting, role) {
   }
 }
 
+// A key that scripts/groth16_dev_keys.sh built carries devOnly: true. Its setup has one contribution from
+// the machine that built it, so that machine can forge proofs it accepts, and the gateway refuses it unless
+// the operator opts in for development. The mark can be deleted by hand, so this stops an accident, not a
+// deliberate misuse.
+export function requireNotDevKey(vkey, setting, allowDevKeys) {
+  if (vkey?.devOnly === true && allowDevKeys !== true) {
+    throw new Error(
+      `${setting} is a development-only key (devOnly), whose setup had a single local contribution. It is ` +
+        `refused outside development. Set MNO_ALLOW_DEV_KEYS=1 only on a development gateway.`,
+    );
+  }
+}
+
 export function readSignals(publicSignals) {
   return {
     nullifier: publicSignals[SIGNAL_INDEX.nullifier],
@@ -440,10 +453,14 @@ export async function verifyRegistrationCore({ claims, verifyProof, expected, re
   });
 }
 
-// The circuit-registration verify, for the two engines that prove the registration circuit itself:
-// groth16 (the shipping engine, its key from the registration setup ceremony) and plonk (the same
-// circuit under the universal setup). Decodes the five-signal array to claims, then runs the
-// engine-neutral core with the crypto check the verification key names. verifyProof is injectable so a
+// The circuit-registration verify, the groth16 engine: the registration circuit under its own setup
+// ceremony. Decodes the five-signal array to claims, then runs the engine-neutral core with the Groth16
+// crypto check.
+//
+// THE PLONK REGISTRATION ENGINE IS RETIRED. It verified the registration circuit before the key-0
+// rejection and the purpose tag, and the committed PLONK key still verifies that older circuit, so
+// accepting it here would let a pre-candidate proof register without either fix. A review found exactly
+// that path when this wrapper still accepted plonk. The name stays valid in the durable record format. verifyProof is injectable so a
 // unit test can drive the policy pipeline without a real proof, mirroring verifyMembership. The zkVM
 // registration path (deferred with the live receipt verifier and the
 // SHA-256 root store) decodes the journal with decodeZkvmRegistrationClaims and calls
@@ -456,16 +473,15 @@ export async function verifyRegistration({
   registrationStore,
   commit,
   recover,
-  verifyProof = () => (vkey?.protocol === expected.engine ? verifyWithKey(vkey, publicSignals, proof) : false),
+  verifyProof = () => (vkey?.protocol === "groth16" ? verifyWithKey(vkey, publicSignals, proof) : false),
   gate = (fn) => fn(),
 }) {
-  // This wrapper serves the circuit engines only, so a zkVM declaration from a mis-wired dispatcher is
-  // rejected before anything is decoded or committed. Otherwise the zkVM and circuit wrappers could each
-  // commit a record under the other's label, corrupting the durable declaration and the seasonHasEngine
-  // downgrade signal. The default crypto check also refuses a key whose protocol is not the declared
-  // engine, so a groth16 record can never be written on a PLONK verification or the reverse. The
-  // gateway refuses to boot on that mismatch as well.
-  if (expected.engine !== "groth16" && expected.engine !== "plonk") return { ok: false, reason: "engine-mismatch" };
+  // This wrapper is the groth16 engine, so any other declaration from a mis-wired dispatcher is rejected
+  // before anything is decoded or committed. Otherwise the zkVM and circuit wrappers could each commit a
+  // record under the other's label, corrupting the durable declaration and the seasonHasEngine downgrade
+  // signal. The default crypto check also refuses any key that is not Groth16, so a groth16 record is never
+  // written on another system's verification. The gateway refuses to boot on either mismatch as well.
+  if (expected.engine !== "groth16") return { ok: false, reason: "engine-mismatch" };
   const decoded = decodePlonkRegistrationClaims(publicSignals);
   if (decoded.error) return { ok: false, reason: decoded.error };
   return verifyRegistrationCore({ claims: decoded.claims, verifyProof, expected, registrationStore, commit, recover, gate });

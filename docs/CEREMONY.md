@@ -50,8 +50,15 @@ with the pinned compiler, and compare the r1cs hashes.
   contribution. It makes the final key independent of the last contributor's timing. It does not replace
   a contributor, because anyone can recompute it.
 
-The beacon is the hash of the Dash mainnet block at a height announced before the first contribution,
-far enough ahead that the last contribution lands before that block is mined.
+THE BEACON POLICY IS ANNOUNCED BEFORE THE FIRST CONTRIBUTION, and fixed from then on:
+
+- the source, the Dash mainnet block hash at a stated height H;
+- the finality rule, that the value is taken only once block H carries a ChainLock;
+- the deadline, a time for the last contribution to each setup that falls before block H is expected;
+- the iteration exponent, 10.
+
+A contribution arriving after the deadline is not used. If block H arrives before the last contribution,
+the event announces a new height and keeps every contribution already verified.
 
 ## The procedure, per circuit
 
@@ -80,16 +87,28 @@ circuit name. Every command is snarkjs 0.7.6 from this repository's `node_module
    send `C_i.zkey` to the coordinator, then destroy whatever could reconstruct their randomness: the
    typed entropy, shell history, and any scratch copy of the files.
 
-3. After the last contribution and once the announced block exists, the coordinator applies the beacon:
+3. After the last contribution and once block H carries a ChainLock, the coordinator applies the beacon:
 
-       snarkjs zkey beacon C_last.zkey C_final.zkey <block hash as hex> 10 -n="Dash block <height>"
+       snarkjs zkey beacon C_last.zkey C_final.zkey <hash of block H as hex> 10 -n="Dash block H"
 
 4. Anyone verifies the final key:
 
        snarkjs zkey verify C.r1cs powersOfTau28_hez_final_20.ptau C_final.zkey
 
-   The output lists every contribution with its hash and the beacon. Each contributor confirms their own
-   hash appears in the chain as they published it. A missing or different hash voids the setup.
+   `ZKey Ok!` ALONE IS NOT ENOUGH. It confirms the key is derived from the frozen circuit and phase one,
+   and it prints the chain, but it accepts a key with no beacon and a beacon of any value. The verifier
+   also checks, in the printed chain:
+
+   - the newest entry is the beacon, named "Dash block H", with `Beacon generator` equal to the hash of
+     block H and `Beacon iterations Exp: 10`, and nothing follows it;
+   - the hash of block H was obtained independently of the coordinator, from the verifier's own Dash
+     node (`dash-cli getblockhash H`, with the block's ChainLock confirmed) or from two unrelated block
+     explorers that agree;
+   - every contributor's published contribution hash appears in the chain, and each contributor confirms
+     their own.
+
+   A missing beacon, a different beacon value or exponent, an entry after the beacon, or a missing or
+   different contribution hash voids that setup.
 
 5. The coordinator exports the verification key:
 

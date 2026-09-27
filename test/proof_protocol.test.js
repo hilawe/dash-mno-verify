@@ -46,26 +46,51 @@ test("the boot check refuses a key for the wrong proof system and names the sett
   assert.throws(() => requireProtocol(V.groth16.vkey, "plonk", "MNO_MEMBERS_VKEY", "the two-tier members circuit"), /MNO_MEMBERS_VKEY/);
 });
 
-test("a registration whose key does not match its declared engine is refused and writes no record", async () => {
-  // Five canonical signals, so decoding succeeds and the policy checks pass. The refusal can come from
-  // the key-and-engine binding or from the proof-protocol guard, which this vector cannot tell apart.
-  // What keeps such a key from being loaded at all is the boot check, tested above.
-  const signals = ["1", "2", "3", "7", "5"]; // commitment, regNullifier, root, season, contextHash
-  let committed = false;
-  const run = (engine, vkey) =>
-    verifyRegistration({
-      vkey,
-      proof: V.groth16.proof,
-      publicSignals: signals,
-      expected: { rootStore: { isRecent: () => true }, season: "7", contextHash: "5", engine, statement: "derive" },
-      registrationStore: { has: async () => false },
-      commit: async () => {
-        committed = true;
-        return { ok: true };
-      },
-    });
-  assert.deepEqual(await run("groth16", V.plonk.vkey), { ok: false, reason: "invalid-proof" });
-  assert.deepEqual(await run("plonk", V.groth16.vkey), { ok: false, reason: "invalid-proof" });
-  assert.deepEqual(await run("zkvm", V.groth16.vkey), { ok: false, reason: "engine-mismatch" });
-  assert.equal(committed, false);
+test("a valid proof relabeled as another system is refused even under its own key", async () => {
+  // The only thing refusing this is the proof-protocol guard: snarkjs's Groth16 verifier does not read
+  // the label, and without the guard this proof verifies.
+  const relabeled = { ...clone(V.groth16.proof), protocol: "plonk" };
+  assert.equal(await accepted(V.groth16.vkey, V.groth16.publicSignals, relabeled), false);
+});
+
+// The registration path, driven with real proofs of five_signals.circom, which has the registration
+// circuit's public-signal shape, so every policy check passes and the verdict comes from the crypto check.
+const F5 = V.five;
+function register({ engine, vkey, proof, publicSignals }) {
+  const committed = [];
+  const result = verifyRegistration({
+    vkey,
+    proof,
+    publicSignals,
+    expected: { rootStore: { isRecent: () => true }, season: "7", contextHash: "5", engine, statement: "derive" },
+    registrationStore: { has: async () => false },
+    commit: async (record) => {
+      committed.push(record);
+      return { ok: true };
+    },
+  });
+  return result.then((r) => ({ r, committed }));
+}
+
+test("contrary: a valid Groth16 registration-shaped proof under a Groth16 key registers under groth16", async () => {
+  const { r, committed } = await register({ engine: "groth16", ...F5.groth16 });
+  assert.deepEqual(r, { ok: true });
+  assert.equal(committed.length, 1);
+  assert.equal(committed[0].engine, "groth16");
+});
+
+test("a valid PLONK proof under its own PLONK key is refused by the groth16 registration path, and nothing is written", async () => {
+  // The proof and key agree with each other, so the proof-protocol guard passes them and PLONK would
+  // verify them. Only the binding of the registration path to Groth16 keys refuses it.
+  const { r, committed } = await register({ engine: "groth16", ...F5.plonk });
+  assert.deepEqual(r, { ok: false, reason: "invalid-proof" });
+  assert.equal(committed.length, 0);
+});
+
+test("the retired plonk engine and the zkvm engine are refused by the circuit registration path before any check", async () => {
+  for (const engine of ["plonk", "zkvm"]) {
+    const { r, committed } = await register({ engine, ...F5.plonk });
+    assert.deepEqual(r, { ok: false, reason: "engine-mismatch" }, engine);
+    assert.equal(committed.length, 0);
+  }
 });

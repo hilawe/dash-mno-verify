@@ -102,6 +102,8 @@ async function withGateway(dir, env, fn) {
     MNO_NULLIFIER_PATH: join(dir, "nullifiers.sqlite"),
     MNO_TIME_MARKS_PATH: join(dir, "time_marks.json"),
     MNO_REG_PATH: join(dir, "registrations.jsonl"),
+    // The heavy keys here are development keys, which a gateway refuses unless it opts in.
+    MNO_ALLOW_DEV_KEYS: "1",
     ...env,
   });
   const gateway = await createGateway({ config });
