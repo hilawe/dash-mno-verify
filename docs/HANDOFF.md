@@ -76,6 +76,28 @@ The analogous global policy is prepared but remains pending explicit approval af
 review rejected its cross-project scope. Repository-root instructions were not edited.
 
 - Repair season-capped access and registration-before-challenge as one admission unit.
+
+  UNIT DONE (2026-09-27), F1 plus F2. A two-tier grant now expires at the earlier of its epoch end and
+  its season end (`grantExpiresAt` in `common/index.js`, used by `core/gateway.js`), and single-tier is
+  unchanged. The shared prover instructions put registration, which needs no challenge, before the
+  challenge-bound proof, and pass the key as `--voting-key-file`. `/v1/challenge` reports
+  `challengeExpiresAt`, capped at the epoch and season end since verify refuses a rolled-over period,
+  and the Discord reply shows it. The challenge lifetime defaults to 600 s in two-tier and 1800 s in
+  single-tier (`MNO_CHALLENGE_TTL` overrides). Evidence: `scripts/check_two_tier_expiry.mjs`, now in
+  the circuits CI job, runs a real gateway, a real `two_tier.js prove`, and a real verify. 120 s
+  before a season boundary the grant ends at the season end (1804032000, not the epoch end
+  1804118400), and ten days into a season it ends at the epoch end. With the old expression put back,
+  the boundary case fails. One execution review by a different model family (APPROVE-WITH-FIXES, three
+  minors, all folded) and one focused confirmation (APPROVE). Its sandbox could not open sockets, so
+  the socket tests and the real-proof check were run outside it, and CI runs them on Ubuntu.
+  Deployment: no live two-tier gateway exists. One upgraded across this change keeps its old grants,
+  which can outlive a season by up to one epoch, as `docs/DEPLOY.md` says.
+
+  Two things this unit surfaced, not fixed here. The registration-root age limit (900 s) against a
+  measured 600 to 782 s registration is a thin margin, and widening it widens a departed node's grace,
+  which is an owner decision (the comment in `core/config.js` now says so). And any in-process user
+  of the gateway that verifies a real proof must release snarkjs's threads to exit, which the new
+  check does.
 - Add bounded adapter downloads and correct misleading exclusion and raw-key instructions.
 - Improve local paths and circuit-specific downloads, then measure the supported member workflow.
 - Decide whether a per-circuit ceremony is acceptable before commissioning another engine experiment.
