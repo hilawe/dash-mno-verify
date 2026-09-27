@@ -122,6 +122,16 @@ review rejected its cross-project scope. Repository-root instructions were not e
 - Improve local paths and circuit-specific downloads, then measure the supported member workflow.
 - Decide whether a per-circuit ceremony is acceptable before commissioning another engine experiment.
 
+  EXPERIMENT DONE (2026-09-27), Groth16 feasibility for registration. It PASSED the bar set before
+  the run. On the crono box at 3 CPUs, the registration proof took 77.0 s and 64.8 s with a cgroup
+  peak of 1.51 and 1.44 GiB inside a 4 GiB cap, against PLONK's 782 s and 7.37 GiB. The key is
+  121,709,176 bytes against 2,283,307,972. The proof verified, matched the independent derivations,
+  and was rejected with its root altered. The benchmark-only key had no ceremony and was deleted from
+  both machines, and nothing of crono's was paused. Full record and limits in
+  `docs/REDUCING_PROVING_COST.md`, "Groth16 on the existing registration circuit". The next decision
+  is the owner's, whether a circuit-specific ceremony and a specialist circuit review are acceptable.
+  Migration is not authorized.
+
 ## SUPERSEDED, 2026-09-25 (re-entry after six idle weeks, stale state corrected, a testnet VPS identified). Superseded by the 2026-09-27 section above
 
 STATE. `main` was at `5016a79` (CI green 2026-08-15) when this session started. The first handoff

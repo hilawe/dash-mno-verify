@@ -256,6 +256,38 @@ caveats keep the claim from being oversold.
   cost is a non-JavaScript verifier component in the gateway, pinned by checksum. See the receipt
   section of `docs/ZKVM_INTEGRATION.md`.)
 
+## Groth16 on the existing registration circuit, measured 2026-09-27
+
+The cheapest candidate turned out to be the existing circuit under a different proof system. Groth16
+reuses `mno_registration.r1cs` and its witness generator unchanged, so the statement, the nullifier,
+and the key custody are exactly those of the shipping PLONK registration. One experiment, one
+baseline, one candidate, on the crono testnet server (6 vCPU, 12 GB), each proof in a container
+capped at 3 CPUs, with a synthetic voting key and tree from `test/registration/make_input.mjs`.
+
+| | PLONK (baseline) | Groth16 (candidate) |
+| --- | ---: | ---: |
+| Registration proving time | 782 s | 77.0 s and 64.8 s (two runs) |
+| Peak memory, container cgroup (includes page cache) | 7.37 GiB, inside a 7.5 GB cap | 1.51 and 1.44 GiB, inside a 4 GiB cap |
+| Proving key a member downloads | 2,283,307,972 bytes | 121,709,176 bytes |
+| Proof size | about 2.9 KB | 801 bytes |
+
+The Groth16 proof verified, its commitment and registration nullifier matched the independent
+derivations, and the same proof with its public root altered was rejected. It met the acceptance bar
+set before the run (under two minutes and under 4 GiB, with the accept and reject checks).
+
+What it does not establish. The PLONK baseline is the real registration run of 2026-09-26 through
+`prover/two_tier.js`, which includes fetching the list and posting to the gateway, while the Groth16
+runs are the snarkjs command alone, so the ratio is approximate rather than a controlled comparison.
+The Groth16 key had NO phase-two contribution. It was a benchmark artifact, deleted afterwards, and
+must never be deployed. One 6-vCPU server is not a statement about every masternode host.
+
+What deploying it would require, none of which is authorized. A circuit-specific phase-two setup
+ceremony, since Groth16 cannot reuse the universal PLONK setup, held after the circuit is frozen and
+reviewed, because any change to its constraints needs a new ceremony (gateway and adapter changes do
+not). A new registration engine in the gateway with its own verification key and records. And it
+leaves the circuit's own assurance question where it was, since `circom-ecdsa` is unaudited either
+way.
+
 ## Phase 0, the ablation-first benchmark
 
 Before committing to any rewrite, run one competitive benchmark, on the worst-case masternode hardware
