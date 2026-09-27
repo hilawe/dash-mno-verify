@@ -304,6 +304,18 @@ signals.
 - The operational advice stands. Do not gate anything of real value, keep the anonymity set large, and
   keep grants capped.
 
+### Review
+
+One review with repository access re-derived the bounds and the adder algebra, refuted two claims that
+had been worded wider than the evidence (both corrected above), and confirmed that key 0 is accepted by
+both full circuits. Two further reviews, reading the inlined source without repository access, confirmed
+all five claims put to them and found no witness that gives an output other than `privkey * G` for a key
+in [1, n). One of those restated the cubic constraint incorrectly, which checking on 200 random values
+showed, but its conclusion rests only on the constraint being linear in x3 with coefficient (x1 - x2)^2,
+which holds for the real constraint. The other argued that key 0 matters only through a HASH160 preimage,
+which misses that a masternode owner sets the voting key id directly, so item A2 stands as written. All
+three are readings and checked arithmetic, not machine-checked proofs.
+
 ## How to reproduce
 
     bash tools/circuit-analysis/run.sh output/circomspect.txt         # static pass

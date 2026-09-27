@@ -162,8 +162,11 @@ review rejected its cross-project scope. Repository-root instructions were not e
   - A3, the single-tier and registration nullifiers share a layout and can coincide when an epoch number
     equals a season number for one context. Unreachable under the default schedule (epoch 2960 against
     season 230 today).
-  Two no-folder review packets for the other model families are in `~/Downloads/`
-  (`*-nofolder_dash-mno-verify_circuit-assessment_2026-09-27.md`) and need pasting by the owner. They cannot close anything, and a real defect from either reopens the unit.
+  Both no-folder packets (`~/Downloads/*-nofolder_dash-mno-verify_circuit-assessment_2026-09-27.md`)
+  came back SOUND-AS-CHECKED on all five claims, so four model families agree. One restated the cubic
+  constraint wrongly (checked on 200 random values), without effect on its conclusion. The other argued
+  A2 needs a HASH160 preimage, missing that an owner sets the voting key id directly, so A2 stands.
+  Nothing reopens the unit. No-folder verdicts cannot close a finding, and none was open.
 
   What forced rework this session (feeds `docs/PRECOMMIT_ADOPTION.md`, claim width):
   - Two claims were written wider than the evidence ("never receives two points with the same x", "the
