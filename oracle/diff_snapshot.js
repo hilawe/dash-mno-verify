@@ -56,7 +56,7 @@
 // deterministic and every honest reader reproduces either one, so the tree here is well defined, but
 // a reader who assumes the leaf index matches the position in the DIP4 commitment gets a different
 // index for nearly every member. The membership proof does not depend on the two agreeing.
-import { votingAddressToLeaf } from "../common/dml.js";
+import { KEY_ZERO_LEAF, votingAddressToLeaf } from "../common/dml.js";
 import { verifyDmlCommitment } from "./dml_commitment.js";
 import { blockHashFromHeader } from "../common/x11/index.js";
 import { meetsProofOfWork } from "./proof_of_work.js";
@@ -290,21 +290,31 @@ export async function buildDiffSnapshot({
   //    strings by the boundary above, so the comparison is total.
   valid.sort((a, b) => (a.proRegTxHash < b.proRegTxHash ? -1 : a.proRegTxHash > b.proRegTxHash ? 1 : 0));
 
-  const realLeaves = valid.map((m) => {
+  const realLeaves = [];
+  for (const m of valid) {
     const leaf = votingAddressToLeaf(m.votingAddress);
     // The empty-leaf value pads unused slots, so a real leaf equal to it would vanish from the
     // inclusion boundary. Unreachable for an honest hash160, so it means corrupted or crafted input.
+    // Dash Core also refuses a null voting key id (bad-protx-key-null), so a valid chain never gets here.
     if (leaf === 0n) {
       throw new Error(`oracle: voting address for ${m.proRegTxHash} decodes to the empty-leaf value`);
     }
-    return leaf;
-  });
+    // Anyone can prove this leaf with a private key of 0 (common/dml.js, KEY_ZERO_LEAF), so it is left
+    // out. Left out rather than refused, because Dash Core lets an owner set any non-null voting key
+    // id, and a refusal would let that one owner stop every read. The commitment check above ran over
+    // the full list, so leaving a leaf out here does not touch it.
+    if (leaf === KEY_ZERO_LEAF) {
+      log(`[oracle] leaving ${m.proRegTxHash} out of the tree: its voting key id is the key-0 leaf, provable without a key`);
+      continue;
+    }
+    realLeaves.push(leaf);
+  }
 
   const rootFromLeaves = await makeDmlRootHasher(depth);
   const shaRootFromKeyIds = makeShaDmlRootHasher(depth);
   const leaves = realLeaves.map((x) => x.toString());
 
-  log(`[oracle] chainlocked height ${lockedHeight}, ${leaves.length} valid nodes, block-bound read`);
+  log(`[oracle] chainlocked height ${lockedHeight}, ${leaves.length} leaves from ${valid.length} valid nodes, block-bound read`);
 
   return {
     // v3: a block-bound, ChainLock-gated read ordered by proRegTxHash. The version exists because the

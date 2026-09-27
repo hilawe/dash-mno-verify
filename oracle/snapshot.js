@@ -2,7 +2,7 @@
 // logic is unit-testable. `call(method, params)` is injected, so a test can drive the
 // height/list race and the CLI can pass either dash-cli or JSON-RPC without this module
 // knowing which.
-import { votingAddressToLeaf } from "../common/dml.js";
+import { KEY_ZERO_LEAF, votingAddressToLeaf } from "../common/dml.js";
 import { makeDmlRootHasher } from "../common/dml_root.js";
 import { makeShaDmlRootHasher, leafToKeyId } from "../common/dml_sha_root.js";
 
@@ -112,14 +112,22 @@ export async function buildSnapshot({
   // total and the order is canonical.
   const entries = all.filter(([, m]) => m.status === "ENABLED");
   entries.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-  const realLeaves = entries.map(([key, m]) => {
+  const realLeaves = [];
+  for (const [key, m] of entries) {
     const leaf = votingAddressToLeaf(m.votingaddress);
     // The empty-leaf value pads the unused tree slots, so a real leaf equal to it would vanish
     // from the inclusion boundary. Unreachable for an honest hash160 (probability 2^-160), so
     // hitting it means corrupted or crafted input, and the oracle refuses rather than publishes.
     if (leaf === 0n) throw new Error(`oracle: voting address for ${key} decodes to the empty-leaf value`);
-    return leaf;
-  });
+    // Anyone can prove this leaf with a private key of 0 (common/dml.js, KEY_ZERO_LEAF), so it is left
+    // out. Left out rather than refused, because Dash Core lets an owner set any non-null voting key
+    // id, and a refusal would let that one owner stop every snapshot.
+    if (leaf === KEY_ZERO_LEAF) {
+      log(`[oracle] leaving ${key} out of the tree: its voting key id is the key-0 leaf, provable without a key`);
+      continue;
+    }
+    realLeaves.push(leaf);
+  }
 
   // Two roots over the SAME ordered leaves. The Poseidon root is the full-pad build (depth `depth`,
   // empty slots 0, Poseidon(2) bottom up; test/dml_root.test.js pins the equivalence). The SHA-256

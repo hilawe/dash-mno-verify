@@ -57,7 +57,7 @@ npm run oracle
 3. Read the result. The oracle prints one line, for example:
 
 ```
-[oracle] dash-cli height 2178432, 3970 ENABLED nodes, root 188244019356... -> oracle/root.json
+[oracle] dash-cli height 2178432, 3970 leaves, root 188244019356... -> oracle/root.json
 ```
 
 and writes `oracle/root.json`.

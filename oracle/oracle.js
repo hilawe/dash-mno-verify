@@ -100,6 +100,6 @@ async function publish(target, body) {
 
 await publish(values.out, JSON.stringify(snapshot));
 console.error(
-  `[oracle] ${RPC_URL ? "rpc" : "dash-cli"} height ${snapshot.height}, ${snapshot.leaves.length} ENABLED nodes, ` +
+  `[oracle] ${RPC_URL ? "rpc" : "dash-cli"} height ${snapshot.height}, ${snapshot.leaves.length} leaves, ` +
     `root ${snapshot.root.slice(0, 12)}...${snapshot.sigs ? ` signed by ${snapshot.sigs[0].key}` : " (unsigned)"} -> ${values.out}`
 );

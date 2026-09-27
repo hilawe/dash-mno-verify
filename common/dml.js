@@ -16,6 +16,14 @@ export function leafFromPubkey(compressedPubkey) {
   return BigInt("0x" + Buffer.from(h).toString("hex"));
 }
 
+// The leaf a private key of 0 proves, with no key needed. The circuits bound the key below the group
+// order but not above zero, and for key 0 the curve component outputs the placeholder (0, 0), which is
+// not a curve point, so the circuit hashes 0x02 followed by 32 zero bytes. Dash Core accepts any non-null
+// voting key id, so a node's owner could set this one, and then anyone could prove that node. The
+// oracle leaves it out of the tree (oracle/snapshot.js, oracle/diff_snapshot.js). A later circuit
+// rebuild should refuse key 0 at the source. tools/circuit-analysis/RESULTS.md, item A2.
+export const KEY_ZERO_LEAF = leafFromPubkey(Buffer.concat([Buffer.from([0x02]), Buffer.alloc(32)]));
+
 // Derive the leaf from a voting private key (32-byte Uint8Array).
 export function leafFromPriv(priv) {
   const pub = secp256k1.getPublicKey(priv, true); // 33-byte compressed

@@ -1,7 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { secp256k1 } from "@noble/curves/secp256k1";
+import { createHash } from "node:crypto";
 import {
+  KEY_ZERO_LEAF,
   leafFromPriv,
   leafFromPubkey,
   votingAddressToLeaf,
@@ -46,4 +48,16 @@ test("WIF decodes to the private key", () => {
 test("leafFromPubkey agrees with leafFromPriv", () => {
   const pub = secp256k1.getPublicKey(PRIV_ONE, true);
   assert.equal(leafFromPubkey(pub), leafFromPriv(PRIV_ONE));
+});
+
+// The leaf the circuits accept for a private key of 0, which the oracle leaves out of the tree. Derived
+// here with node:crypto (OpenSSL) rather than the library common/dml.js uses, from the bytes the circuit
+// hashes for the placeholder (0, 0): the even-y prefix 0x02 and a zero x. scripts/check_circuits.sh pins
+// the circuit side, that CompressAndHash160 on (0, 0) emits this same value.
+test("KEY_ZERO_LEAF is hash160(0x02 || 32 zero bytes), derived independently", () => {
+  const bytes = Buffer.concat([Buffer.from([0x02]), Buffer.alloc(32)]);
+  const h = createHash("ripemd160").update(createHash("sha256").update(bytes).digest()).digest("hex");
+  assert.equal(h, "3625c4a2ea974760a816368fd15de771594476e7", "the value tools/circuit-analysis/RESULTS.md names");
+  assert.equal(KEY_ZERO_LEAF, BigInt("0x" + h));
+  assert.notEqual(KEY_ZERO_LEAF, 0n, "and it is not the empty-leaf value, which is handled separately");
 });

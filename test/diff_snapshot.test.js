@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { buildDiffSnapshot } from "../oracle/diff_snapshot.js";
-import { hash160ToAddress, votingAddressToLeaf } from "../common/dml.js";
+import { KEY_ZERO_LEAF, hash160ToAddress, votingAddressToLeaf } from "../common/dml.js";
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { smlMerkleRoot } from "../oracle/dml_commitment.js";
@@ -189,6 +189,20 @@ test("leaves are ordered by proRegTxHash, which is DIP4's own canonical order", 
   ];
   assert.deepEqual(snap.leaves, expected, "supplied out of order, published in canonical order");
   assert.equal(snap.order, "proRegTxHash", "and the snapshot says which rule it used");
+});
+
+// See the matching case in test/oracle_snapshot.test.js. The direct-node read leaves the key-0 leaf out
+// the same way, after the commitment check has run over the full list.
+test("a node whose voting key id is the key-0 leaf is left out of the tree, and every other node stays", async () => {
+  const keyZeroAddress = hash160ToAddress(Buffer.from(KEY_ZERO_LEAF.toString(16).padStart(40, "0"), "hex"));
+  const diff = goodDiff();
+  diff.mnList.push(ENTRY("55".repeat(32), keyZeroAddress));
+  const { call } = callerFor({ diff });
+  const logged = [];
+  const snap = await buildDiffSnapshot({ call, verifyCommitment: false, log: (m) => logged.push(m) });
+
+  assert.deepEqual(snap.leaves, [votingAddressToLeaf(V1).toString(), votingAddressToLeaf(V2).toString()]);
+  assert.ok(logged.some((m) => m.includes("55".repeat(32)) && m.includes("key-0 leaf")), "the exclusion is logged, naming the node");
 });
 
 test("an entry missing a field this build needs fails loudly instead of dropping a member", async () => {

@@ -175,9 +175,23 @@ review rejected its cross-project scope. Repository-root instructions were not e
   - The first table mutant broke the file's format rather than a value, so the check failed for the wrong
     reason. It was redone as a real value change. Rule it feeds: confirm the mutant did its job.
 
-  Recommended next, in order. First, have the oracle leave the key-0 leaf out of the tree (A2), a small
-  change with no circuit or key impact. Second, decide A3 (the mode in `contextHash`, a JS-only change
-  with a context cutover at a season boundary, or a circuit tag at the next rebuild). Third, the Groth16
+  A2 ORACLE FIX DONE (2026-09-27). Both leaf builders (`oracle/snapshot.js`, `oracle/diff_snapshot.js`)
+  leave the key-0 leaf out and log the node, rather than refusing, since Dash Core accepts any non-null
+  voting key id (it refuses a null one, `bad-protx-key-null`, checked in `src/evo/providertx.cpp`, so the
+  existing empty-leaf refusal stays). `KEY_ZERO_LEAF` in `common/dml.js`. Tests: the constant derived
+  with node:crypto, and one case per builder. CI's circuits job now runs the real hash160 circuit on
+  (0, 0) and checks it emits the same value (confirmed locally with circom 2.2.3). Four planted
+  mutants (keep the leaf, refuse instead, keep it in the direct read, wrong prefix byte) each failed the
+  intended test. One execution review by a different model family returned APPROVE-WITH-FIXES with one
+  minor (two log lines called the leaf count "valid" or "ENABLED" nodes, now "leaves"), folded without a
+  further confirmation. It also confirmed a planted key-0 entry breaks the chain commitment check, and
+  that the gateway adopts a snapshot with the leaf left out. The fix is forward only. It does not revoke
+  an older signed snapshot or a registration already made this season against a tree holding that leaf,
+  which matters only if a live deployment had one (none exists). The circuit-side fix (`privkey != 0`)
+  waits for a rebuild.
+
+  Recommended next, in order. First, decide A3 (the mode in `contextHash`, a JS-only change with a
+  context cutover at a season boundary, or a circuit tag at the next rebuild). Second, the Groth16
   ceremony decision, which would carry A1 to A3 into the circuit.
 
 ## SUPERSEDED, 2026-09-25 (re-entry after six idle weeks, stale state corrected, a testnet VPS identified). Superseded by the 2026-09-27 section above

@@ -6,7 +6,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPairSync } from "node:crypto";
 import { buildSnapshot } from "../oracle/snapshot.js";
-import { hash160ToAddress, votingAddressToLeaf } from "../common/dml.js";
+import { KEY_ZERO_LEAF, hash160ToAddress, votingAddressToLeaf } from "../common/dml.js";
 import { makeDmlRootHasher } from "../common/dml_root.js";
 import { addSignature } from "../common/oracle_sig.js";
 
@@ -164,6 +164,26 @@ test("a voting address that decodes to the empty-leaf value is refused, not publ
   const zeroList = { [OUT_A]: { status: "ENABLED", votingaddress: hash160ToAddress(Buffer.alloc(20, 0)) } };
   const { call } = scriptedCall([100, 100], [zeroList]);
   await assert.rejects(buildSnapshot({ call, now: () => 1234 }), /empty-leaf value/);
+});
+
+// A node whose voting key id is the leaf a private key of 0 proves (item A2 in
+// tools/circuit-analysis/RESULTS.md) could be claimed by anyone. Dash Core lets its owner set that id,
+// so refusing the snapshot would let one owner stop the oracle. It is left out and named in the log.
+test("a node whose voting key id is the key-0 leaf is left out of the tree, and every other node stays", async () => {
+  const keyZeroAddress = hash160ToAddress(Buffer.from(KEY_ZERO_LEAF.toString(16).padStart(40, "0"), "hex"));
+  const list = {
+    [OUT_A]: { status: "ENABLED", votingaddress: addr(1) },
+    [OUT_B]: { status: "ENABLED", votingaddress: keyZeroAddress },
+    [OUT_C]: { status: "ENABLED", votingaddress: addr(3) },
+  };
+  const { call } = scriptedCall([100, 100], [list]);
+  const logged = [];
+  const snap = await buildSnapshot({ call, now: () => 1234, log: (m) => logged.push(m) });
+
+  assert.deepEqual(snap.leaves, [votingAddressToLeaf(addr(1)).toString(), votingAddressToLeaf(addr(3)).toString()]);
+  const rootFromLeaves = await makeDmlRootHasher(snap.depth);
+  assert.equal(snap.root, rootFromLeaves(snap.leaves), "the root is over the leaves that were kept");
+  assert.ok(logged.some((m) => m.includes(OUT_B) && m.includes("key-0 leaf")), "the exclusion is logged, naming the node");
 });
 
 test("signing appends sigs to the snapshot without changing the unsigned fields", async () => {

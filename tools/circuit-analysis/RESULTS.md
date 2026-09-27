@@ -279,10 +279,13 @@ signals.
   not been checked. Anyone can prove with key 0, so a masternode whose voting key id were set to that value
   would be provable by anyone, one membership per epoch per context under a nullifier anyone can compute.
   Only the node's owner can set its voting key id, and an owner can already hand out a real voting key, so
-  this gives nobody a capability the owner could not already grant. Two fixes are available. A circuit
-  constraint `privkey != 0` at the next rebuild closes it at the source. The oracle can also leave that one
-  leaf out of the tree now, with no circuit change. It should leave the leaf out rather than refuse the
-  snapshot, since a refusal would let that owner halt the oracle.
+  this gives nobody a capability the owner could not already grant. SINCE 2026-09-27 THE ORACLE LEAVES THAT
+  LEAF OUT of the tree, in both `oracle/snapshot.js` and `oracle/diff_snapshot.js`, and logs the node. It
+  leaves the leaf out rather than refusing the snapshot, because Dash Core accepts any non-null voting key
+  id and a refusal would let that one owner stop the oracle. `KEY_ZERO_LEAF` in `common/dml.js` names the
+  value, `test/hash160.test.js` derives it independently, and `scripts/check_circuits.sh` runs the real
+  hash160 circuit on (0, 0) in CI and checks it emits the same value. A circuit constraint
+  `privkey != 0` at the next rebuild would close it at the source.
 - A3, the single-tier nullifier Poseidon(Poseidon(privkey), epoch, context) and the registration nullifier
   Poseidon(Poseidon(privkey), season, context) share one layout, and `contextHash` does not record the mode,
   so the two are equal when an epoch number equals a season number for one context. Under the default

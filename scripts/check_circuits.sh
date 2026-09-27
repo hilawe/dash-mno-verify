@@ -30,6 +30,7 @@ check() {
 
 check "ripemd160 known-answer"   test/ripemd160/ripemd160_test.circom test/ripemd160/make_input.mjs
 check "hash160 generator vector" test/hash160/hash160_test.circom     test/hash160/make_input.mjs
+check "hash160 key-0 placeholder" test/hash160/hash160_test.circom     test/hash160/make_input_zero.mjs
 
 echo "--- compile mno_members (Poseidon recurring circuit) ---"
 "$CIRCOM" circuits/mno_members.circom --r1cs --wasm -o "$BUILD" -l node_modules >/dev/null
