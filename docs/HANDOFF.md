@@ -202,8 +202,10 @@ review rejected its cross-project scope. Repository-root instructions were not e
   limit kept, one coordinated ceremony with two separate setups and at least one outside contributor to
   each plus a public beacon. Production publication and deployment stay separate from this unit.
   - Circuits. Key 0 refused (IsZero on the limb sum). Nullifiers Poseidon4(tag, keyHash, period,
-    context), which also closes a member choosing secret = keyHash to reproduce the single-tier
-    nullifier. Constraints 253,978 (single-tier) and 254,392 (registration), under Groth16's 2^18.
+    context). The tags remove the shared-input construction that made equality predictable, including
+    a member choosing secret = keyHash to reproduce the single-tier nullifier. Equality now needs a
+    Poseidon collision, an assumption rather than something proved. Constraints 253,978 (single-tier) and
+    254,392 (registration), under Groth16's 2^18.
   - Gateway. Proof system taken from the loaded key, a proof naming another refused. Boot refuses a key
     whose protocol does not match its role, a devOnly key without MNO_ALLOW_DEV_KEYS=1, and the retired
     plonk registration engine. Registration engine default groth16.

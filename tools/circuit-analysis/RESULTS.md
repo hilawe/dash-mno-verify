@@ -297,11 +297,14 @@ signals.
   stores could then tell that the same unnamed key used both. Adding the mode to `contextHash` separates
   them with no circuit change, at the cost of a context cutover at a season boundary. A domain tag inside
   the circuits does the same at the next rebuild.
-  RESOLVED IN THE GROTH16 CANDIDATE by fixed purpose tags: the single-tier and registration nullifiers are
-  now Poseidon(tag, keyHash, period, contextHash), a four-input Poseidon, so they differ from each other
-  by the tag and from the three-input members nullifier by arity. That also closes a case this item had
-  not named. The members circuit accepts any secret, so a member who chose secret = keyHash reproduced the
-  single-tier nullifier exactly (`common/purpose_tags.js`, `test/purpose_tags.test.js`).
+  RESOLVED IN THE GROTH16 CANDIDATE by fixed purpose tags. The single-tier and registration nullifiers
+  are now Poseidon(tag, keyHash, period, contextHash), a four-input Poseidon with a distinct tag each. That
+  removes the shared-input construction that made equality predictable. The two no longer hash the same
+  inputs when an epoch number equals a season number, and neither is the three-input Poseidon the members
+  nullifier uses. Equality now requires a Poseidon collision, which is an assumption, not something this
+  change proves. The same construction covered a case this item had not named. The members circuit
+  accepts any secret, so a member who chose secret = keyHash reproduced the single-tier nullifier exactly
+  (`common/purpose_tags.js`, `test/purpose_tags.test.js`).
 
 ### What this does not settle
 

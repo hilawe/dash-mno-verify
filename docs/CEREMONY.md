@@ -34,8 +34,10 @@ the duration of the event. A change to any of it voids every contribution made s
 - The purpose tags inside the two nullifiers (`circuits/purpose_tags.circom`), which are constants of
   the circuits and so already covered by the r1cs hashes.
 
-Anyone can check the freeze independently: check out the commit, fetch the pinned dependencies, compile
-with the pinned compiler, and compare the r1cs hashes.
+Anyone can check the freeze independently by checking out the commit, fetching the pinned dependencies,
+compiling with the pinned compiler, and comparing the r1cs hashes. `node scripts/freeze_candidate.mjs
+--check` does exactly that. A later commit that touches none of the frozen inputs (the two circuits,
+their includes, and the pinned dependencies) does not void the freeze, and that check is the test.
 
 ## Roles
 
@@ -52,13 +54,25 @@ with the pinned compiler, and compare the r1cs hashes.
 
 THE BEACON POLICY IS ANNOUNCED BEFORE THE FIRST CONTRIBUTION, and fixed from then on:
 
-- the source, the Dash mainnet block hash at a stated height H;
+- the source, the Dash mainnet block hash at a height H chosen by the rule below;
+- the initial height H0, and the contribution deadline, a stated UTC time well before block H0 is
+  expected (Dash targets one block per 2.5 minutes, 576 blocks a day);
 - the finality rule, that the value is taken only once block H carries a ChainLock;
-- the deadline, a time for the last contribution to each setup that falls before block H is expected;
-- the iteration exponent, 10.
+- the iteration exponent, 10;
+- where the closing statement below will be published.
 
-A contribution arriving after the deadline is not used. If block H arrives before the last contribution,
-the event announces a new height and keeps every contribution already verified.
+A contribution arriving after the deadline is not used.
+
+CLOSING THE CHAINS BEFORE THE BEACON EXISTS. After the last contribution to BOTH setups, the coordinator
+publishes a closing statement, before the beacon block is mined. For each circuit it gives the ordered
+contribution names and hashes, and the sha256 of the last contributed file, the one the beacon will be
+applied to. It is published in the announced public place, which records its own time (for example a
+comment on a public GitHub issue), and nothing is added to either chain after it.
+
+THE BEACON HEIGHT IS FIXED BY RULE, with no choice left to anyone. H is the smallest of H0, H0 + 576,
+H0 + 2 x 576, and so on, whose block was mined after the closing statement was published. So a late
+closing moves the beacon one day at a time, and the height follows from public timestamps alone, the
+closing statement's and the block times of the candidate heights.
 
 ## The procedure, per circuit
 
@@ -99,6 +113,9 @@ circuit name. Every command is snarkjs 0.7.6 from this repository's `node_module
    and it prints the chain, but it accepts a key with no beacon and a beacon of any value. The verifier
    also checks, in the printed chain:
 
+   - H is the height the rule gives, from the closing statement's published time and the block times;
+   - the chain before the beacon is the one the closing statement lists, contribution for contribution,
+     and the beacon was applied to the file whose sha256 it gives;
    - the newest entry is the beacon, named "Dash block H", with `Beacon generator` equal to the hash of
      block H and `Beacon iterations Exp: 10`, and nothing follows it;
    - the hash of block H was obtained independently of the coordinator, from the verifier's own Dash
