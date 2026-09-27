@@ -1,0 +1,43 @@
+{
+  "note": "INTERIM Groth16 setup, one contribution by the coordinator, for the pilot only. Not the multi-party ceremony (docs/CEREMONY.md). Soundness rests on the coordinator's machine having discarded its randomness. Must not gate anything of value.",
+  "commit": "624f5508ed909e821aa3bea65252d4c07066a7eb",
+  "date": "2026-09-27T22:19:37.559Z",
+  "phaseOne": "powersOfTau28_hez_final_20.ptau",
+  "snarkjs": "0.7.6",
+  "circuits": {
+    "mno_membership": {
+      "r1csSha256": "4e1f519d1e92459a58844915774754ae24271663e40a9518b691005800ec8988",
+      "wasmSha256": "c20b42810ee68f02215e6bc21b1d11b4fe13817346a138cc3a9da5a50a9e2b5a",
+      "initialZkeySha256": "b51749b3c692e10bed4ddcd3766cb65ca7ff368163f04dce44256104433697a0",
+      "contribution": {
+        "name": "interim, coordinator only",
+        "hash": "6bafe035cdb4a3266da03e096b260da437de44c4fb02beef2ac79ae27f7a0015152f8c094cf70b16a3e14c5bd5f91f1ab0552e9a5d6e4fa408cd263f05d311e1"
+      },
+      "zkeySha256": "3222b92163d5faf8455067f550fdf063636cdd3cb20654d270f99c1ae3a6b899",
+      "zkeyBytes": 121604011,
+      "vkeySha256": "50c732dceeedf41ba4748e86f16ad4677700369ad1e697b6d4945c448fb58ae5",
+      "zkeyVerify": [
+        "Circuit Hash:",
+        "contribution #1 interim, coordinator only:",
+        "ZKey Ok!"
+      ]
+    },
+    "mno_registration": {
+      "r1csSha256": "4cadf74ebec6b62c7ad670ef3139254ead0288a14eb0579458139bf8a6f06247",
+      "wasmSha256": "124628db0505cc75bfb234453b795a32384dcb3e7da980e0a37bfa5979e90d13",
+      "initialZkeySha256": "f57e7bbde5d6d2cf78fe7af7ccc54d77cf84185be672bc9e44f52f16ace09256",
+      "contribution": {
+        "name": "interim, coordinator only",
+        "hash": "18342cdc132037c346d0a9efe951123ab50b7b2654873f9f13a915835e4f1089fe985b5c864f2b6e4e15cf52ae0bf44a712c288ba1a4cd7a2869dee2b154eb4a"
+      },
+      "zkeySha256": "a067f4602c278d000b1919500e049fd3ec860501b5c887937afd298e2ecd52db",
+      "zkeyBytes": 121755411,
+      "vkeySha256": "a33b47bbff3ba1df47df76ec2da6c3e0f4fd3001029f2cc37f396a582c391f29",
+      "zkeyVerify": [
+        "Circuit Hash:",
+        "contribution #1 interim, coordinator only:",
+        "ZKey Ok!"
+      ]
+    }
+  }
+}
