@@ -339,6 +339,53 @@ test("an expired nonce is rejected", async () => {
   }
 });
 
+// Review finding F2. The challenge tells the adapter when it stops being accepted, so the member sees
+// their deadline. Single-tier proves against the challenge itself for 9 to 14 minutes, so its default
+// lifetime is 30 minutes, and an explicit MNO_CHALLENGE_TTL still wins.
+test("the challenge reports its deadline, 30 minutes by default in single-tier", async () => {
+  const oracle = join(dir, "root.json");
+  const g = await startGateway({ MNO_ORACLE_SOURCE: oracle, MNO_ORACLE_REFRESH: "3600" });
+  try {
+    const before = Math.floor(Date.now() / 1000);
+    const ch = await challenge(g.base);
+    const after = Math.floor(Date.now() / 1000);
+    assert.ok(Number.isInteger(ch.challengeExpiresAt), "an integer unix time");
+    // Capped at the epoch end, so a run in the last half hour of a weekly epoch still passes.
+    const epochEnd = (ch.epoch + 1) * 7 * 24 * 3600;
+    assert.ok(ch.challengeExpiresAt >= Math.min(before + 1800, epochEnd) && ch.challengeExpiresAt <= Math.min(after + 1800, epochEnd), `got ${ch.challengeExpiresAt - before}s`);
+  } finally {
+    g.proc.kill();
+  }
+});
+
+test("an explicit MNO_CHALLENGE_TTL sets the reported deadline", async () => {
+  const oracle = join(dir, "root.json");
+  const g = await startGateway({ MNO_ORACLE_SOURCE: oracle, MNO_ORACLE_REFRESH: "3600", MNO_CHALLENGE_TTL: "90" });
+  try {
+    const before = Math.floor(Date.now() / 1000);
+    const ch = await challenge(g.base);
+    const after = Math.floor(Date.now() / 1000);
+    const epochEnd = (ch.epoch + 1) * 7 * 24 * 3600;
+    assert.ok(ch.challengeExpiresAt >= Math.min(before + 90, epochEnd) && ch.challengeExpiresAt <= Math.min(after + 90, epochEnd));
+  } finally {
+    g.proc.kill();
+  }
+});
+
+test("the reported deadline never runs past the challenge's epoch, which verify would refuse", async () => {
+  // A 100-second epoch ends long before the 30-minute single-tier lifetime, and a proof for a
+  // rolled-over epoch is refused, so the deadline shown to the member must be the epoch end.
+  const oracle = join(dir, "root.json");
+  const g = await startGateway({ MNO_ORACLE_SOURCE: oracle, MNO_ORACLE_REFRESH: "3600", MNO_EPOCH_SECONDS: "100" });
+  try {
+    const ch = await challenge(g.base);
+    assert.equal(ch.challengeExpiresAt, (ch.epoch + 1) * 100, "capped at the epoch end");
+    assert.ok(ch.challengeExpiresAt < Math.floor(Date.now() / 1000) + 1800);
+  } finally {
+    g.proc.kill();
+  }
+});
+
 // The gateway owns epoch timing: a proof for a challenge whose epoch has rolled over is rejected here,
 // before the nullifier spend, so the member's epoch claim is not burned for an already-expired grant.
 test("a proof for a rolled-over epoch is rejected before the nullifier spend", async () => {

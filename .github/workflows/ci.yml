@@ -68,6 +68,8 @@ jobs:
         run: CIRCOM="$RUNNER_TEMP/circom" bash scripts/check_circuits.sh
       - name: PLONK prove-and-verify the members circuit end to end
         run: CIRCOM="$RUNNER_TEMP/circom" bash scripts/prove_members.sh
+      - name: Two-tier grants end at the season boundary, checked with real members proofs
+        run: bash scripts/fetch_keys.sh && node scripts/check_two_tier_expiry.mjs
 
   # The full single-tier mno_membership PLONK setup needs a 2^20 SRS (about 1.15 GB) and is
   # too heavy for CI. It is reproducible offline via scripts/build_proving_key.sh, which

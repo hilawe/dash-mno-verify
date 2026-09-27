@@ -539,14 +539,23 @@ async function handleInteraction(i) {
     const file = new AttachmentBuilder(Buffer.from(JSON.stringify(challenge, null, 2)), {
       name: "challenge.json",
     });
+    // Commands render as code, notes as text. A two-tier first-timer is told to register BEFORE using
+    // a challenge (review finding F2), and every member sees when this challenge stops being accepted,
+    // as a Discord timestamp that shows in their own time zone.
+    const steps = proveInstructions(challenge.mode, { gateway: GATEWAY, platform: "discord", community: GUILD_ID, role: CONTEXT_ID })
+      .map((l) => (l.startsWith("npm run ") ? "   `" + l + "`" : l));
+    const deadline = Number.isFinite(challenge.challengeExpiresAt)
+      ? `This challenge expires <t:${challenge.challengeExpiresAt}:R>. If it expires, run \`/verify\` again. Within the same season you do not need to register again.`
+      : "If this challenge expires, run `/verify` again. Within the same season you do not need to register again.";
     await i.editReply({
       content: [
-        "Anonymous masternode verification, step 1 of 2.",
+        "Anonymous masternode verification.",
         "",
-        "1. Download `challenge.json` below.",
-        "2. On the machine holding your masternode voting key, run:",
-        ...proveInstructions(challenge.mode, { gateway: GATEWAY, platform: "discord", community: GUILD_ID, role: CONTEXT_ID }).map((l) => "   `" + l + "`"),
-        "3. Run `/submit` here and attach the `proof.json` it produces.",
+        "On the machine holding your masternode voting key:",
+        ...steps,
+        "",
+        "Download `challenge.json` below for the proof step. " + deadline,
+        "Then run `/submit` here and attach the `proof.json` it produces.",
         "",
         "Your key, and which node you control, never leave your device. The bot learns only that some valid masternode vouched for you.",
       ].join("\n"),

@@ -66,3 +66,16 @@ test("A10: a max-age above the refresh interval, and a disabled max-age, do not 
     "a disabled max-age does not warn",
   );
 });
+
+// Review finding F2. The challenge lifetime depends on the mode, because a two-tier member makes the
+// cheap proof after registering, and a single-tier member makes the heavy proof against the challenge.
+test("the default challenge lifetime is 10 minutes for two-tier and 30 for single-tier", () => {
+  assert.equal(buildConfig({ MNO_MODE: "two-tier" }).challengeTtlSeconds, 600);
+  assert.equal(buildConfig({ MNO_MODE: "single" }).challengeTtlSeconds, 1800);
+  assert.equal(buildConfig({}).challengeTtlSeconds, 1800, "single-tier is the default mode");
+});
+
+test("an explicit MNO_CHALLENGE_TTL overrides the mode default in either mode", () => {
+  assert.equal(buildConfig({ MNO_MODE: "two-tier", MNO_CHALLENGE_TTL: "1200" }).challengeTtlSeconds, 1200);
+  assert.equal(buildConfig({ MNO_MODE: "single", MNO_CHALLENGE_TTL: "300" }).challengeTtlSeconds, 300);
+});

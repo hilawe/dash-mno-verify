@@ -34,7 +34,7 @@ import { SeasonMembers } from "./season.js";
 import { makeDmlRootHasher } from "./dml_root.js";
 import { shaRootFromLeaves } from "../common/dml_sha_root.js";
 import { isCanonicalField } from "../common/field.js";
-import { contextHash, signalHash, epochNow, seasonNow, scheduleId } from "../common/index.js";
+import { contextHash, signalHash, epochNow, seasonNow, scheduleId, grantExpiresAt } from "../common/index.js";
 import { TimeGuard } from "./time_guard.js";
 import { snapshotMessage, verifySnapshotSig, snapshotVersion, publicKeyFromRaw, rawPublicB64 } from "../common/oracle_sig.js";
 import { buildDiffSnapshot } from "../oracle/diff_snapshot.js";
@@ -1207,6 +1207,14 @@ async function bootGateway({ config = buildConfig(process.env) } = {}, release) 
 
         const nonce = randomUUID();
         const epoch = timeGuard.epoch();
+        // When this challenge stops being accepted, so an adapter can show the member their deadline
+        // (review finding F2). That is the store's lifetime OR the end of the challenge's epoch (and, in
+        // two-tier, its season), whichever comes first, since verify refuses a rolled-over period.
+        // Rounded down, so it is never later than the store's own expiry.
+        const challengeExpiresAt = Math.min(
+          nowSec() + config.challengeTtlSeconds,
+          grantExpiresAt({ epoch, epochSeconds: config.epochSeconds, ...(twoTier ? { season: challengeSeason, seasonSeconds: config.seasonSeconds } : {}) }),
+        );
         const sig = signalHash(nonce, account).toString();
         // The season is recorded with the challenge so the verify path can tell whether the season it
         // was minted in is still current. Without it a two-tier verify could only compare root store
@@ -1222,6 +1230,7 @@ async function bootGateway({ config = buildConfig(process.env) } = {}, release) 
           root: cur.root,
           contextHash: ctx,
           epochSeconds: config.epochSeconds,
+          challengeExpiresAt,
           mode: config.mode,
           // The encoding version, so a rolling upgrade that mixes v1 and v2 gateways is visible rather
           // than silently minting two membership domains for one community.
@@ -1374,7 +1383,13 @@ async function bootGateway({ config = buildConfig(process.env) } = {}, release) 
           throw err;
         }
         if (!result.ok) return send(res, 200, result);
-        const expiresAt = (pending.epoch + 1) * config.epochSeconds;
+        // A two-tier grant also ends with its challenge's season, whose members tree vouched for it
+        // (review finding F1). Single-tier grants end with the epoch, as before.
+        const expiresAt = grantExpiresAt({
+          epoch: pending.epoch,
+          epochSeconds: config.epochSeconds,
+          ...(twoTier ? { season: pending.season, seasonSeconds: config.seasonSeconds } : {}),
+        });
         // regranted is true when this was an idempotent re-verify of an already-spent tag by the same
         // account (its adapter recovering from a failed first grant), so an adapter can log the recovery.
         return send(res, 200, { ok: true, account: pending.account, epoch: result.epoch, expiresAt, regranted: result.regranted === true });

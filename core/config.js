@@ -54,6 +54,8 @@ function intEnv(env, name, defaultValue, { min = 1, max = Infinity } = {}) {
 // a test can produce. The module-level `config` below is the process environment applied to it, so
 // nothing about running the gateway changes.
 export function buildConfig(env = process.env) {
+  // Read once here because a default below depends on it. Validated with the rest further down.
+  const mode = env.MNO_MODE ?? "single";
   const config = {
     port: intEnv(env, "MNO_GATEWAY_PORT", 8787),
 
@@ -61,8 +63,14 @@ export function buildConfig(env = process.env) {
     // within one epoch, because it can no longer produce a fresh proof.
     epochSeconds: intEnv(env, "MNO_EPOCH_SECONDS", 7 * 24 * 3600),
 
-    // How long an issued challenge stays valid before the member must request a new one.
-    challengeTtlSeconds: intEnv(env, "MNO_CHALLENGE_TTL", 600),
+    // How long an issued challenge stays valid before the member must request a new one. The
+    // default depends on the mode, because the member proves AGAINST the challenge and the two modes
+    // prove at very different speeds (review finding F2, 2026-09-27). A two-tier member makes the
+    // cheap per-epoch proof, about 30 seconds measured on a testnet VPS, having registered BEFORE
+    // taking the challenge, so ten minutes is ample. A single-tier member makes the heavy proof
+    // against the challenge itself, measured at 9 to 14 minutes (docs/RUNBOOK.md step 5), which a
+    // ten-minute challenge could not survive. Thirty minutes is about twice the slowest measurement.
+    challengeTtlSeconds: intEnv(env, "MNO_CHALLENGE_TTL", mode === "single" ? 1800 : 600),
 
     // How many recently published roots the gateway will accept. A small window absorbs
     // DML churn between blocks while keeping the eviction lag for removed nodes short.
@@ -255,7 +263,7 @@ export function buildConfig(env = process.env) {
 
     // "single" runs the one-tier membership proof every epoch. "two-tier" splits it into a
     // heavy seasonal registration plus a cheap per-epoch members proof.
-    mode: env.MNO_MODE ?? "single",
+    mode,
     // The contexts this gateway will accept a registration for, as context hashes, empty meaning no
     // allowlist is configured. Registration is deliberately unauthenticated (the proof is the
     // credential), and the caller chooses the platform, community, and role that form the context, so
@@ -278,12 +286,15 @@ export function buildConfig(env = process.env) {
     // used. A different design could remove it (a short registration challenge pinning an eligible
     // root would), and that is recorded in TODO.md rather than claimed here.
     //
-    // THE DEFAULT IS FINITE AND IS A JUDGMENT, not a measurement. 900 seconds is meant to sit
-    // comfortably above the observed registration proving time (minutes on masternode-class hardware
-    // per docs/REDUCING_PROVING_COST.md) while being well under the membership window's own 1800s
-    // bound, so the grace a departed node gets is halved rather than inherited. A deployment whose
-    // provers are slower should raise it and will see the refusal as stale-or-unknown-root; one that
-    // wants the tightest defensible anchor should lower it.
+    // THE DEFAULT IS FINITE AND IS A JUDGMENT, not a measurement. 900 seconds was meant to sit
+    // comfortably above registration proving time while staying well under the membership window's
+    // own 1800s bound, so the grace a departed node gets is halved rather than inherited. THE MARGIN IS
+    // NOW KNOWN TO BE THIN. Registration measured 782 s on a testnet VPS at 3 CPUs and about 600 s on
+    // a 16 GB laptop (2026-09-26), and the root's age also counts the time since the oracle last
+    // published it, so a slow prover or a list change during the proof can be refused as
+    // stale-or-unknown-root. Raising the default widens the grace for a departed node, which is an
+    // owner decision recorded in the handoff, not something changed quietly here. A deployment whose
+    // provers are slower should raise it, and one that wants the tightest anchor should lower it.
     registerRootMaxAgeSeconds: intEnv(env, "MNO_REGISTER_ROOT_MAX_AGE", 900, { min: 0 }),
 
     // Two-tier keys and season length.

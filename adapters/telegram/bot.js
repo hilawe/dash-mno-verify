@@ -119,7 +119,7 @@ bot.command("verify", async (ctx) => {
     new InputFile(Buffer.from(JSON.stringify(challenge, null, 2)), "challenge.json"),
     {
       caption: [
-        "Step 1 of 2. On the machine holding your masternode voting key, run:",
+        "Step 1 of 2. On the machine holding your masternode voting key:",
         ...proveInstructions(challenge.mode, { gateway: GATEWAY, platform: "telegram", community: COMMUNITY_ID, role: ROLE_ID }),
         "Then send me the proof.json it produces.",
         "",

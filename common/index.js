@@ -60,6 +60,21 @@ export function seasonNow(seasonSeconds, nowSeconds) {
   return Math.floor(nowSeconds / seasonSeconds);
 }
 
+// When a verified grant ends, in unix seconds. Every grant ends with the epoch its challenge was
+// minted in. A TWO-TIER grant also ends with that challenge's SEASON, because the season's members
+// tree is what vouched for the member, and that tree is cleared at the season boundary.
+//
+// Found on 2026-09-27 (review finding F1). The gateway returned only the epoch end. Epochs (7 days)
+// and seasons (90 days) do not share boundaries by default, so a grant minted just before a season
+// ended outlived it by up to six days, after the members tree had already been emptied. Pass season
+// and seasonSeconds only for a two-tier grant. Single-tier has no season, and its expiry is unchanged.
+export function grantExpiresAt({ epoch, epochSeconds, season = null, seasonSeconds = null }) {
+  const epochEnd = (Number(epoch) + 1) * epochSeconds;
+  if (season === null || season === undefined) return epochEnd;
+  if (!(seasonSeconds > 0)) throw new Error("grantExpiresAt: a season needs a positive seasonSeconds");
+  return Math.min(epochEnd, (Number(season) + 1) * seasonSeconds);
+}
+
 // Identifies the epoch and season schedule a durable store was written under. Season and epoch
 // numbers are derived from these lengths, so changing either RENUMBERS every period: a modest change
 // can make today's season number equal a season number from the old schedule, and a store keyed only

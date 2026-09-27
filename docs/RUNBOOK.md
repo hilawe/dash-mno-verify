@@ -141,8 +141,8 @@ bash scripts/fetch_keys.sh --large    # the two 2.3 GB keys, each checked agains
 # bash scripts/rebuild_proving_keys.sh
 ```
 
-- Once a season: `npm run register -- --gateway https://your-gateway --platform discord --community <guild id> --role mn-members --voting-key-file key.wif`. This needs the 2.3 GB registration key. See the network-path warning below.
-- Every epoch, in Discord: `/verify` gives a challenge, the member runs `npm run prove-epoch -- --gateway https://your-gateway --challenge challenge.json`, and `/submit` hands the resulting `proof.json` back. The bot adds them to the channel.
+- Once a season, BEFORE asking for a challenge: `npm run register -- --gateway https://your-gateway --platform discord --community <guild id> --role mn-members --voting-key-file key.wif`. This needs the 2.3 GB registration key and takes about 10 to 15 minutes. It needs no challenge, which matters because a challenge lasts only ten minutes. See the network-path warning below.
+- Every epoch, in Discord: `/verify` gives a challenge and shows when it expires, the member runs `npm run prove-epoch -- --gateway https://your-gateway --challenge challenge.json` (about 30 seconds), and `/submit` hands the resulting `proof.json` back. The bot adds them to the channel. If the challenge expires, `/verify` again gives a fresh one, and within the same season there is no need to register again.
 
 Network-path warning for two-tier: both the seasonal register and the per-epoch prove connect to the gateway directly (register posts to it, prove fetches the members tree from it), so the gateway sees the source address on both. If you run either on the masternode, that address is the node's own advertised service address, which is in the public masternode list, and the gateway operator can learn which node it is. The proof stays zero-knowledge, so this is a network-path exposure only, but it applies to BOTH two-tier steps, not registration alone. Run them over an anonymizing path (for example Tor) or from a machine whose public egress address cannot be matched to the node (a machine behind the same network address is not separation). The prover prints a reminder when the gateway is not loopback. Single-tier proving contacts no gateway and has no such exposure. See `docs/THREAT_MODEL.md` ("What each party learns").
 
@@ -150,7 +150,7 @@ The two large keys are hosted on Cloudflare R2 and listed with their `url` and `
 
 ## How access ends
 
-Access is for one epoch. A member keeps it by running `/verify` again each epoch. If they stop, for example after selling the node, the next proof would fail, and the bot's sweep removes their channel access. Tune the cadence with `DISCORD_SWEEP_SECONDS` (default 300). The bot persists its grant ledger to a SQLite database, so access is still revoked after a restart, and it sweeps once at startup. An older JSON ledger is migrated into it automatically on first start.
+A grant expires at the end of its epoch, and in two-tier mode no later than the end of the season it was proved in, since each season starts an empty members tree. The bot removes the channel access at its next sweep after that, within `DISCORD_SWEEP_SECONDS`. Grants issued before this rule (2026-09-27) keep their old expiry, as `docs/DEPLOY.md` explains. A member keeps access by running `/verify` again each epoch, and by registering again each season. If they stop, for example after selling the node, the next proof would fail, and the bot's sweep removes their channel access. Tune the cadence with `DISCORD_SWEEP_SECONDS` (default 300). The bot persists its grant ledger to a SQLite database, so access is still revoked after a restart, and it sweeps once at startup. An older JSON ledger is migrated into it automatically on first start.
 
 ## Honest status
 
