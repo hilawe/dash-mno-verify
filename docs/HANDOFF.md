@@ -246,9 +246,23 @@ review rejected its cross-project scope. Repository-root instructions were not e
   Deferred by the owner: a standalone circom-ecdsa checker waits until after the Discord pilot and a real
   outside user. No novelty claim is made for it.
 
-  NEXT, in order. First, approve the schedule and invite the outside contributors. Second, run the
-  ceremony per `docs/CEREMONY.md`. Third, commit the two verification keys, host the proving keys and
-  wasm, and update the manifest (the publication step). Fourth, merge, then the small Discord pilot.
+  INTERIM SETUP AND PUBLICATION DONE (2026-09-27). The owner chose not to let progress wait on the
+  ceremony. `scripts/interim_setup.sh` made a single-contributor Groth16 setup on the frozen circuits
+  (the fresh compile matched FREEZE.json), its randomness piped through the snarkjs prompt from the
+  system's random source and written nowhere. `circuits/ceremony/INTERIM_SETUP.json` records each
+  circuit's initial file, contribution hash, final key, verification key, and zkey verify chain, and the
+  recorded hashes equal the ones zkey verify reads back. The end-to-end check passed 20 of 20 on these
+  keys. The two verification keys sit at the gateway's default paths. The `circuit-keys-v3` GitHub
+  pre-release carries the two interim proving keys, the two heavy wasms, and the unchanged members key
+  and wasm, each downloaded back and matched, and keys.manifest.json points at it. The docs and the
+  member-facing prover instructions now give the Groth16 figures. The first setup run failed before
+  contributing (the piped randomness lacked a newline, so the prompt never got a line) and was rerun
+  clean. INTERIM means soundness rests on this machine having discarded the randomness. The operator
+  already runs the gateway, so the pilot gains no new trusted party, but nothing of value is gated.
+
+  NEXT, in order. First, merge the draft PR once its CI is green (the owner's call). Second, the small
+  Discord pilot on the interim keys. Third, the multi-party ceremony per `docs/CEREMONY.md`, which
+  replaces the interim keys, either continuing this chain or starting fresh.
 
 ## SUPERSEDED, 2026-09-25 (re-entry after six idle weeks, stale state corrected, a testnet VPS identified). Superseded by the 2026-09-27 section above
 
