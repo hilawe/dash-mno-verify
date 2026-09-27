@@ -179,10 +179,11 @@ status claim here.
 - `npm test` runs the Node test suite. `scripts/check_circuits.sh` and `scripts/prove_members.sh` run
   the circuit checks and a real PLONK members prove-and-verify in CI.
 - The gateway boots from committed verification keys in `circuits/build`. The cheap members proving
-  key and the wasm files come from the release named in `keys.manifest.json` (`circuit-keys-v2`),
-  fetched and checksum-verified by `scripts/fetch_keys.sh`. The two large proving keys are hosted on
-  Cloudflare R2 and fetched with `scripts/fetch_keys.sh --large`, or rebuilt with
-  `scripts/build_proving_key.sh`.
+  key and the wasm files come from the release named in `keys.manifest.json` (`circuit-keys-v3`),
+  fetched and checksum-verified by `scripts/fetch_keys.sh`. The two heavy Groth16 proving keys (about
+  120 MB each) are on the same release, fetched with `scripts/fetch_keys.sh --large`. They are INTERIM
+  keys from a single-contributor setup (`circuits/ceremony/INTERIM_SETUP.json`) until the multi-party
+  ceremony in `docs/CEREMONY.md` replaces them, and they cannot be rebuilt from public inputs.
 - Local circom on an arm64 Mac runs the macOS x86 binary under Rosetta. Set `CIRCOM=/tmp/circom`.
   `circom-ecdsa` is fetched as a pinned external dependency by `scripts/setup_circom_ecdsa.sh`, not
   vendored.

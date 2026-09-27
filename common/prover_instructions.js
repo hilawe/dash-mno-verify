@@ -22,7 +22,7 @@
 // challenge's own context and season, which is also the only form that survives a season rollover.
 // REGISTRATION COMES BEFORE THE CHALLENGE (review finding F2, 2026-09-27). These lines used to name
 // the prove command first and the registration as an aside, so a first-time member took the
-// challenge, then spent the measured 13 minutes registering, and reached the prove step with a
+// challenge, then spent the measured 13 minutes registering (under the PLONK keys then in use), and reached the prove step with a
 // challenge that had expired after ten. Registration needs no challenge, so it is presented first,
 // with the instruction to request a fresh challenge afterwards. A registered member skips it.
 //
@@ -36,14 +36,14 @@ export function proveInstructions(mode, ctx = {}) {
     const community = ctx.community ?? "<community-id>";
     const role = ctx.role ?? "<role-id>";
     return [
-      "First proof this season? Register first. It needs no challenge, takes about 10 to 15 minutes, and is done once per season. Then request a fresh challenge. Replace <key.wif>, brackets included, with the path to a file holding your voting key, readable only by you.",
+      "First proof this season? Register first. It needs no challenge, takes about a minute or two, and is done once per season. Then request a fresh challenge. Replace <key.wif>, brackets included, with the path to a file holding your voting key, readable only by you.",
       `npm run register -- --gateway ${gateway} --platform ${platform} --community ${community} --role ${role} --voting-key-file <key.wif>`,
       "Already registered this season? Make the proof before the challenge expires.",
       `npm run prove-epoch -- --gateway ${gateway} --challenge challenge.json`,
     ];
   }
   return [
-    "Make the proof before the challenge expires. It takes about 10 to 15 minutes. Replace <key.wif>, brackets included, with the path to a file holding your voting key, readable only by you.",
+    "Make the proof before the challenge expires. It takes about a minute or two. Replace <key.wif>, brackets included, with the path to a file holding your voting key, readable only by you.",
     "npm run prove -- --challenge challenge.json --voting-key-file <key.wif>",
   ];
 }

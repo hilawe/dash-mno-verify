@@ -3,14 +3,14 @@
 # gateway does not have to compile and run a setup.
 #
 # By default this fetches the small artifacts from the GitHub release, which are the cheap members
-# proving key and the circuit wasms. The two ~2.3 GB proving keys (membership, registration) exceed
-# GitHub's 2 GB release asset limit, so they are listed under "largeFiles", hosted elsewhere (Cloudflare
-# R2 today, at each entry's own url), and fetched only with --large. An entry with no sha256 is treated
-# as not hosted. Either way, scripts/rebuild_proving_keys.sh rebuilds them from public inputs, and a
-# faithful rebuild matches the same sha256. See docs/PROVING_KEY.md.
+# proving key and the circuit wasms. The two heavy proving keys (membership, registration) are listed
+# under "largeFiles" and fetched only with --large, each from its own url. Since the move to Groth16 they
+# are about 120 MB each and sit on the same release. The PLONK keys before that were 2.3 GB, over
+# GitHub's asset limit, which is why an entry may carry its own url. An entry with no sha256 is treated
+# as not hosted. See docs/PROVING_KEY.md.
 #
 # Usage: scripts/fetch_keys.sh [--large [registration|membership]]
-#   --large               both ~2.3 GB proving keys
+#   --large               both heavy proving keys
 #   --large registration  only the key two-tier registration needs
 #   --large membership    only the key single-tier proving needs
 # Env:   MNO_KEYS_BASE_URL overrides the base for files WITHOUT their own url (default: this repo's

@@ -8,7 +8,7 @@ import { runScript } from "./run_script.mjs";
 
 // The single-tier prover wrote proof.json on a masternode on 2026-09-26 and then never exited, because
 // snarkjs's BN128 curve keeps a pool of worker threads alive. prover/proving_threads.js releases them.
-// A real proof needs the 2.3 GB key, which the test runners do not have, so these pin the mechanism
+// A real proof needs a heavy proving key, which the test runners do not have, so these pin the mechanism
 // with the curve alone and then check that every file that proves calls the release.
 
 const REPO = fileURLToPath(new URL("..", import.meta.url));

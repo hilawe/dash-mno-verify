@@ -1,7 +1,7 @@
 // Two-tier prover CLI. Runs on the member's own machine.
 //
 //   register: prove masternode control once per season. Heavy (it does the secp256k1 and
-//             hash160 work), so plan for about 7 GB of free memory. It saves a
+//             hash160 work), so plan for about 2 GB of free memory. It saves a
 //             secret you keep, and registers your commitment with the gateway.
 //
 //   prove:    the per-epoch membership proof. Cheap (a few seconds, a small key), so it
