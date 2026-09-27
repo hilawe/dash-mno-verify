@@ -46,7 +46,8 @@ for c in mno_membership mno_registration; do
   [ "$got" = "$frozen" ] || { echo "r1cs $got is not the frozen $frozen" >&2; exit 1; }
   "$SNARKJS" groth16 setup "$OUT/$c.r1cs" "$PTAU" "$OUT/${c}_0000.zkey" >/dev/null
   # The randomness goes through the prompt on stdin, from the system's random source, and nowhere else.
-  od -An -tx1 -N64 /dev/urandom | tr -d ' \n' | "$SNARKJS" zkey contribute "$OUT/${c}_0000.zkey" "$OUT/$c.zkey" \
+  # It must end in a newline, or the prompt never receives a line and snarkjs stops when stdin closes.
+  { od -An -tx1 -N64 /dev/urandom | tr -d ' \n'; echo; } | "$SNARKJS" zkey contribute "$OUT/${c}_0000.zkey" "$OUT/$c.zkey" \
     --name="interim, coordinator only" > "$OUT/${c}_contribute.log" 2>&1
   "$SNARKJS" zkey verify "$OUT/$c.r1cs" "$PTAU" "$OUT/$c.zkey" > "$OUT/${c}_verify.log" 2>&1
   grep -q "ZKey Ok!" "$OUT/${c}_verify.log" || { echo "$c: zkey verify did not report ZKey Ok!" >&2; exit 1; }
