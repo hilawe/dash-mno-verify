@@ -34,8 +34,9 @@ Not enforced by anything, so they depend on the session:
   execution review and a focused repair confirmation when needed. Historical fleet counts do not apply.
 - A consequential security change (admission, permissions, secrets, the trust model, cryptography and
   the circuits, durable state, freshness) is reviewed by a different model family than the one that
-  wrote it. That buys independence, not cryptographic assurance, which needs a specialist review of the
-  circuits and is a separate decision before anything of value is protected.
+  wrote it. That buys independence, not cryptographic assurance. THERE WILL NEVER BE AN EXTERNAL AUDIT
+  OR SPECIALIST REVIEW (settled 2026-09-27). Do not propose one. Circuit claims rest on the internal
+  assessment in `tools/circuit-analysis/RESULTS.md`, and what it cannot settle is a stated limit.
 - State no claim wider than its evidence, and name the network it was checked on (regtest, testnet,
   mainnet) and the install profile where it matters.
 - Stage exact paths, never a directory and never `-A`.
@@ -129,8 +130,52 @@ review rejected its cross-project scope. Repository-root instructions were not e
   and was rejected with its root altered. The benchmark-only key had no ceremony and was deleted from
   both machines, and nothing of crono's was paused. Full record and limits in
   `docs/REDUCING_PROVING_COST.md`, "Groth16 on the existing registration circuit". The next decision
-  is the owner's, whether a circuit-specific ceremony and a specialist circuit review are acceptable.
+  is the owner's, whether a circuit-specific ceremony is acceptable. A ceremony fixes the circuit, so if
+  it goes ahead, fold in the circuit hardening from the assessment below (A1 to A3) before freezing.
   Migration is not authorized.
+- Assess the one circuit component no tool had covered, since no outside review will happen.
+
+  UNIT DONE (2026-09-27), `ECDSAPrivToPub(64, 4)` from circom-ecdsa,
+  recorded in `tools/circuit-analysis/RESULTS.md`, "ECDSAPrivToPub, assessed internally". Three new
+  scripts in `tools/circuit-analysis/ecdsa/`, each watched failing on planted errors:
+  - `check_constants.mjs`. All 8,160 table points and the group order match OpenSSL. The dummy point is
+    255*G, not the documented 2^255*G. The case analysis shows no kept adder ever receives two equal
+    points for any 256-bit key, and replays 2,014 keys.
+  - `check_bounds.mjs`. The adder's modular checks stay below 2^249 against r/2 of about 2^252.6, and the
+    quadratic check's input bound is exactly at m = 132 with no margin.
+  - `check_witness.mjs`, about 30 minutes. 211 keys through the compiled component give privkey*G per
+    OpenSSL, the degenerate-path keys satisfy the full R1CS, key 0 gives (0,0), and key n is refused.
+  Also run: `circom --inspect` (nothing unconstrained beyond by-design range-check outputs), and a
+  published-catalog sweep. The pinned `bigint.circom`, `bigint_4x64_mult.circom`, and
+  `bigint_func.circom` are byte-identical to the commit the 2022 circom-bigint audit examined (0xbok
+  7505e5c), compared file by file. One execution review with repository access by a different model
+  family returned DEFECT-FOUND, which is item A2 below, plus two over-broad wordings in the write-up and
+  one wrong comment, all folded. `check_bounds.mjs` is a readable port of the reviewer's interval script and reproduces its
+  numbers exactly. No separate focused confirmation was run on the folds.
+  Items found, none changed in code:
+  - A1, the dummy constant. Harmless as used (sections 2 and 3 of the record). Adopt the corrected value
+    only at a circuit rebuild. A downstream project on the same pin patched it (Zilliqa zkp_recovery_app
+    0f628c4), and upstream has no report of it.
+  - A2, private key 0 is accepted by both full circuits and yields the leaf
+    3625c4a2ea974760a816368fd15de771594476e7. Only an owner who set that voting key id would be
+    affected, and an owner can already give a key away. Not checked against the live lists.
+  - A3, the single-tier and registration nullifiers share a layout and can coincide when an epoch number
+    equals a season number for one context. Unreachable under the default schedule (epoch 2960 against
+    season 230 today).
+  Two no-folder review packets for the other model families are in `~/Downloads/`
+  (`*-nofolder_dash-mno-verify_circuit-assessment_2026-09-27.md`) and need pasting by the owner. They cannot close anything, and a real defect from either reopens the unit.
+
+  What forced rework this session (feeds `docs/PRECOMMIT_ADOPTION.md`, claim width):
+  - Two claims were written wider than the evidence ("never receives two points with the same x", "the
+    dummy is never an input to a kept adder"). The review refuted both literally, at privkey = n and at
+    key 511. The security property held. Rule it feeds: state no claim wider than its evidence.
+  - The first table mutant broke the file's format rather than a value, so the check failed for the wrong
+    reason. It was redone as a real value change. Rule it feeds: confirm the mutant did its job.
+
+  Recommended next, in order. First, have the oracle leave the key-0 leaf out of the tree (A2), a small
+  change with no circuit or key impact. Second, decide A3 (the mode in `contextHash`, a JS-only change
+  with a context cutover at a season boundary, or a circuit tag at the next rebuild). Third, the Groth16
+  ceremony decision, which would carry A1 to A3 into the circuit.
 
 ## SUPERSEDED, 2026-09-25 (re-entry after six idle weeks, stale state corrected, a testnet VPS identified). Superseded by the 2026-09-27 section above
 

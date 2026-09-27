@@ -166,7 +166,9 @@ key to use, and it never leaves your machine.
 
 This is a working prototype, not audited. The cryptography is standard and the full pipeline
 runs end to end, and it has been exercised on real mainnet data on a Raspberry Pi, but do not
-gate anything of real value on it until it has had more eyes and an audit. The Dash Platform
+gate anything of real value on it. No external audit is planned, so that advice stands on its own
+rather than waiting for one. `docs/SECURITY_AUDIT_SCOPE.md` and `tools/circuit-analysis/RESULTS.md` say what internal
+checking has covered and what it cannot. The Dash Platform
 shared-state option is wired and logic-tested but not yet proven against live Platform.
 
 ## Where each piece is documented

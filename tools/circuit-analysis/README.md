@@ -1,7 +1,7 @@
 # Circuit static analysis
 
 A containerized run of circomspect (Trail of Bits) over the project's circom circuits. It exists because
-the highest-value, no-specialist move on the cryptographic core is an automated hunt for the bug class
+the highest-value tool-driven move on the cryptographic core is an automated hunt for the bug class
 that matters most: under-constrained or unused signals, where a prover could satisfy the constraints with
 a witness that does not correspond to a real masternode voting key. circomspect is a static analyzer built
 for exactly this, and it is free.
@@ -15,8 +15,10 @@ It flags patterns a human circuit reviewer looks for first, mechanically and qui
 evidence that the common under-constraint patterns are absent. It is NOT a soundness certificate: static
 analysis cannot prove the constraint system is fully determined (that is what R1CS-level tools such as Ecne
 and Picus attempt, component by component), it does not judge whether the specific `circom-ecdsa` templates
-are safe as used, and it does not model a novel attack. It raises the tier-1 floor above a structural read;
-it does not replace a specialist. See `docs/SECURITY_AUDIT_SCOPE.md` for the full ceiling.
+are safe as used, and it does not model a novel attack. It raises the tier-1 floor above a structural read.
+`ecdsa/` holds the checks that go further on the one component this pass cannot judge, and `RESULTS.md`
+records what each established and what is still open. No external review is planned, so those limits stand
+as stated rather than waiting on one.
 
 ## Run it
 

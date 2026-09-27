@@ -3,7 +3,10 @@
 The routine working method is now [Bounded delivery and review](WORKING_METHOD.md), adopted
 2026-09-27. The multi-family fleet and repeated whole-surface rounds below are historical
 process design, not mandatory steps for routine changes. Use this larger program only when
-the owner explicitly commissions it. Its specialist-audit limitations still apply.
+the owner explicitly commissions it. Its stated limits still apply. No external audit or
+specialist review will be commissioned (settled 2026-09-27), so where this document leaves an
+item "for a specialist", read it as a limit that stays open unless internal analysis closes it.
+`tools/circuit-analysis/RESULTS.md` records the tier-1 circuit assessment that replaced that plan.
 
 This document designs a repeatable internal assurance pass for dash-mno-verify that stands in, as far as
 it honestly can, for a formal third-party audit. It is a process design, not a review. Running it

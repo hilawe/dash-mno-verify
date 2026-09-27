@@ -1,10 +1,12 @@
 # Security audit scope
 
-This document scopes a formal third-party security audit of dash-mno-verify. It exists so that an
-engagement can start from a defined target list, a stated set of claims to validate, and an honest
-account of what is already known, rather than from a cold read of the repository. It does not commission
-an audit. Choosing an auditor, agreeing a budget, and setting timing are operator decisions, and the
-recommendation at the end names them.
+This document was written to scope a formal third-party security audit of dash-mno-verify. No external
+audit or specialist review will be commissioned (settled 2026-09-27, see the last section), so it now
+serves as the charter for the project's own best-effort assessment. That assessment uses constraint-level
+analysis tools, checks against independent implementations, published circuit bug catalogs, and
+independent review with repository access. Where the text below says "auditor" or "the audit", read the internal
+assessment that uses this document as its target list. The claims, targets, and known limits are
+unchanged by that.
 
 Read `docs/DESIGN.md` for the architecture and `docs/THREAT_MODEL.md` for the trust boundaries and the
 accepted limits. This document assumes both.
@@ -158,42 +160,31 @@ structural-only reach the internal process claims elsewhere, and it means the tw
 determinism is no longer an open question for the auditor. It does NOT settle the residual: the single-tier
 and registration circuits derive the public key in circuit with `ECDSAPrivToPub` from `circom-ecdsa`, which
 the automated tools reach only by treating that component as trusted, so whether that unaudited component is
-sound as used, and the trusted-setup assumption, remain for the specialist. The effect is to narrow tier 1
-toward that one named component rather than to close it.
+sound as used, and the trusted-setup assumption, remained open. The effect was to narrow tier 1 toward that
+one named component. That component was then assessed internally on 2026-09-27 (`tools/circuit-analysis/
+RESULTS.md`, "ECDSAPrivToPub, assessed internally"), which checked every constant against OpenSSL, worked the
+case analysis for its point additions, ran the compiled component on 211 keys, and mapped the published bug
+catalogs onto it. What that assessment does not settle is stated there.
 
-## Decisions for the operator, with a recommendation
+## Decision on an external audit
 
-Three choices set the shape of the engagement.
+SETTLED 2026-09-27. No external audit or specialist review will be commissioned for this project. The
+recommendation that stood here (engage a zero-knowledge circuit specialist for tier 1 first, then a protocol
+and application reviewer) is withdrawn, because the engagement it prepared for will not happen. The
+reasoning is proportion. The system gates access to a community, not funds, and the operational
+mitigations (do not gate anything of real value, keep the anonymity set large, cap grants) are the control
+that does not depend on anyone's review.
 
-RECOMMENDED, a two-part scope led by the circuits. Engage a ZK-circuit specialist for tier 1 first,
-because that is where a defect is both most likely (an unaudited demonstration dependency sits on the
-critical path) and most damaging, and because a circuit finding may change the design before a
-gateway audit would be worth its cost. Follow with, or run in parallel, a protocol-and-application
-reviewer for tiers 2 and 3.
+What takes the audit's place, for every tier:
 
-- Upside: spends the first and largest audit budget where the risk is concentrated, and surfaces a
-  design-changing circuit finding before later work is sunk.
-- Downside: two engagements or a broader firm, and a longer calendar than a single narrow review.
+- The claims, targets, and known limits above, used as the charter for internal rounds.
+- Constraint-level and static tools on the circuits (circomspect, Ecne, circom's own inspection), with the
+  runs recorded in `tools/circuit-analysis/`.
+- Checks against independent implementations (OpenSSL for the curve, circomlibjs for Poseidon, Dash Core's
+  own X11 for block hashing), and the published circuit bug catalogs.
+- Independent review with repository access of every consequential change, per `docs/WORKING_METHOD.md`.
 
-Alternative, a single full-scope engagement covering tiers 1 through 3 at once.
-
-- Upside: one contract, one report, one timeline.
-- Downside: few firms combine deep circuit expertise with application security, so one of the two is
-  usually weaker, and the circuit risk is the one that cannot be weaker.
-
-Alternative, defer the audit and continue self-review.
-
-- Upside: no cost now.
-- Downside: self-review has a stated ceiling it has already reached on the cryptographic core, so
-  deferring does not reduce the tier-1 risk, it only postpones discovering it. This is not recommended
-  before anything of value is gated.
-
-TIMING. The audit is the gate before the system protects anything of value, which `TODO.md` and
-`docs/THREAT_MODEL.md` both state. The natural trigger is the point at which a real community is ready
-to gate real access, and the circuit portion should complete before that, since a circuit change is the
-most expensive kind to make late.
-
-AUDITOR PROFILE. Tier 1 needs a reviewer with circom and PLONK experience and a track record on ZK
-circuits, not general application security. Tiers 2 and 3 need protocol and web-application security
-experience, including light-client and consensus reasoning for the oracle. Prior Dash or Bitcoin-family
-consensus familiarity helps for the DML and ChainLock reasoning but is not essential.
+The limit that comes with it is stated rather than deferred. No one outside the project has examined the
+circuits, the trusted setup rests on the public Powers of Tau ceremony with no independent examination of
+its use here, and a clean internal round is not an audit. A reader deciding whether to rely on this system
+should weigh it that way.

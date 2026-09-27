@@ -28,8 +28,11 @@ acceptance claim unless the owner expands it. Existing security checks stay in f
   durable state, freshness, and evidence used to approve deployment receive one independent
   repository-access review with a meaningful contrary control. The reviewer is a different
   model family from the implementer, as the existing project rule requires. That is
-  independence, not cryptographic assurance. Cryptographic soundness claims still need
-  specialist analysis, and repeating general code review cannot supply it.
+  independence, not cryptographic assurance. Cryptographic soundness claims need targeted
+  analysis (constraint-level tools, checks against an independent implementation, and the
+  published circuit bug catalogs), and repeating general code review cannot supply it. No
+  external specialist review will be commissioned, so a gap that analysis cannot close stays
+  a stated limit.
 
 A misleading acceptance claim belongs in the third category even if it is only prose.
 The review must identify the source revision or exact uncommitted files it examined.

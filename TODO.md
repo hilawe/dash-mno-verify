@@ -6,8 +6,10 @@ anything of real value until at least the P0 items are done. In place of a paid 
 is checked by repeated independent multi-model review rounds against the claims in
 `docs/SECURITY_AUDIT_SCOPE.md`, run with repository access whenever a change touches the trust
 model, the circuits, a canonical encoding, or the gateway and oracle boundary. Those rounds are
-evidence, not a substitute for a specialist on the one named residual (`circom-ecdsa` and the
-trusted setup), and the operational mitigations still apply: keep the anonymity set large and
+evidence, and no external audit or specialist review will be commissioned, so the limits they
+cannot close (the trusted setup, and the lack of a machine-checked uniqueness proof for
+`circom-ecdsa`'s curve component) stay stated limits. `tools/circuit-analysis/RESULTS.md` records what the internal circuit
+assessment established. The operational mitigations still apply: keep the anonymity set large and
 grants capped.
 
 DIRECT NODE MODE ON protx diff, started 2026-08-02 and now WIRED as `MNO_DML_SOURCE=node`.
