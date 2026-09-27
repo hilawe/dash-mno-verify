@@ -172,6 +172,31 @@ syncing, and about 8 GB of the 12 GB was free. What it is for, in order:
    did not name the registration engine and statement the verifier has required since the zkVM work,
    and CI does not run it. Fixed in the same commit.
 
+   THE TWO-TIER REAL RUN PASSED TOO (2026-09-26, 20:41 to 00:58 UTC). A test gateway on the Mac in
+   two-tier mode (stores in scratch, registration limited to one context, demo-only freshness limits
+   raised to two hours including `MNO_REGISTER_ROOT_MAX_AGE`) was reached from the box through an SSH
+   reverse tunnel bound to the box's own localhost. The evonode's registration proof, made on the box
+   with the key piped in as before, was accepted at members-tree index 0. It took 782 s at 3 CPUs, and
+   the cgroup peak was 7.37 GiB including page cache. The per-epoch members proof then took 29 s on the
+   box at 2 CPUs and 2 GB, and the gateway returned `ok: true` for epoch 2960. A replay and the same
+   proof against a different challenge were both refused. Both provers exited on their own (the
+   `bfa43be` fix, on real hardware).
+
+   OFF AND BACK ON, tested BEFORE the run and kept outside this public repository in the box's work
+   folder. `run_two_tier.sh` records its own PID and those of a 45-minute watchdog and a detached
+   60-minute GUARDIAN that restarts crono's wallet container even if the runner is force-killed.
+   `stop_all.sh` stops only those recorded PIDs and the named containers, then starts the wallet and
+   confirms it is running. The tunnel and gateway were switched off and on once as a test. The wallet
+   was paused 20:41:36 to 20:54:39 UTC and restored by the runner the moment the proof finished. The
+   session itself then sat idle for about four hours (the laptop slept), which cost nothing on the
+   box because nothing waited on it. At the end everything was switched off and checked, the testnet
+   member secret was deleted, the wallet was at the chain tip, and the evonode was READY with PoSe 0.
+
+   A NEW DEFECT, NOT YET FIXED. `prover/two_tier.js` parses flags strictly in `--flag value` pairs, so
+   the boolean `--voting-key-stdin` swallows the next word. In the run it swallowed `--secret-out`,
+   whose path was silently ignored and the secret written to the default name. Placed last, the flag
+   reads as unset. `prover/prover.js` already uses `node:util` `parseArgs`, which is the fix.
+
    HOW THE BOX WAS USED, so it can be repeated. The work folder is `~/mno-verify-bench` on the crono
    box (public files only, about 4.5 GB: a `git archive` of the repo, the fetched keys, and the run
    inputs and outputs). To fit the 7.5 GB cap, crono's wallet-only Core container was paused for the
@@ -205,14 +230,17 @@ a current mainnet node.
 
 PUNCH LIST, in the recommended order:
 
-1. The two-tier real run on the box (registration, then a per-epoch members proof). Registration posts
-   to the gateway, so the box needs a route to it (for example an SSH reverse tunnel to the Mac).
-2. Reachability triage of the 19 gateway-profile advisories before any public gateway.
-3. Re-confirm the DIP4 serialization on current mainnet. It needs a synced mainnet node, either by
+1. Fix the `prover/two_tier.js` flag parser (use `parseArgs` as `prover/prover.js` does), with a test
+   that `--voting-key-stdin` followed by another flag, and placed last, both parse correctly.
+2. Delete the box's 4.5 GB work folder (`~/mno-verify-bench`) once no further runs are planned, using
+   its `stop_all.sh` first.
+3. Reachability triage of the 19 gateway-profile advisories before any public gateway.
+4. Re-confirm the DIP4 serialization on current mainnet. It needs a synced mainnet node, either by
    restarting `dash-mno-node` locally or on the VPS after a disk check.
-4. A one-line nudge to Pasta. The result now exists, a real testnet evonode's proof verified end to
-   end, heavy proof about 14 minutes at 3 CPUs and about 7 GB.
-5. Deferred items, none of which blocks a pilot, are the ChainLock light-client bootstrap (stopped),
+5. A one-line nudge to Pasta. The result now exists, a real testnet evonode's proof verified end to
+   end in both modes, heavy proof about 13 to 14 minutes at 3 CPUs and about 7 GB, per-epoch proof
+   under 30 seconds.
+6. Deferred items, none of which blocks a pilot, are the ChainLock light-client bootstrap (stopped),
    the Platform registration store (multi-gateway only), and simplified payment verification (SPV).
 
 WHAT FORCED REWORK SINCE THE LAST HANDOFF:
@@ -232,6 +260,9 @@ WHAT FORCED REWORK SINCE THE LAST HANDOFF:
   nothing had pinned or mirrored it. Feeds the dependency hygiene item. Any other unpinned external
   fetch in the build is the same shape. circom-ecdsa is pinned by commit. The circom binary CI
   downloads (`.github/workflows/ci.yml`, v2.2.3) is pinned by version tag but not by hash.
+- The first version of the box's off switch stopped processes by matching text in command lines
+  (`pkill -f`), and its first test stopped the very ssh session that invoked it. It now stops only
+  recorded PIDs. Found by testing the switch before the real run, which is why that step exists.
 - `scripts/two_tier_demo.mjs` had silently broken when the registration engines were added, because
   nothing runs it in CI. Found only by running it end to end for the hang fix. Any script that is not
   exercised by CI can rot the same way, which feeds "ask who consumes what changed".
