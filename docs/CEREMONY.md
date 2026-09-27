@@ -74,6 +74,10 @@ H0 + 2 x 576, and so on, whose block was mined after the closing statement was p
 closing moves the beacon one day at a time, and the height follows from public timestamps alone, the
 closing statement's and the block times of the candidate heights.
 
+Contributors follow `docs/ceremony/CONTRIBUTOR_GUIDE.md`, which has every command. The coordinator's
+public messages (the announcement, each hand-off, the closing statement, the transcript) are templated in
+`docs/ceremony/COORDINATOR_TEMPLATES.md`.
+
 ## The procedure, per circuit
 
 Run the same steps for `mno_membership` and `mno_registration`, each as its own chain. `C` below is the
