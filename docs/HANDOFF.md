@@ -232,8 +232,22 @@ review rejected its cross-project scope. Repository-root instructions were not e
   - The key-0 CI check exited early for the wrong reason when its constraint line was deleted, and one
     purpose-tag assertion compared a value with itself. Rule it feeds: confirm the mutant did its job.
 
-  NEXT, in order. First, ask the outside contributors and fix the beacon height and deadlines. Second, run
-  the ceremony per `docs/CEREMONY.md`. Third, commit the two verification keys, host the proving keys and
+  PUSHED AS A DRAFT PR, NOT MERGED: https://github.com/hilawe/dash-mno-verify/pull/6 (the ci workflow runs
+  only on main pushes and pull requests, so a branch push alone runs nothing). Added after the freeze,
+  prose only, none touching a frozen input: a deterministic beacon rule and a closing statement that ends
+  both chains before the beacon block is mined (`docs/CEREMONY.md`), a narrower nullifier claim (the tags
+  remove the shared-input construction that made equality predictable, and equality now needs a Poseidon
+  collision), and the contributor package, `docs/ceremony/CONTRIBUTOR_GUIDE.md` and
+  `docs/ceremony/COORDINATOR_TEMPLATES.md`. The guide's verify and contribute commands were rehearsed as
+  written on a copy of a development key (verify 59 s, contribute 40 s, the new contribution then listed
+  with the printed hash). The proposed schedule and the Pasta invitation are a Downloads draft pending the
+  owner's approval, not in the repository.
+
+  Deferred by the owner: a standalone circom-ecdsa checker waits until after the Discord pilot and a real
+  outside user. No novelty claim is made for it.
+
+  NEXT, in order. First, approve the schedule and invite the outside contributors. Second, run the
+  ceremony per `docs/CEREMONY.md`. Third, commit the two verification keys, host the proving keys and
   wasm, and update the manifest (the publication step). Fourth, merge, then the small Discord pilot.
 
 ## SUPERSEDED, 2026-09-25 (re-entry after six idle weeks, stale state corrected, a testnet VPS identified). Superseded by the 2026-09-27 section above
