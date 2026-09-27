@@ -15,6 +15,7 @@ import { buildPoseidon } from "circomlibjs";
 import { wifToPriv, leafFromPriv } from "../common/dml.js";
 import { loadVotingKey } from "./voting_key.js";
 import { releaseProvingThreads } from "./proving_threads.js";
+import { merklePathFor } from "../common/merkle_path.js";
 
 const TREE_DEPTH = 16;
 const WASM = "circuits/build/mno_membership_js/mno_membership.wasm";
@@ -40,39 +41,11 @@ function privToLimbs(priv) {
   return [0n, 1n, 2n, 3n].map((i) => ((d >> (64n * i)) & mask).toString());
 }
 
-function buildLevels(poseidon, leavesDec) {
-  const F = poseidon.F;
-  const leaves = leavesDec.map((x) => F.e(BigInt(x)));
-  while (leaves.length < 2 ** TREE_DEPTH) leaves.push(F.e(0n));
-  const levels = [leaves];
-  while (levels.at(-1).length > 1) {
-    const cur = levels.at(-1);
-    const next = [];
-    for (let i = 0; i < cur.length; i += 2) next.push(poseidon([cur[i], cur[i + 1]]));
-    levels.push(next);
-  }
-  return levels;
-}
-
-function merklePath(poseidon, levels, index) {
-  const F = poseidon.F;
-  const pathElements = [];
-  const pathIndices = [];
-  let idx = index;
-  for (let level = 0; level < TREE_DEPTH; level++) {
-    pathElements.push(F.toObject(levels[level][idx ^ 1]).toString());
-    pathIndices.push(idx & 1); // 0 = we are the left child, 1 = the right child
-    idx >>= 1;
-  }
-  return { pathElements, pathIndices };
-}
-
 const challenge = JSON.parse(await readFile(values.challenge, "utf8"));
 const oracle = JSON.parse(await readFile(values.oracle, "utf8"));
 const priv = wifToPriv(await loadVotingKey(values));
 
 const poseidon = await buildPoseidon();
-const F = poseidon.F;
 
 const myLeaf = leafFromPriv(priv).toString();
 const index = oracle.leaves.indexOf(myLeaf);
@@ -81,8 +54,8 @@ if (index < 0) {
   process.exit(1);
 }
 
-const levels = buildLevels(poseidon, oracle.leaves);
-const builtRoot = F.toObject(levels.at(-1)[0]).toString();
+// Occupied branches only (common/merkle_path.js). The padded full build took seconds of hashing.
+const { pathElements, pathIndices, root: builtRoot } = merklePathFor(poseidon, oracle.leaves, index, TREE_DEPTH);
 if (builtRoot !== challenge.root) {
   console.error(
     "The local masternode list does not match the challenge root. The list has moved.\n" +
@@ -90,8 +63,6 @@ if (builtRoot !== challenge.root) {
   );
   process.exit(1);
 }
-
-const { pathElements, pathIndices } = merklePath(poseidon, levels, index);
 
 const input = {
   privkey: privToLimbs(priv),

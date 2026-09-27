@@ -140,7 +140,7 @@ npm run prove-epoch -- --gateway https://the-gateway --challenge challenge.json
 # then submit the resulting proof.json back through the adapter (it calls /v1/verify with the token).
 ```
 
-Registration needs the 2.3 GB registration proving key, which `scripts/fetch_keys.sh --large`
+Registration needs the 2.3 GB registration proving key, which `scripts/fetch_keys.sh --large registration`
 downloads and checks against its sha256, or which you rebuild once with
 `scripts/build_proving_key.sh <circuit>` on a machine with enough memory. The per-epoch key is the 35 MB one from `fetch_keys.sh`.
 

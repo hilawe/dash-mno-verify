@@ -23,6 +23,7 @@ import { assertSafeGatewayUrl } from "../common/gateway_url.js";
 import { loadVotingKey } from "./voting_key.js";
 import { releaseProvingThreads } from "./proving_threads.js";
 import { parseTwoTierArgs } from "./two_tier_args.js";
+import { merklePathFor } from "../common/merkle_path.js";
 import {
   defaultSecretPath,
   findSecretForContext,
@@ -88,26 +89,10 @@ function privToLimbs(priv) {
 
 // Build a Merkle path for a leaf at `index`, padding empties with 0. Returns the path and
 // the tree root so the caller can confirm it matches what the gateway expects.
+// Occupied branches only (common/merkle_path.js). The padded full build took about eight seconds for
+// a one-member tree before the proof even started.
 function buildPath(poseidon, leavesDec, index) {
-  const F = poseidon.F;
-  let level = leavesDec.map((x) => F.e(BigInt(x)));
-  while (level.length < 2 ** TREE_DEPTH) level.push(F.e(0n));
-  const levels = [level];
-  while (level.length > 1) {
-    const next = [];
-    for (let i = 0; i < level.length; i += 2) next.push(poseidon([level[i], level[i + 1]]));
-    level = next;
-    levels.push(level);
-  }
-  const pathElements = [];
-  const pathIndices = [];
-  let idx = index;
-  for (let l = 0; l < TREE_DEPTH; l++) {
-    pathElements.push(F.toObject(levels[l][idx ^ 1]).toString());
-    pathIndices.push(idx & 1);
-    idx >>= 1;
-  }
-  return { pathElements, pathIndices, root: F.toObject(levels.at(-1)[0]).toString() };
+  return merklePathFor(poseidon, leavesDec, index, TREE_DEPTH);
 }
 
 async function register(a) {

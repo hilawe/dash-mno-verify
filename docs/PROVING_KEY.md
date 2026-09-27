@@ -57,8 +57,14 @@ in `keys.manifest.json`, separate from the small `files`, and `fetch_keys.sh` fe
 only when asked:
 
 ```bash
-bash scripts/fetch_keys.sh --large
+bash scripts/fetch_keys.sh --large registration   # only the key two-tier registration needs
+bash scripts/fetch_keys.sh --large membership     # only the key single-tier proving needs
+bash scripts/fetch_keys.sh --large                # both
 ```
+
+A member needs only one of the two keys. A file already present with the manifest's sha256 is
+skipped rather than downloaded again, and before the large keys the script prints the download size
+and refuses if the disk cannot hold it. A transient download failure is retried.
 
 Both large keys are hosted on Cloudflare R2, at the `url` in each `largeFiles` entry, and
 `--large` downloads each one and refuses it unless its sha256 matches the manifest. An entry with

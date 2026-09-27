@@ -9,13 +9,35 @@
 # as not hosted. Either way, scripts/rebuild_proving_keys.sh rebuilds them from public inputs, and a
 # faithful rebuild matches the same sha256. See docs/PROVING_KEY.md.
 #
-# Usage: scripts/fetch_keys.sh [--large]
+# Usage: scripts/fetch_keys.sh [--large [registration|membership]]
+#   --large               both ~2.3 GB proving keys
+#   --large registration  only the key two-tier registration needs
+#   --large membership    only the key single-tier proving needs
 # Env:   MNO_KEYS_BASE_URL overrides the base for files WITHOUT their own url (default: this repo's
 #        release for the manifest tag). It does not redirect an entry that has a url.
+#
+# A file already present with the manifest's checksum is skipped rather than fetched again, and
+# before the large keys it prints the download size and refuses if the disk cannot hold it (review
+# finding F4, 2026-09-27). A member needs only one of the two large keys, which halves the download.
 set -euo pipefail
 
+USAGE="usage: scripts/fetch_keys.sh [--large [registration|membership]]"
 WANT_LARGE=0
-[ "${1:-}" = "--large" ] && WANT_LARGE=1
+ONLY_LARGE=""
+case "${1:-}" in
+  "") ;;
+  --large)
+    WANT_LARGE=1
+    case "${2:-}" in
+      "") ;;
+      registration) ONLY_LARGE="mno_registration.zkey" ;;
+      membership) ONLY_LARGE="mno_membership.zkey" ;;
+      *) echo "unknown key '${2}' after --large (expected registration or membership)"; echo "$USAGE"; exit 2 ;;
+    esac
+    [ $# -le 2 ] || { echo "$USAGE"; exit 2; }
+    ;;
+  *) echo "$USAGE"; exit 2 ;;
+esac
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -66,6 +88,8 @@ manifest_entries() {
       const at = `${which}[${i}]`;
       if (!f || typeof f !== "object" || Array.isArray(f)) fail(`${at} is not an object`);
       const fields = { name: f.name, dest: f.dest, sha256: f.sha256 ?? "", url: f.url ?? "" };
+      const bytes = f.bytes ?? "";
+      if (bytes !== "" && !(Number.isSafeInteger(bytes) && bytes >= 0)) fail(`${at}.bytes is not a whole number`);
       for (const [k, v] of Object.entries(fields)) {
         if (typeof v !== "string") fail(`${at}.${k} is not a string`);
         // NUL too, since bash drops it silently and "out/a<NUL>b" would become out/ab.
@@ -75,7 +99,7 @@ manifest_entries() {
       // Only a large entry may leave sha256 empty, meaning "not hosted yet". Otherwise it must be a hash.
       const shaOk = /^[0-9a-f]{64}$/.test(fields.sha256) || (which === "largeFiles" && fields.sha256 === "");
       if (!shaOk) fail(`${at}.sha256 is not a 64-hex sha256`);
-      out.push([fields.name, fields.dest, fields.sha256, fields.url].join("\x1f"));
+      out.push([fields.name, fields.dest, fields.sha256, fields.url, String(bytes)].join("\x1f"));
     });
     if (out.length) console.log(out.join("\n"));
   ' "$1"
@@ -103,6 +127,11 @@ fetch_one() {
     echo "  $dest exists and is not a regular file (a directory, link, or other)"
     return 1
   fi
+  # Already here with the right checksum, so there is nothing to fetch.
+  if [ -f "$dest" ] && [ "$(sha256_of "$dest")" = "$sha" ]; then
+    echo "  $name already present and verified, skipped"
+    return 0
+  fi
   # fetch_one runs as an `if !` condition, which switches set -e OFF inside it, so every step whose
   # failure matters is checked by hand.
   local tmp
@@ -112,7 +141,9 @@ fetch_one() {
   fi
   CURRENT_TMP="$tmp"
   echo "  $name ..."
-  if ! curl -fsSL "$src" -o "$tmp"; then
+  # Retries on a transient failure (a timeout, or HTTP 408, 429, or 5xx), and abandons a source that
+  # stalls below 1 KB/s for a minute, since the large keys are 2.3 GB each.
+  if ! curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 30 --speed-limit 1024 --speed-time 60 "$src" -o "$tmp"; then
     rm -f "$tmp"; CURRENT_TMP=""
     echo "  could not download $name from $src"
     return 1
@@ -170,7 +201,7 @@ if [ "$WANT_LARGE" = "1" ]; then
 fi
 
 echo "fetching small artifacts from $BASE"
-while IFS=$'\x1f' read -r name dest sha url; do
+while IFS=$'\x1f' read -r name dest sha url bytes; do
   [ -n "$name" ] || continue
   if ! fetch_one "$name" "$dest" "$sha" "$url"; then
     explain_source "$url"
@@ -179,9 +210,44 @@ while IFS=$'\x1f' read -r name dest sha url; do
 done <<< "$SMALL"
 
 if [ "$WANT_LARGE" = "1" ]; then
-  echo "fetching large proving keys (--large)"
-  while IFS=$'\x1f' read -r name dest sha url; do
+  echo "fetching large proving keys (--large${ONLY_LARGE:+ $ONLY_LARGE only})"
+  # Size first. Count only what is selected and not already present with the right checksum, then
+  # refuse before downloading anything if the disk cannot hold it. Free space is measured WHERE EACH
+  # KEY IS WRITTEN (its destination directory, or the nearest one that exists), per directory, since
+  # a key directory can sit on a different volume from the repository.
+  SELECTED=0
+  PLAN=""  # one "directory<0x1f>bytes" line per key still to download
+  while IFS=$'\x1f' read -r name dest sha url bytes; do
     [ -n "$name" ] || continue
+    [ -z "$ONLY_LARGE" ] || [ "$name" = "$ONLY_LARGE" ] || continue
+    SELECTED=$((SELECTED + 1))
+    if [ -n "$sha" ] && [ -f "$dest" ] && [ ! -L "$dest" ] && [ "$(sha256_of "$dest")" = "$sha" ]; then continue; fi
+    [ -n "$bytes" ] && PLAN="$PLAN$(dirname "$dest")"$'\x1f'"$bytes"$'\n'
+  done <<< "$LARGE"
+  if [ -n "$ONLY_LARGE" ] && [ "$SELECTED" = "0" ]; then
+    echo "  keys.manifest.json has no large entry named $ONLY_LARGE"
+    exit 1
+  fi
+  if [ -n "$PLAN" ]; then
+    SEP="$(printf '\037')"
+    while IFS=$'\x1f' read -r dir need; do
+      [ -n "$dir" ] || continue
+      probe="$dir"
+      while [ ! -d "$probe" ]; do probe="$(dirname "$probe")"; done
+      avail=$(( $(df -Pk "$probe" | awk 'NR==2 {print $4}') * 1024 ))
+      # awk -v passes the numbers in as variables, so no quoting of the program is involved.
+      echo "  about $(awk -v b="$need" 'BEGIN { printf "%.2f", b / 1000000000 }') GB to download into $dir, $(awk -v b="$avail" 'BEGIN { printf "%.2f", b / 1000000000 }') GB free there"
+      if [ "$avail" -lt "$need" ]; then
+        echo "  not enough free disk in $dir for the large keys, so nothing was downloaded"
+        exit 1
+      fi
+    # %.0f, not %d. Debian's default awk (mawk) caps %d at 2,147,483,647, which would print the two
+    # keys' 4.57 GB total as 2.1 GB and let a too-small disk pass. A review of the repair found it.
+    done < <(printf '%s' "$PLAN" | awk -F "$SEP" '{ total[$1] += $2 } END { for (d in total) printf "%s%s%.0f\n", d, sep, total[d] }' sep="$SEP")
+  fi
+  while IFS=$'\x1f' read -r name dest sha url bytes; do
+    [ -n "$name" ] || continue
+    [ -z "$ONLY_LARGE" ] || [ "$name" = "$ONLY_LARGE" ] || continue
     if [ -z "$sha" ]; then
       echo "  $name is not hosted yet (no sha256 under largeFiles in keys.manifest.json)."
       echo "  Rebuild it once with scripts/rebuild_proving_keys.sh, or host the rebuilt key on object"

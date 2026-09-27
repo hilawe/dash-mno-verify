@@ -40,7 +40,7 @@ This needs the large proving key (about 2.3 GB). It is too big for a GitHub rele
 
 ```bash
 bash scripts/fetch_keys.sh           # pulls the circuit wasm and the small per-epoch key
-bash scripts/fetch_keys.sh --large   # downloads the two large keys, each checked against its sha256
+bash scripts/fetch_keys.sh --large registration   # downloads the one large key the demo needs, checked against its sha256
 # bash scripts/build_proving_key.sh mno_registration  # instead of --large, rebuilds the key the demo needs and checks it against the committed vkey
 node scripts/two_tier_demo.mjs       # registration, then a per-epoch members proof, verified
 ```

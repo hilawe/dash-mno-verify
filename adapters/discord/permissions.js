@@ -79,7 +79,10 @@ function assertNoMemberDenial(ch, userId, what) {
     throw new DenialConflict(
       `${ch.id}: ${userId} has an overwrite DENYING ${offenders[0].deny.join(", ")}, so ${what} would ` +
         `override an exclusion this bot did not set. Per-member overwrites on a gated channel belong ` +
-        `to this bot. Express the exclusion with a role-level deny, or remove the member overwrite.`,
+        `to this bot. A role-level deny cannot express this exclusion either, since the bot's member ` +
+        `allow outranks it, and no supported per-member exclusion exists yet. Remove the member overwrite. ` +
+        `Taking the channel out of DISCORD_GRANT_CHANNEL_IDS alone leaves existing grants in place, so ` +
+        `stop gating it with npm run discord:decommission first.`,
     );
   }
 }

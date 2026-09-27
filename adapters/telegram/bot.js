@@ -24,6 +24,8 @@ import { assertSafeGatewayUrl } from "../../common/gateway_url.js";
 import { GrantLedger } from "../common/grant_ledger.js";
 import { requireReconciled } from "../common/reconcile.js";
 import { contextHash } from "../../common/index.js";
+import { fetchJsonCapped, MAX_PROOF_BYTES } from "../../common/bounded_fetch.js";
+import { RateLimiter } from "../../core/stores.js";
 
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const GROUP_ID = process.env.TELEGRAM_GROUP_ID;
@@ -33,6 +35,10 @@ const GATEWAY = assertSafeGatewayUrl(process.env.MNO_GATEWAY_URL ?? "http://127.
 // Adapter bearer token the gateway requires when MNO_ADAPTER_SECRET is set there (review B1/M5).
 const ADAPTER_SECRET = process.env.MNO_ADAPTER_SECRET;
 const authHeaders = ADAPTER_SECRET ? { authorization: `Bearer ${ADAPTER_SECRET}` } : {};
+
+// A member's proof submissions are limited BEFORE the bot downloads anything (review finding F5), so a
+// stream of large or slow uploads cannot tie the bot up. A genuine member submits once per epoch.
+const submitLimiter = new RateLimiter({ windowSeconds: 600, max: 5 });
 // The ledger is a SQLite database now. TELEGRAM_GRANT_LEDGER keeps its old meaning, the JSON file,
 // and is read once on first start to migrate its grants and clock state across, after which it is
 // renamed with a .migrated suffix and never read again.
@@ -131,11 +137,20 @@ bot.command("verify", async (ctx) => {
 
 // Step 2: the member sends back proof.json as a document.
 bot.on("message:document", async (ctx) => {
+  // Bounded intake (review finding F5). The rate and the platform's reported size are checked before
+  // any download, and the download itself is capped in bytes and time (common/bounded_fetch.js).
+  if (!submitLimiter.allow(String(ctx.from.id))) {
+    return ctx.reply("Too many proof submissions. Wait ten minutes, then run /verify to start over.");
+  }
+  const size = ctx.message?.document?.file_size;
+  if (Number.isFinite(size) && size > MAX_PROOF_BYTES) {
+    return ctx.reply("That file is not a proof.json (a proof is only a few KB). Run /verify to start over.");
+  }
   let payload;
   try {
     const file = await ctx.getFile(); // path valid for ~1 hour
     const url = `https://api.telegram.org/file/bot${TOKEN}/${file.file_path}`;
-    payload = await (await fetch(url)).json(); // { nonce, proof, publicSignals }
+    payload = await fetchJsonCapped(url); // { nonce, proof, publicSignals }
   } catch {
     return ctx.reply("That file is not a readable proof.json. Run /verify to start over.");
   }

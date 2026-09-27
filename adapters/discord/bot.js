@@ -39,6 +39,8 @@ import {
 import { clearManagedAllows, isDenialConflict } from "./permissions.js";
 import { makeAccess } from "./access.js";
 import { contextHash } from "../../common/index.js";
+import { fetchJsonCapped, MAX_PROOF_BYTES } from "../../common/bounded_fetch.js";
+import { RateLimiter } from "../../core/stores.js";
 
 const TOKEN = process.env.DISCORD_TOKEN;
 const APP_ID = process.env.DISCORD_APP_ID;
@@ -48,6 +50,10 @@ const GATEWAY = assertSafeGatewayUrl(process.env.MNO_GATEWAY_URL ?? "http://127.
 // account-bearing calls so the gateway trusts the account this adapter vouches for (review B1/M5).
 const ADAPTER_SECRET = process.env.MNO_ADAPTER_SECRET;
 const authHeaders = ADAPTER_SECRET ? { authorization: `Bearer ${ADAPTER_SECRET}` } : {};
+
+// A member's proof submissions are limited BEFORE the bot downloads anything (review finding F5), so a
+// stream of large or slow uploads cannot tie the bot up. A genuine member submits once per epoch.
+const submitLimiter = new RateLimiter({ windowSeconds: 600, max: 5 });
 
 // THERE IS ONE GRANT MODE, AND IT IS PER-CHANNEL OVERWRITES. ROLE MODE IS GONE.
 //
@@ -300,8 +306,10 @@ let reconciled = false;
 //   denial means somebody else is using the slot this bot owns, and every action available here is
 //   wrong: clearing it grants the member access through a role-level allow, honouring it means
 //   read-modify-write against a cache on state that changes underneath, and both were tried and both
-//   produced a defect worse than the one they fixed. Refusing is the only honest option, and the
-//   operator fixes it with a role-level deny instead.
+//   produced a defect worse than the one they fixed. Refusing is the only honest option. A role-level
+//   deny does NOT fix it, because the bot's member-level allow outranks role denies (see
+//   adapters/discord/README.md, "How access is granted"). The operator removes the member overwrite, and an individual exclusion on
+//   a gated channel stays unsupported until the bot owns one and checks it at admission.
 async function usableTargets(guild) {
   const usable = [];
   const unreachable = [];
@@ -343,8 +351,12 @@ async function usableTargets(guild) {
           `${[...new Set(offenders.flatMap((o) => o.deny))].join(", ")} for ` +
           `${offenders.map((o) => o.id).join(", ")}. Per-member overwrites on a gated channel belong to ` +
           `this bot, and it will not fight whoever set those: clearing one would grant that member ` +
-          `access through a role-level allow. Express the exclusion with a role-level deny, or remove ` +
-          `the member overwrite. Admissions stay closed. Cleanup on this channel still runs and takes ` +
+          `access through a role-level allow. This bot cannot keep one member out of a channel it grants, ` +
+          `and a role-level deny does not either, because the bot's member-level allow outranks it. No ` +
+          `supported per-member exclusion exists yet. Remove the member overwrite to reopen admissions. To ` +
+          `stop gating the channel altogether, run npm run discord:decommission -- channel:${chId} --apply ` +
+          `BEFORE taking it out of DISCORD_GRANT_CHANNEL_IDS, since removing it from the list alone leaves ` +
+          `every grant in place. Admissions stay closed. Cleanup on this channel still runs and takes ` +
           `back only what is allowed, so the denial is left exactly as it is.`,
       );
       continue;
@@ -567,9 +579,17 @@ async function handleInteraction(i) {
   if (i.commandName === "submit") {
     await i.deferReply({ flags: MessageFlags.Ephemeral });
     const attachment = i.options.getAttachment("proof");
+    // Bounded intake (review finding F5). The rate and the platform's reported size are checked before
+    // any download, and the download itself is capped in bytes and time (common/bounded_fetch.js).
+    if (!submitLimiter.allow(i.user.id)) {
+      return i.editReply("Too many proof submissions. Wait ten minutes, then run `/verify` to start over.");
+    }
+    if (!(attachment?.size > 0) || attachment.size > MAX_PROOF_BYTES) {
+      return i.editReply("That attachment is not a proof.json (a proof is only a few KB). Run `/verify` to start over.");
+    }
     let payload;
     try {
-      payload = await (await fetch(attachment.url)).json(); // { nonce, proof, publicSignals }
+      payload = await fetchJsonCapped(attachment.url); // { nonce, proof, publicSignals }
     } catch {
       return i.editReply("That attachment is not a readable proof.json. Run `/verify` to start over.");
     }

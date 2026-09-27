@@ -137,7 +137,7 @@ On the masternode, once:
 git clone https://github.com/hilawe/dash-mno-verify && cd dash-mno-verify
 npm ci --omit=optional
 bash scripts/fetch_keys.sh            # the 35 MB per-epoch key and the wasms, always
-bash scripts/fetch_keys.sh --large    # the two 2.3 GB keys, each checked against its sha256, or rebuild them with
+bash scripts/fetch_keys.sh --large registration    # the one 2.3 GB key registration needs, checked against its sha256, or rebuild it with
 # bash scripts/rebuild_proving_keys.sh
 ```
 
