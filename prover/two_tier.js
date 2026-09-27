@@ -22,6 +22,7 @@ import { contextHash } from "../common/index.js";
 import { assertSafeGatewayUrl } from "../common/gateway_url.js";
 import { loadVotingKey } from "./voting_key.js";
 import { releaseProvingThreads } from "./proving_threads.js";
+import { parseTwoTierArgs } from "./two_tier_args.js";
 import {
   defaultSecretPath,
   findSecretForContext,
@@ -56,12 +57,6 @@ function warnIfContactingRemoteGateway(gateway, step) {
       "To stay unlinkable, run over an anonymizing path (for example Tor) or from a machine whose " +
       "public address cannot be matched to the node (behind the same address is not enough).",
   );
-}
-
-function flags(argv) {
-  const o = {};
-  for (let i = 0; i < argv.length; i += 2) o[argv[i].replace(/^--/, "")] = argv[i + 1];
-  return o;
 }
 
 // This CLI runs on the member's machine and never holds the adapter secret. It calls only the
@@ -264,17 +259,26 @@ async function prove(a) {
   console.log(`Wrote ${out}. Submit it through your adapter, which calls /v1/verify. Your secret never left this machine.`);
 }
 
-const sub = process.argv[2];
-const a = flags(process.argv.slice(3));
+const USAGE =
+  "usage:\n" +
+  "  node prover/two_tier.js register --gateway URL --platform P --community ID --role ID --voting-key-file PATH [--secret-out PATH]\n" +
+  "  node prover/two_tier.js prove --gateway URL --challenge challenge.json [--secret PATH] [--out proof.json]\n" +
+  "\nThe voting key may be given as --voting-key-file PATH (recommended, mode 600), piped in with\n" +
+  "--voting-key-stdin, or as --voting-key WIF (discouraged: it lands in shell history).";
+
+// Strict parsing (see two_tier_args.js). An unknown option, a missing value, or a stray word stops
+// here with the reason, rather than being silently dropped the way the old pairwise parser did.
+let parsed;
+try {
+  parsed = parseTwoTierArgs(process.argv.slice(2));
+} catch (e) {
+  console.error(`${e.message}\n\n${USAGE}`);
+  process.exit(1);
+}
+const { sub, values: a } = parsed;
 if (sub === "register") await register(a);
 else if (sub === "prove") await prove(a);
 else {
-  console.error(
-    "usage:\n" +
-      "  node prover/two_tier.js register --gateway URL --platform P --community ID --role ID --voting-key-file PATH\n" +
-      "  node prover/two_tier.js prove --gateway URL --challenge challenge.json [--secret PATH] [--out proof.json]\n" +
-      "\nThe voting key may be given as --voting-key-file PATH (recommended, mode 600), piped in with\n" +
-      "--voting-key-stdin, or as --voting-key WIF (discouraged: it lands in shell history).",
-  );
+  console.error(USAGE);
   process.exit(1);
 }

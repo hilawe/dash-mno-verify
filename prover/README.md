@@ -56,6 +56,11 @@ would be pointing at last season's secret.
 Keep the secret file private. It is the only thing that proves your membership for the
 season, and `*.secret.json` is gitignored for that reason.
 
+Options are checked strictly. A misspelled or unknown option, an option that belongs to the other
+step, or a missing value stops the command and names the problem, rather than being ignored. The
+voting key can be piped in with `--voting-key-stdin` in any position, and `register --secret-out
+<path>` chooses where the new secret is saved.
+
 ## Two encodings that must match the circuit
 
 These are the same two validation points called out in `circuits/README.md`. The prover
