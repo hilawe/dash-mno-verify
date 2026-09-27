@@ -192,7 +192,47 @@ review rejected its cross-project scope. Repository-root instructions were not e
 
   Recommended next, in order. First, decide A3 (the mode in `contextHash`, a JS-only change with a
   context cutover at a season boundary, or a circuit tag at the next rebuild). Second, the Groth16
-  ceremony decision, which would carry A1 to A3 into the circuit.
+  ceremony decision, which would carry A1 to A3 into the circuit. BOTH DECIDED, see the next item.
+- Build one Groth16 production candidate, review it once, and freeze it for the ceremony.
+
+  UNIT DONE (2026-09-27), ON BRANCH `groth16-candidate`, NOT MERGED AND NOT PUSHED. The owner's
+  decisions: both heavy circuits to Groth16, the members circuit unchanged on PLONK, circom-ecdsa's
+  dummy constant kept, A3 resolved by purpose tags in the circuits (no context migration, since there is
+  no live deployment), key 0 refused in the circuits with the oracle exclusion kept, the 900 s root-age
+  limit kept, one coordinated ceremony with two separate setups and at least one outside contributor to
+  each plus a public beacon. Production publication and deployment stay separate from this unit.
+  - Circuits. Key 0 refused (IsZero on the limb sum). Nullifiers Poseidon4(tag, keyHash, period,
+    context), which also closes a member choosing secret = keyHash to reproduce the single-tier
+    nullifier. Constraints 253,978 (single-tier) and 254,392 (registration), under Groth16's 2^18.
+  - Gateway. Proof system taken from the loaded key, a proof naming another refused. Boot refuses a key
+    whose protocol does not match its role, a devOnly key without MNO_ALLOW_DEV_KEYS=1, and the retired
+    plonk registration engine. Registration engine default groth16.
+  - Evidence. `npm test` 777 pass. `scripts/check_circuits.sh` refuses key 0 at the constraint's own line
+    and checks tagged derivations. `scripts/check_groth16_candidate.mjs` 20 of 20 with real proofs
+    through the real gateway and provers, including the whole registration flow at 15.5 s on this Mac
+    (8 cores) with the root 16 s old against 900 s. On the crono box at 3 CPUs the Groth16 registration
+    proof alone took 65 to 77 s earlier, so about 70 to 90 s for the flow is an estimate, not a
+    measurement. Every planted mutant failed its intended check. circom 2.2.3's Linux and macOS release
+    binaries give byte-identical r1cs (4e1f519d, 4cadf74e). The freeze was rehearsed in a throwaway
+    worktree, including catching a planted tag change.
+  - Review. One execution review by a different model family returned REVISE with one major (the plonk
+    registration engine still booted against the committed pre-candidate key and accepted a real
+    pre-candidate proof) and five minors, all fixed in `0b97ae2`. One focused confirmation: APPROVE, all
+    six resolved. Its sandbox could not open sockets, so the live gateway flows were run here instead.
+  - Ceremony. `docs/CEREMONY.md` is the procedure. `circuits/ceremony/FREEZE.json` names the frozen
+    commit, and `node scripts/freeze_candidate.mjs --check` (also a CI step) confirms a fresh compile
+    against it.
+
+  What forced rework in this unit (feeds `docs/PRECOMMIT_ADOPTION.md`, search for the defect's shape):
+  - The boot check first matched the registration key to whatever engine was configured, which left the
+    retired plonk engine reachable with the old key. The review found it. Rule it feeds: ask who can still
+    reach the old path, not only whether the new one is right.
+  - The key-0 CI check exited early for the wrong reason when its constraint line was deleted, and one
+    purpose-tag assertion compared a value with itself. Rule it feeds: confirm the mutant did its job.
+
+  NEXT, in order. First, ask the outside contributors and fix the beacon height and deadlines. Second, run
+  the ceremony per `docs/CEREMONY.md`. Third, commit the two verification keys, host the proving keys and
+  wasm, and update the manifest (the publication step). Fourth, merge, then the small Discord pilot.
 
 ## SUPERSEDED, 2026-09-25 (re-entry after six idle weeks, stale state corrected, a testnet VPS identified). Superseded by the 2026-09-27 section above
 
