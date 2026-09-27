@@ -30,13 +30,57 @@ Not enforced by anything, so they depend on the session:
 - Mutation-check each new test, and confirm the mutant applied before counting it as caught.
 - When a defect is found, search for its SHAPE across the tree rather than fixing only the named
   instance, and ask who consumes what changed.
-- A non-trivial change gets a review from a different model family. Use the full pool when it touches the
-  trust model, the cryptography, a canonical encoding, the contract schema, or durable state.
+- Follow `docs/WORKING_METHOD.md` for review cadence. Consequential work receives one independent
+  execution review and a focused repair confirmation when needed. Historical fleet counts do not apply.
+- A consequential security change (admission, permissions, secrets, the trust model, cryptography and
+  the circuits, durable state, freshness) is reviewed by a different model family than the one that
+  wrote it. That buys independence, not cryptographic assurance, which needs a specialist review of the
+  circuits and is a separate decision before anything of value is protected.
 - State no claim wider than its evidence, and name the network it was checked on (regtest, testnet,
   mainnet) and the install profile where it matters.
 - Stage exact paths, never a directory and never `-A`.
 
-## CURRENT STATE, 2026-09-25 (re-entry after six idle weeks, stale state corrected, a testnet VPS identified). THIS SUPERSEDES EVERY SECTION BELOW IT
+## CURRENT STATE, 2026-09-27
+
+The reviewed revision is `53f636a`. All three continuous-integration jobs passed, and the full local
+suite independently passed 722 tests. The review and measurements are recorded once in
+[the findings report](reviews/REVIEW_FINDINGS_dash-mno-verify_2026-09-27.md). This section supersedes
+older current-state claims below. Runtime code and committed proving artifacts were not changed.
+
+The immediate product remains two-tier admission to a private Discord community through one gateway
+with durable local storage and an explicitly trusted masternode-data source. The next runnable outcome
+is admission followed by revocation at the correct epoch or season boundary under intended defaults.
+A passing proof alone is insufficient evidence for that outcome.
+
+Two consequential gaps were reproduced. A grant issued shortly before a season boundary can persist
+six days beyond it under the default schedule. The gateway calculates epoch expiry without capping it
+at season end. Also, the adapter issues a ten-minute challenge before asking a first-time member to
+perform the measured thirteen-minute registration. Registration must precede a fresh admission
+challenge. Confirm both the successful flow and the expiry cases, including the adapter ledger.
+
+The proving-cost review found a useful alternative baseline. The same registration circuit under
+Groth16 generated a 121.7 MB key and a valid synthetic proof in 25.31 seconds, with a 2.58 GiB peak
+memory footprint. The benchmark key had no phase-two contributions and must never be deployed.
+A production switch requires a circuit-specific ceremony and coordinated integration. It is an owner
+tradeoff, not an approved migration. No exact runtime speedup against the separate server run is claimed.
+
+The current path builder also spends roughly eight seconds hashing empty padded branches in a
+one-member fixture. A compatible sparse comparison produced the same path and root in milliseconds.
+The download helper fetches both heavy keys even when the member needs only registration. These are
+bounded improvements that do not require changing the proof system.
+
+Follow `docs/WORKING_METHOD.md`. Older three-reviewer and repeat-whole-project requirements are
+historical. Preserve the automated gates and meaningful contrary controls. A remaining consequential
+finding stays open rather than triggering indefinite broad sweeps or being accepted by a round limit.
+The analogous global policy is prepared but remains pending explicit approval after automatic approval
+review rejected its cross-project scope. Repository-root instructions were not edited.
+
+- Repair season-capped access and registration-before-challenge as one admission unit.
+- Add bounded adapter downloads and correct misleading exclusion and raw-key instructions.
+- Improve local paths and circuit-specific downloads, then measure the supported member workflow.
+- Decide whether a per-circuit ceremony is acceptable before commissioning another engine experiment.
+
+## SUPERSEDED, 2026-09-25 (re-entry after six idle weeks, stale state corrected, a testnet VPS identified). Superseded by the 2026-09-27 section above
 
 STATE. `main` was at `5016a79` (CI green 2026-08-15) when this session started. The first handoff
 commit of the session, `8054c67`, was docs-only and still turned CI red, because the `circuits` job's

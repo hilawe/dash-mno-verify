@@ -1,5 +1,9 @@
 # Independent Security Review Playbook
 
+For routine changes, use [Bounded delivery and review](WORKING_METHOD.md), adopted
+2026-09-27. This larger review program remains a reference for an explicitly commissioned
+audit effort. It does not require another whole-project round after every repair.
+
 ## A practical external-like review program for dash-mno-verify
 
 **Date:** August 4, 2026  
@@ -358,4 +362,3 @@ repeatable, and transparent basis for deciding whether the prototype is ready fo
 - [dash-mno-verify threat model](THREAT_MODEL.md)
 - [dash-mno-verify design](DESIGN.md)
 - [dash-mno-verify pre-commit adoption](PRECOMMIT_ADOPTION.md)
-

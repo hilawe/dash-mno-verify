@@ -1,5 +1,9 @@
 # Pre-commit self-verification, adoption note
 
+The current review cadence is [Bounded delivery and review](WORKING_METHOD.md), adopted
+2026-09-27. It supersedes the three-agent trial and repeated review requirements below.
+The mandatory test gate, relevant invariant checks, and historical evidence remain in force.
+
 The write-time discipline this repository follows before a commit. The playbook it instantiates
 lives outside the repository and is not repeated here. This note is the eight items that playbook
 says a repository must write down before its rules mean anything locally, written from this

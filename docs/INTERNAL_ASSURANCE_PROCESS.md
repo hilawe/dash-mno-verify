@@ -1,5 +1,10 @@
 # Internal assurance process, no external auditor
 
+The routine working method is now [Bounded delivery and review](WORKING_METHOD.md), adopted
+2026-09-27. The multi-family fleet and repeated whole-surface rounds below are historical
+process design, not mandatory steps for routine changes. Use this larger program only when
+the owner explicitly commissions it. Its specialist-audit limitations still apply.
+
 This document designs a repeatable internal assurance pass for dash-mno-verify that stands in, as far as
 it honestly can, for a formal third-party audit. It is a process design, not a review. Running it
 produces a findings report in the repository's usual `REVIEW_FINDINGS_*` form.
