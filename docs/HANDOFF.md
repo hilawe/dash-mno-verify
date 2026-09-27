@@ -192,10 +192,12 @@ syncing, and about 8 GB of the 12 GB was free. What it is for, in order:
    box because nothing waited on it. At the end everything was switched off and checked, the testnet
    member secret was deleted, the wallet was at the chain tip, and the evonode was READY with PoSe 0.
 
-   A NEW DEFECT, NOT YET FIXED. `prover/two_tier.js` parses flags strictly in `--flag value` pairs, so
-   the boolean `--voting-key-stdin` swallows the next word. In the run it swallowed `--secret-out`,
-   whose path was silently ignored and the secret written to the default name. Placed last, the flag
-   reads as unset. `prover/prover.js` already uses `node:util` `parseArgs`, which is the fix.
+   A NEW DEFECT, FIXED IN `1568f5d`. `prover/two_tier.js` parsed flags strictly in `--flag value`
+   pairs, so the boolean `--voting-key-stdin` swallowed the next word. In the run it swallowed
+   `--secret-out`, whose path was silently ignored and the secret written to the default name, and
+   placed last the flag read as unset. Parsing is now `node:util` `parseArgs` in strict mode with an
+   option set per step (`prover/two_tier_args.js`), and a test runs the real CLI to show the secret
+   lands at `--secret-out` in both flag orders.
 
    HOW THE BOX WAS USED, so it can be repeated. The work folder is `~/mno-verify-bench` on the crono
    box (public files only, about 4.5 GB: a `git archive` of the repo, the fetched keys, and the run
@@ -230,17 +232,15 @@ a current mainnet node.
 
 PUNCH LIST, in the recommended order:
 
-1. Fix the `prover/two_tier.js` flag parser (use `parseArgs` as `prover/prover.js` does), with a test
-   that `--voting-key-stdin` followed by another flag, and placed last, both parse correctly.
-2. Delete the box's 4.5 GB work folder (`~/mno-verify-bench`) once no further runs are planned, using
+1. Delete the box's 4.5 GB work folder (`~/mno-verify-bench`) once no further runs are planned, using
    its `stop_all.sh` first.
-3. Reachability triage of the 19 gateway-profile advisories before any public gateway.
-4. Re-confirm the DIP4 serialization on current mainnet. It needs a synced mainnet node, either by
+2. Reachability triage of the 19 gateway-profile advisories before any public gateway.
+3. Re-confirm the DIP4 serialization on current mainnet. It needs a synced mainnet node, either by
    restarting `dash-mno-node` locally or on the VPS after a disk check.
-5. A one-line nudge to Pasta. The result now exists, a real testnet evonode's proof verified end to
+4. A one-line nudge to Pasta. The result now exists, a real testnet evonode's proof verified end to
    end in both modes, heavy proof about 13 to 14 minutes at 3 CPUs and about 7 GB, per-epoch proof
    under 30 seconds.
-6. Deferred items, none of which blocks a pilot, are the ChainLock light-client bootstrap (stopped),
+5. Deferred items, none of which blocks a pilot, are the ChainLock light-client bootstrap (stopped),
    the Platform registration store (multi-gateway only), and simplified payment verification (SPV).
 
 WHAT FORCED REWORK SINCE THE LAST HANDOFF:
