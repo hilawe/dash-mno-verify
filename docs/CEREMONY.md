@@ -166,6 +166,31 @@ the Hermez Powers of Tau already carries for phase one.
    their sha256 and sizes.
 3. Deploy, starting with the small Discord pilot.
 
+## Interim setup, before the multi-party ceremony
+
+So the pilot does not wait on coordinating outside contributors, the keys it runs on come from an interim
+setup. It uses the same frozen circuits, the same phase one, and the same chain as step 1 onward, stopped
+after a single contribution by the coordinator. `scripts/interim_setup.sh` runs it and writes the record
+`circuits/ceremony/INTERIM_SETUP.json` (the initial file, the contribution hash, the final key, the
+verification key, and the `zkey verify` chain for each circuit).
+
+What that means:
+
+- Its soundness rests on the coordinator's machine having discarded the contribution's randomness, which
+  the script feeds to snarkjs through the prompt from the system's random source and never writes
+  anywhere. Whoever controlled that machine at that moment could forge admission proofs these keys
+  accept.
+- The coordinator already runs the gateway, which can admit anyone directly, so for the pilot this gives
+  no one a power the operator did not already have. Member privacy is unchanged for keys that verify
+  against the record.
+- It is labeled interim wherever its keys appear, and it must not gate anything of value.
+
+The multi-party ceremony later either continues this chain, with the outside contributors adding to the
+interim key and the beacon applied last, or starts fresh from the frozen circuits. Either way it replaces
+the keys. Two-tier members keep their seasonal memberships across the swap, because the members circuit
+is PLONK and unchanged, and only new registrations move to the new key. Single-tier members download the
+new proving key, and the gateway switches its single-tier key at a stated time.
+
 ## Rehearsal with development keys
 
 `scripts/groth16_dev_keys.sh` runs steps 1, 2 (with one local contribution), and 5 to produce
