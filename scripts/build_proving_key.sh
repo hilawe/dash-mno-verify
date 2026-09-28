@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# SUPERSEDED FOR THE HEAVY CIRCUITS. They are now proved under Groth16 with keys from a setup ceremony
+# (docs/CEREMONY.md; the interim keys come from scripts/interim_setup.sh). This script builds the PLONK keys
+# of the circuits before that change, and its default check against the committed verification keys fails,
+# since those keys are now Groth16. It stays for rebuilding the pre-candidate published artifacts.
+#
 # Reproducibly build one circuit's PLONK proving artifacts (the witness wasm and the proving key)
 # and export its verification key. PLONK setup is deterministic given the same r1cs and the same
 # universal SRS, so anyone who runs this derives the same keys. They are rebuilt from public inputs

@@ -57,12 +57,13 @@ async function scenario(name, fakeNow, expected) {
     // A snapshot for the gateway to boot on. Its content does not matter to a members proof.
     const leaves = ["1"];
     writeFileSync(join(dir, "root.json"), JSON.stringify({ height: 1, blockHash: "ab".repeat(32), depth: 16, root: dmlRoot(leaves), leaves, ts: fakeNow }));
+    writeFileSync(join(dir, "groth16_vkey.json"), JSON.stringify(JSON.parse(readFileSync("test/vectors/proof_protocol.json", "utf8")).groth16.vkey));
 
     // Seed one member for this season and context, as registration would have.
     const secret = BigInt("0x" + randomBytes(24).toString("hex")).toString();
     const commitment = F.toObject(poseidon([F.e(BigInt(secret))])).toString();
     const store = new RegistrationStore(new FileBackend(join(dir, "registrations.jsonl"), scheduleId(EPOCH, SEASON), false));
-    const seeded = await store.append({ season, contextHash: CTX, regNullifier: "12345", commitment, engine: "plonk", statement: "derive" });
+    const seeded = await store.append({ season, contextHash: CTX, regNullifier: "12345", commitment, engine: "groth16", statement: "derive" });
     if (seeded?.invalid || seeded?.duplicate) throw new Error(`seeding the member failed: ${JSON.stringify(seeded)}`);
 
     const config = buildConfig({
@@ -73,6 +74,9 @@ async function scenario(name, fakeNow, expected) {
       MNO_ALLOW_UNSIGNED_ORACLE: "1",
       MNO_ALLOW_UNAUTH_GATEWAY: "1",
       MNO_REGISTER_CONTEXTS: CTX,
+      // No registration proof runs here (the member is seeded), so the registration key only has to
+      // satisfy the boot check that it is Groth16, the default engine, so it is the one-constraint test key.
+      MNO_REG_VKEY: join(dir, "groth16_vkey.json"),
       MNO_REG_PATH: join(dir, "registrations.jsonl"),
       MNO_NULLIFIER_PATH: join(dir, "nullifiers.sqlite"),
       MNO_TIME_MARKS_PATH: join(dir, "time_marks.json"),

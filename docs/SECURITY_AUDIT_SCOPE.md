@@ -49,8 +49,11 @@ auditor can locate in the code.
 5. ORACLE INTEGRITY WITHIN THE STATED TRUST MODEL. A host that merely serves the snapshot JSON cannot
    forge a membership set, because the gateway requires a quorum of signatures from pinned oracle keys
    over a root that commits to the leaves. (`core/gateway.js` snapshot validation, `oracle/`.)
-6. TRUSTED SETUP. The PLONK proof system over the public Hermez Powers of Tau is used correctly, and
-   its security rests only on the stated one-honest-participant assumption of that universal ceremony.
+6. TRUSTED SETUP. Groth16 for the two heavy circuits, with a per-circuit phase two run as in
+   `docs/CEREMONY.md`, and PLONK for the members circuit, both over the public Hermez Powers of Tau, are
+   used correctly. Soundness rests on two one-honest-participant assumptions: one for the universal Hermez
+   ceremony, which all three circuits share, and one for each heavy circuit's own phase two, which needs at
+   least one of its contributors to have discarded their randomness.
 
 ## Audit targets, in priority order
 
@@ -70,7 +73,8 @@ break in tier 2 defeats it within a narrower trust model. Tier 3 affects a singl
   whether they must be replaced.
 - The nullifier construction and the canonical-scalar constraint that closes nullifier malleability,
   end to end from the circuit through `core/verifier.js` and `common/field.js`.
-- The PLONK setup and the committed verification keys in `circuits/build`, including whether the keys
+- The Groth16 ceremony transcripts, the PLONK members setup, and the committed verification keys in
+  `circuits/build`, including whether the keys
   correspond to the committed circuits.
 
 ### Tier 2, the gateway and oracle trust boundary

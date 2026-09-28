@@ -36,7 +36,7 @@ The prior adversarial review and the fixes are recorded in `REVIEW_FINDINGS_dash
 
 ## Seeing a real proof end to end
 
-This needs the large proving key (about 2.3 GB). It is too big for a GitHub release, so it is hosted separately and fetched with `--large`, or it can be rebuilt locally. Its size, and the memory a proof takes, is still the main rough edge, and it is fair to treat it as the open adoption question.
+This needs a heavy proving key, now a Groth16 key of about 120 MB fetched with `--large`. It is an interim key from a single-contributor setup until the multi-party ceremony (`docs/CEREMONY.md`). Moving from PLONK to Groth16 took the key from 2.3 GB to about 120 MB and the registration proof from over 10 minutes to about a minute on a small server, at the cost of a per-circuit setup ceremony.
 
 ```bash
 bash scripts/fetch_keys.sh           # pulls the circuit wasm and the small per-epoch key

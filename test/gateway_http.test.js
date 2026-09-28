@@ -43,6 +43,18 @@ function freePort() {
   });
 }
 
+// The heavy circuits verify under Groth16 and the gateway refuses to boot on a key for any other proof
+// system. None of these tests proves a heavy circuit, so the single-tier and registration keys are the
+// Groth16 key of the one-constraint test circuit (test/vectors/proof_protocol.json). It satisfies the
+// boot check and accepts no proof these tests could submit. The members key stays the committed one.
+const FIXTURE_DIR = await mkdtemp(join(tmpdir(), "gw-keys-"));
+const FIXTURE_GROTH16_VKEY = join(FIXTURE_DIR, "groth16_vkey.json");
+await writeFile(
+  FIXTURE_GROTH16_VKEY,
+  JSON.stringify(JSON.parse(readFileSync(new URL("./vectors/proof_protocol.json", import.meta.url), "utf8")).groth16.vkey),
+);
+after(() => rm(FIXTURE_DIR, { recursive: true, force: true }));
+
 async function startGateway(extraEnv = {}) {
   const port = await freePort();
   // The gateway fails closed without auth and without trusted oracle keys, so tests run in the
@@ -51,7 +63,7 @@ async function startGateway(extraEnv = {}) {
   // not flip the default test gateway into authenticated mode.
   // MNO_ALLOW_EPHEMERAL_NULLIFIERS is deliberate here: these tests want the in-memory spent set, and
   // the gateway refuses "memory" without the opt-in so a deployment cannot land on it by default.
-  const env = { ...process.env, MNO_MODE: "single", MNO_STORE: "memory", MNO_ALLOW_EPHEMERAL_NULLIFIERS: "1", MNO_ALLOW_UNAUTH_GATEWAY: "1", MNO_ALLOW_UNSIGNED_ORACLE: "1", MNO_GATEWAY_PORT: String(port), ...extraEnv };
+  const env = { ...process.env, MNO_MODE: "single", MNO_STORE: "memory", MNO_ALLOW_EPHEMERAL_NULLIFIERS: "1", MNO_ALLOW_UNAUTH_GATEWAY: "1", MNO_ALLOW_UNSIGNED_ORACLE: "1", MNO_GATEWAY_PORT: String(port), MNO_VKEY: FIXTURE_GROTH16_VKEY, MNO_REG_VKEY: FIXTURE_GROTH16_VKEY, ...extraEnv };
   if (!("MNO_ADAPTER_SECRET" in extraEnv)) delete env.MNO_ADAPTER_SECRET;
   const proc = spawn("node", ["core/gateway.js"], {
     cwd: REPO,

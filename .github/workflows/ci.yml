@@ -70,6 +70,13 @@ jobs:
         run: CIRCOM="$RUNNER_TEMP/circom" bash scripts/prove_members.sh
       - name: Two-tier grants end at the season boundary, checked with real members proofs
         run: bash scripts/fetch_keys.sh && node scripts/check_two_tier_expiry.mjs
+      - name: The heavy circuits still compile to the hashes frozen for the setup ceremony
+        run: |
+          if [ -f circuits/ceremony/FREEZE.json ]; then
+            CIRCOM="$RUNNER_TEMP/circom" node scripts/freeze_candidate.mjs --check
+          else
+            echo "no circuits/ceremony/FREEZE.json yet, nothing to check"
+          fi
 
   # The full single-tier mno_membership PLONK setup needs a 2^20 SRS (about 1.15 GB) and is
   # too heavy for CI. It is reproducible offline via scripts/build_proving_key.sh, which

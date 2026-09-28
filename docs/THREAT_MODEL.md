@@ -32,14 +32,15 @@ above and the runbook describe. Single-tier proving contacts no gateway and need
 - Timing and metadata. The cryptography hides the address link, not the fact that a member verified at a given time. Batch or delay if on-chain timing correlation is a concern.
 - Nullifier griefing. Base Platform contracts use ownership-based writes, not per-type access control. The defense is that the gateway is the only writer and a nullifier is unpredictable until a valid proof is submitted, so it cannot be squatted in advance. Platform enforces uniqueness, the gateway enforces validity, and neither alone is sufficient.
 - Key handling. The prover reads the raw voting key locally. It controls no funds, and it never leaves the device, but it is still a key-handling step. A variant that consumes an ECDSA signature instead keeps the key in the wallet at a higher circuit cost, and needs care to make the nullifier deterministic.
-- Trusted setup. Groth16 needs a per-circuit ceremony, which this system avoids by using PLONK over the public Hermez Powers of Tau, a universal trusted setup reused across circuits with no per-circuit ceremony. It is not setup-free, since it is secure only if one ceremony participant was honest. A backend with no trusted setup at all, a STARK or an inner-product-argument system, is the stronger option for a community tool, at a different proof size and verifier cost (see `docs/REDUCING_PROVING_COST.md`).
+- Trusted setup. The two heavy circuits (single-tier admission and seasonal registration) are proved under Groth16, which needs a phase-two ceremony per circuit on top of the public Hermez Powers of Tau. Each setup is sound only if at least one of its contributors discarded their randomness, so the procedure in `docs/CEREMONY.md` requires at least one contributor independent of the coordinator for each, plus a public beacon. The ceremony creates no ongoing role and no view of who proves. A dishonest setup would let its contributors forge admission. It is not known to let them identify members, provided members use a proving key that verifies against the published transcript (`snarkjs zkey verify`), since Groth16's zero-knowledge holds under a subverted setup only when the key's structure is checked. The recurring two-tier members circuit stays on PLONK over the universal Hermez setup. Neither is setup-free. A backend with no trusted setup at all, a STARK or an inner-product-argument system, is the stronger option for a community tool, at a different proof size and verifier cost (see `docs/REDUCING_PROVING_COST.md`).
 
 ## Before any real deployment
 
 Several pieces are already in place. RIPEMD-160 is implemented in-repo and the in-circuit
 hash160 is validated against the generator vector on every push. The full
-`mno_membership.circom` compiles against circom-ecdsa, and the proving system is PLONK over
-the public Hermez Powers of Tau, a universal trusted setup with no per-circuit ceremony.
+`mno_membership.circom` compiles against circom-ecdsa. The heavy circuits are proved under Groth16
+with a per-circuit setup ceremony (`docs/CEREMONY.md`), and the members circuit under PLONK over
+the public Hermez Powers of Tau.
 The verification key is committed and the gateway boots with it. The oracle reads a real Dash
 node and signs each snapshot, and the gateway requires a quorum of pinned oracle keys and
 fails closed without them. The canonical-scalar constraint closes the nullifier malleability,

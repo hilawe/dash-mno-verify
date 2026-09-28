@@ -302,12 +302,16 @@ export function buildConfig(env = process.env) {
     membersVkeyPath: env.MNO_MEMBERS_VKEY ?? "circuits/build/mno_members_vkey.json",
     seasonSeconds: intEnv(env, "MNO_SEASON_SECONDS", 90 * 24 * 3600),
 
-    // The registration engine and statement this gateway offers (two-tier). "plonk"/"derive" is the
-    // shipping default (the compiled mno_registration circuit). "zkvm" selects the RISC Zero
+    // The registration engine and statement this gateway offers (two-tier). "groth16"/"derive" is the
+    // default and the only circuit engine, the compiled mno_registration circuit under its own Groth16
+    // setup. "plonk" is retired and refused below. "zkvm" selects the RISC Zero
     // registration path, which needs the live receipt verifier (deferred, artifact-gated), so a zkvm
     // gateway refuses to boot until one is wired. The pair binds each (season, context) this gateway
     // seeds, and it must be a valid engine/statement combination (validated at boot).
-    registrationEngine: env.MNO_REGISTRATION_ENGINE ?? "plonk",
+    registrationEngine: env.MNO_REGISTRATION_ENGINE ?? "groth16",
+    // Development-only verification keys (devOnly, from scripts/groth16_dev_keys.sh) are refused at boot
+    // unless this is set. A development gateway sets it, and nothing else should.
+    allowDevKeys: env.MNO_ALLOW_DEV_KEYS === "1",
     registrationStatement: env.MNO_REGISTRATION_STATEMENT ?? "derive",
 
     // Durable, season-scoped registration records for the two-tier flow. Append-only JSON lines on
@@ -362,6 +366,15 @@ export function buildConfig(env = process.env) {
   if (!isValidEngineStatement(config.registrationEngine, config.registrationStatement)) {
     throw new Error(
       `config: MNO_REGISTRATION_ENGINE/STATEMENT (${config.registrationEngine}/${config.registrationStatement}) is not a valid pair`,
+    );
+  }
+  // The PLONK registration engine is retired (core/verifier.js, verifyRegistration). Its key verifies the
+  // registration circuit from before the key-0 rejection and the purpose tag, so a gateway set to it would
+  // register without either. The name stays valid in stored records, so it is refused here, not there.
+  if (config.registrationEngine === "plonk") {
+    throw new Error(
+      "config: MNO_REGISTRATION_ENGINE=plonk is retired. It verified the registration circuit before the key-0 " +
+        "rejection and the purpose tag. Use the default groth16 engine with the setup-ceremony key (docs/CEREMONY.md).",
     );
   }
 

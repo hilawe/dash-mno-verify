@@ -18,8 +18,12 @@ import { releaseProvingThreads } from "./proving_threads.js";
 import { merklePathFor } from "../common/merkle_path.js";
 
 const TREE_DEPTH = 16;
-const WASM = "circuits/build/mno_membership_js/mno_membership.wasm";
-const ZKEY = "circuits/build/mno_membership.zkey"; // PLONK proving key
+// The single-tier circuit is proved under Groth16 with its own setup-ceremony key. MNO_CIRCUIT_DIR
+// points the prover at another build of the two heavy circuits, for example a development key set in
+// circuits/build/dev, without touching the default artifacts.
+const HEAVY = process.env.MNO_CIRCUIT_DIR ?? "circuits/build";
+const WASM = `${HEAVY}/mno_membership_js/mno_membership.wasm`;
+const ZKEY = `${HEAVY}/mno_membership.zkey`; // Groth16 proving key
 
 const { values } = parseArgs({
   options: {
@@ -77,7 +81,7 @@ const input = {
 // Released in a finally, or the CLI never exits after writing proof.json (see proving_threads.js).
 let proof, publicSignals;
 try {
-  ({ proof, publicSignals } = await snarkjs.plonk.fullProve(input, WASM, ZKEY));
+  ({ proof, publicSignals } = await snarkjs.groth16.fullProve(input, WASM, ZKEY));
 } finally {
   await releaseProvingThreads();
 }

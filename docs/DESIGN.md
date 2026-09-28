@@ -55,10 +55,11 @@ The Platform-backed store shares the spent set across gateways but does not pers
 The single-tier design runs the full proof every epoch. It is the simplest correct design,
 and a sold node is evicted within one epoch.
 
-The reason to split into two tiers is proving cost. Measured on a 16 GB laptop, the
-single-tier membership proof takes minutes (the PLONK proving key is about 2.3 GB to load
-and the circuit is roughly 174k constraints), while the cheap members proof takes about 7
-seconds. When proving runs on a member's own machine every epoch, that gap is the whole
+The reason to split into two tiers is proving cost. Under the original PLONK keys, measured on
+a 16 GB laptop, the single-tier membership proof took minutes (a 2.3 GB proving key, and a circuit
+of roughly 174k constraints), while the cheap members proof takes about 7 seconds. Under Groth16,
+with a 120 MB key, the heavy proof takes about 16 to 20 seconds on the same laptop and about a
+minute on a 3-CPU server, so the gap is smaller than it was. When proving runs on a member's own machine every epoch, that gap is the whole
 argument. The two-tier flow does the expensive secp256k1 and hash160 work once per season
 in a registration proof that adds a fresh commitment to a members tree, then every epoch
 runs only a Poseidon-only membership proof in that tree. The cost is coarser freshness:

@@ -1,5 +1,12 @@
 # Distributing the proving key
 
+THE HEAVY CIRCUITS ARE PROVED UNDER GROTH16. The published keys are the interim Groth16 keys on the
+`circuit-keys-v3` pre-release, about 120 MB each, from a single-contributor setup recorded in
+`circuits/ceremony/INTERIM_SETUP.json`. The multi-party ceremony (`docs/CEREMONY.md`) will replace them.
+A Groth16 key depends on its setup's contributions, so unlike the PLONK keys below it cannot be rebuilt
+from public inputs. Its sha256 and the setup record are how to check it. The rest of this page describes
+the PLONK keys of the circuits before the change, kept as the record of how they were built and hosted.
+
 The full membership circuit needs three artifacts to make a proof: the circuit wasm
 (witness generator), the PLONK proving key (`mno_membership.zkey`, about 2.3 GB), and the
 verification key (about 2 KB). Only the verification key is in the repo. This page explains

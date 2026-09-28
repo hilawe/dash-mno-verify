@@ -1,7 +1,7 @@
 // Two-tier prover CLI. Runs on the member's own machine.
 //
 //   register: prove masternode control once per season. Heavy (it does the secp256k1 and
-//             hash160 work), so plan for about 7 GB of free memory. It saves a
+//             hash160 work), so plan for about 2 GB of free memory. It saves a
 //             secret you keep, and registers your commitment with the gateway.
 //
 //   prove:    the per-epoch membership proof. Cheap (a few seconds, a small key), so it
@@ -33,7 +33,11 @@ import {
 } from "./secret_file.js";
 
 const TREE_DEPTH = 16;
+// The members circuit keeps its PLONK key under circuits/build. The registration circuit is proved
+// under Groth16 with its own setup-ceremony key, and MNO_CIRCUIT_DIR points at another build of the
+// heavy circuits (for example a development key set in circuits/build/dev) without touching the default.
 const B = "circuits/build";
+const HEAVY = process.env.MNO_CIRCUIT_DIR ?? B;
 
 // BOTH two-tier CLI steps connect to the gateway directly: register posts to /v1/register, and prove
 // fetches /v1/members to build its path. So the gateway sees this machine's source address on either.
@@ -165,10 +169,10 @@ async function register(a) {
   // Released in a finally, or the CLI never exits (see proving_threads.js).
   let proof, publicSignals;
   try {
-    ({ proof, publicSignals } = await snarkjs.plonk.fullProve(
+    ({ proof, publicSignals } = await snarkjs.groth16.fullProve(
       { privkey: privToLimbs(priv), pathElements, pathIndices, secret, root, season, contextHash: ctx },
-      `${B}/mno_registration_js/mno_registration.wasm`,
-      `${B}/mno_registration.zkey`
+      `${HEAVY}/mno_registration_js/mno_registration.wasm`,
+      `${HEAVY}/mno_registration.zkey`
     ));
   } finally {
     await releaseProvingThreads();

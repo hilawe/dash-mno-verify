@@ -9,7 +9,7 @@
 import { buildPoseidon } from "circomlibjs";
 import { leafFromPriv } from "../../common/dml.js";
 import { contextHash } from "../../common/index.js";
-import { keyNullifier, commitment } from "../derivations.mjs";
+import { registrationNullifier, commitment } from "../derivations.mjs";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -62,7 +62,7 @@ writeFileSync(
   join(outDir, "expected_outputs.json"),
   JSON.stringify({
     commitment: commitment(poseidon, BigInt(input.secret)),
-    regNullifier: keyNullifier(poseidon, privkey, BigInt(input.season), BigInt(input.contextHash)),
+    regNullifier: registrationNullifier(poseidon, privkey, BigInt(input.season), BigInt(input.contextHash)),
   })
 );
 console.log("registration witness input written; root", root.slice(0, 14) + "...");

@@ -79,3 +79,11 @@ test("an explicit MNO_CHALLENGE_TTL overrides the mode default in either mode", 
   assert.equal(buildConfig({ MNO_MODE: "two-tier", MNO_CHALLENGE_TTL: "1200" }).challengeTtlSeconds, 1200);
   assert.equal(buildConfig({ MNO_MODE: "single", MNO_CHALLENGE_TTL: "300" }).challengeTtlSeconds, 300);
 });
+
+// A review of the Groth16 candidate found that MNO_REGISTRATION_ENGINE=plonk booted against the committed
+// PLONK registration key, which verifies the registration circuit from before the key-0 rejection and the
+// purpose tag, and accepted a real pre-candidate registration proof. The engine is retired at config.
+test("the retired PLONK registration engine is refused, and groth16 is the default", () => {
+  assert.throws(() => buildConfig({ ...BASE, MNO_MODE: "two-tier", MNO_REGISTRATION_ENGINE: "plonk" }), /MNO_REGISTRATION_ENGINE=plonk is retired/);
+  assert.equal(buildConfig({ ...BASE, MNO_MODE: "two-tier" }).registrationEngine, "groth16");
+});

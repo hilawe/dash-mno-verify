@@ -24,6 +24,7 @@ const REPO = fileURLToPath(new URL("../", import.meta.url));
 const rootHasher = await makeDmlRootHasher();
 const LEAVES = ["111", "222", "333"];
 const ROOT = rootHasher(LEAVES);
+const PROTOCOL_VECTORS = JSON.parse(await readFile(new URL("./vectors/proof_protocol.json", import.meta.url), "utf8"));
 
 // A base environment that boots: unauthenticated and unsigned on purpose (the two fail-closed
 // refusals are exercised as their own cases below), ephemeral spent set, and a real self-consistent
@@ -35,6 +36,11 @@ async function envWithSnapshot(over = {}) {
     source,
     JSON.stringify({ height: 1, blockHash: "ab".repeat(32), depth: 16, root: ROOT, leaves: LEAVES, ts: Math.floor(Date.now() / 1000) }),
   );
+  // The heavy circuits verify under Groth16 and the gateway refuses to boot on a key for another proof
+  // system. No test here proves a heavy circuit, so the single-tier and registration keys are the
+  // Groth16 key of the one-constraint test circuit (test/vectors/proof_protocol.json).
+  const groth16Vkey = join(dir, "groth16_vkey.json");
+  await writeFile(groth16Vkey, JSON.stringify(PROTOCOL_VECTORS.groth16.vkey));
   return {
     dir,
     env: {
@@ -44,6 +50,8 @@ async function envWithSnapshot(over = {}) {
       MNO_ALLOW_UNAUTH_GATEWAY: "1",
       MNO_ALLOW_UNSIGNED_ORACLE: "1",
       MNO_ORACLE_SOURCE: source,
+      MNO_VKEY: groth16Vkey,
+      MNO_REG_VKEY: groth16Vkey,
       ...over,
     },
   };
@@ -172,6 +180,48 @@ test("a boot that fails releases the durable store it had already opened", async
       SqliteNullifierStore.prototype.close = realClose;
       SqliteNullifierStore.prototype.size = realSize;
     }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a boot refused for a key of the wrong proof system releases the store it had already opened", async () => {
+  // The same property as the case above, for the refusal the Groth16 candidate added. The two-tier
+  // registration key must be the protocol of the registration engine. Here the engine is the default
+  // groth16 and the key is PLONK, so the key loads and is then refused, after the store is open.
+  const { dir, env } = await envWithSnapshot({ MNO_MODE: "two-tier", MNO_STORE: "sqlite", MNO_ALLOW_ANY_REGISTER_CONTEXTS: "1" });
+  const plonkVkey = join(dir, "plonk_vkey.json");
+  await writeFile(plonkVkey, JSON.stringify(PROTOCOL_VECTORS.plonk.vkey));
+  try {
+    const config = buildConfig({ ...env, MNO_REG_VKEY: plonkVkey, MNO_NULLIFIER_PATH: join(dir, "nullifiers.sqlite") });
+    const { SqliteNullifierStore } = await import("../core/nullifier_sqlite.js");
+    const opened = [];
+    const realClose = SqliteNullifierStore.prototype.close;
+    SqliteNullifierStore.prototype.close = function patched() {
+      opened.push(this);
+      return realClose.call(this);
+    };
+    try {
+      await assert.rejects(createGateway({ config }), /MNO_REG_VKEY holds a "plonk" verification key/);
+      assert.equal(opened.length, 1, "the store the boot opened was closed on the way out");
+      assert.throws(() => opened[0].size(), /finalized|not open/, "and the database really is released");
+    } finally {
+      SqliteNullifierStore.prototype.close = realClose;
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a development-only key is refused at boot unless the gateway opts in", async () => {
+  // scripts/groth16_dev_keys.sh marks its keys devOnly, since their setup had one local contribution.
+  const { dir, env } = await envWithSnapshot();
+  const devVkey = join(dir, "dev_vkey.json");
+  await writeFile(devVkey, JSON.stringify({ ...PROTOCOL_VECTORS.groth16.vkey, devOnly: true }));
+  try {
+    await assert.rejects(createGateway({ config: buildConfig({ ...env, MNO_VKEY: devVkey }) }), /MNO_VKEY is a development-only key/);
+    const gateway = await createGateway({ config: buildConfig({ ...env, MNO_VKEY: devVkey, MNO_ALLOW_DEV_KEYS: "1" }) });
+    await gateway.close();
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

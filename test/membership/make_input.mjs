@@ -9,7 +9,7 @@
 import { buildPoseidon } from "circomlibjs";
 import { leafFromPriv } from "../../common/dml.js";
 import { contextHash, signalHash } from "../../common/index.js";
-import { keyNullifier } from "../derivations.mjs";
+import { singleTierNullifier } from "../derivations.mjs";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -62,7 +62,7 @@ writeFileSync(join(outDir, "input.json"), JSON.stringify(input));
 writeFileSync(
   join(outDir, "expected_outputs.json"),
   JSON.stringify({
-    nullifier: keyNullifier(poseidon, privkey, BigInt(input.epoch), BigInt(input.contextHash)),
+    nullifier: singleTierNullifier(poseidon, privkey, BigInt(input.epoch), BigInt(input.contextHash)),
   })
 );
 console.log("membership witness input written; root", root.slice(0, 14) + "...");

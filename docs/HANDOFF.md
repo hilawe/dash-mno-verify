@@ -192,7 +192,77 @@ review rejected its cross-project scope. Repository-root instructions were not e
 
   Recommended next, in order. First, decide A3 (the mode in `contextHash`, a JS-only change with a
   context cutover at a season boundary, or a circuit tag at the next rebuild). Second, the Groth16
-  ceremony decision, which would carry A1 to A3 into the circuit.
+  ceremony decision, which would carry A1 to A3 into the circuit. BOTH DECIDED, see the next item.
+- Build one Groth16 production candidate, review it once, and freeze it for the ceremony.
+
+  UNIT DONE (2026-09-27), ON BRANCH `groth16-candidate`, NOT MERGED AND NOT PUSHED. The owner's
+  decisions: both heavy circuits to Groth16, the members circuit unchanged on PLONK, circom-ecdsa's
+  dummy constant kept, A3 resolved by purpose tags in the circuits (no context migration, since there is
+  no live deployment), key 0 refused in the circuits with the oracle exclusion kept, the 900 s root-age
+  limit kept, one coordinated ceremony with two separate setups and at least one outside contributor to
+  each plus a public beacon. Production publication and deployment stay separate from this unit.
+  - Circuits. Key 0 refused (IsZero on the limb sum). Nullifiers Poseidon4(tag, keyHash, period,
+    context). The tags remove the shared-input construction that made equality predictable, including
+    a member choosing secret = keyHash to reproduce the single-tier nullifier. Equality now needs a
+    Poseidon collision, an assumption rather than something proved. Constraints 253,978 (single-tier) and
+    254,392 (registration), under Groth16's 2^18.
+  - Gateway. Proof system taken from the loaded key, a proof naming another refused. Boot refuses a key
+    whose protocol does not match its role, a devOnly key without MNO_ALLOW_DEV_KEYS=1, and the retired
+    plonk registration engine. Registration engine default groth16.
+  - Evidence. `npm test` 777 pass. `scripts/check_circuits.sh` refuses key 0 at the constraint's own line
+    and checks tagged derivations. `scripts/check_groth16_candidate.mjs` 20 of 20 with real proofs
+    through the real gateway and provers, including the whole registration flow at 15.5 s on this Mac
+    (8 cores) with the root 16 s old against 900 s. On the crono box at 3 CPUs the Groth16 registration
+    proof alone took 65 to 77 s earlier, so about 70 to 90 s for the flow is an estimate, not a
+    measurement. Every planted mutant failed its intended check. circom 2.2.3's Linux and macOS release
+    binaries give byte-identical r1cs (4e1f519d, 4cadf74e). The freeze was rehearsed in a throwaway
+    worktree, including catching a planted tag change.
+  - Review. One execution review by a different model family returned REVISE with one major (the plonk
+    registration engine still booted against the committed pre-candidate key and accepted a real
+    pre-candidate proof) and five minors, all fixed in `0b97ae2`. One focused confirmation: APPROVE, all
+    six resolved. Its sandbox could not open sockets, so the live gateway flows were run here instead.
+  - Ceremony. `docs/CEREMONY.md` is the procedure. `circuits/ceremony/FREEZE.json` names the frozen
+    commit, and `node scripts/freeze_candidate.mjs --check` (also a CI step) confirms a fresh compile
+    against it.
+
+  What forced rework in this unit (feeds `docs/PRECOMMIT_ADOPTION.md`, search for the defect's shape):
+  - The boot check first matched the registration key to whatever engine was configured, which left the
+    retired plonk engine reachable with the old key. The review found it. Rule it feeds: ask who can still
+    reach the old path, not only whether the new one is right.
+  - The key-0 CI check exited early for the wrong reason when its constraint line was deleted, and one
+    purpose-tag assertion compared a value with itself. Rule it feeds: confirm the mutant did its job.
+
+  PUSHED AS A DRAFT PR, NOT MERGED: https://github.com/hilawe/dash-mno-verify/pull/6 (the ci workflow runs
+  only on main pushes and pull requests, so a branch push alone runs nothing). Added after the freeze,
+  prose only, none touching a frozen input: a deterministic beacon rule and a closing statement that ends
+  both chains before the beacon block is mined (`docs/CEREMONY.md`), a narrower nullifier claim (the tags
+  remove the shared-input construction that made equality predictable, and equality now needs a Poseidon
+  collision), and the contributor package, `docs/ceremony/CONTRIBUTOR_GUIDE.md` and
+  `docs/ceremony/COORDINATOR_TEMPLATES.md`. The guide's verify and contribute commands were rehearsed as
+  written on a copy of a development key (verify 59 s, contribute 40 s, the new contribution then listed
+  with the printed hash). The proposed schedule and the Pasta invitation are a Downloads draft pending the
+  owner's approval, not in the repository.
+
+  Deferred by the owner: a standalone circom-ecdsa checker waits until after the Discord pilot and a real
+  outside user. No novelty claim is made for it.
+
+  INTERIM SETUP AND PUBLICATION DONE (2026-09-27). The owner chose not to let progress wait on the
+  ceremony. `scripts/interim_setup.sh` made a single-contributor Groth16 setup on the frozen circuits
+  (the fresh compile matched FREEZE.json), its randomness piped through the snarkjs prompt from the
+  system's random source and written nowhere. `circuits/ceremony/INTERIM_SETUP.json` records each
+  circuit's initial file, contribution hash, final key, verification key, and zkey verify chain, and the
+  recorded hashes equal the ones zkey verify reads back. The end-to-end check passed 20 of 20 on these
+  keys. The two verification keys sit at the gateway's default paths. The `circuit-keys-v3` GitHub
+  pre-release carries the two interim proving keys, the two heavy wasms, and the unchanged members key
+  and wasm, each downloaded back and matched, and keys.manifest.json points at it. The docs and the
+  member-facing prover instructions now give the Groth16 figures. The first setup run failed before
+  contributing (the piped randomness lacked a newline, so the prompt never got a line) and was rerun
+  clean. INTERIM means soundness rests on this machine having discarded the randomness. The operator
+  already runs the gateway, so the pilot gains no new trusted party, but nothing of value is gated.
+
+  NEXT, in order. First, merge the draft PR once its CI is green (the owner's call). Second, the small
+  Discord pilot on the interim keys. Third, the multi-party ceremony per `docs/CEREMONY.md`, which
+  replaces the interim keys, either continuing this chain or starting fresh.
 
 ## SUPERSEDED, 2026-09-25 (re-entry after six idle weeks, stale state corrected, a testnet VPS identified). Superseded by the 2026-09-27 section above
 

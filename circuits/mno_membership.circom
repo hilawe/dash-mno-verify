@@ -4,10 +4,12 @@ pragma circom 2.1.6;
 // correct design, and a sold node is evicted within one epoch. If per-epoch proving is
 // too slow, see mno_registration.circom and mno_members.circom for the two-tier path.
 include "circomlib/circuits/poseidon.circom";
+include "circomlib/circuits/comparators.circom"; // IsZero
 include "circom-ecdsa/circuits/ecdsa.circom";   // ECDSAPrivToPub(n, k)
 include "circom-ecdsa/circuits/bigint.circom";  // BigLessThan(n, k)
 include "./hash160/hash160.circom";              // CompressAndHash160
 include "./merkle.circom";                       // MerkleInclusion
+include "./purpose_tags.circom";                 // TAG_SINGLE_TIER_ADMISSION
 
 template MnoMembership(treeDepth, n, k) {
     // private witness
@@ -52,16 +54,27 @@ template MnoMembership(treeDepth, n, k) {
     for (var i = 0; i < k; i++) { dlt.a[i] <== privkey[i]; dlt.b[i] <== order[i]; }
     dlt.out === 1;
 
-    // 5) nullifier = Poseidon( Poseidon(privkey), epoch, contextHash )
+    // 5) refuse a private key of 0. For it the curve component outputs the placeholder (0, 0), which is
+    //    not a curve point, and whose hash160 anyone could prove (tools/circuit-analysis/RESULTS.md,
+    //    item A2). ECDSAPrivToPub range-checks every limb to 64 bits, so their sum is below 2^66 and
+    //    cannot wrap the field, so it is 0 exactly when every limb is.
+    component kz = IsZero();
+    kz.in <== privkey[0] + privkey[1] + privkey[2] + privkey[3];
+    kz.out === 0;
+
+    // 6) nullifier = Poseidon( TAG_SINGLE_TIER_ADMISSION, Poseidon(privkey), epoch, contextHash )
+    //    The fixed tag and the four-input width separate it from the registration nullifier and from
+    //    the three-input members nullifier (common/purpose_tags.js, item A3).
     component kh = Poseidon(k);
     for (var i = 0; i < k; i++) kh.inputs[i] <== privkey[i];
-    component nf = Poseidon(3);
-    nf.inputs[0] <== kh.out;
-    nf.inputs[1] <== epoch;
-    nf.inputs[2] <== contextHash;
+    component nf = Poseidon(4);
+    nf.inputs[0] <== TAG_SINGLE_TIER_ADMISSION();
+    nf.inputs[1] <== kh.out;
+    nf.inputs[2] <== epoch;
+    nf.inputs[3] <== contextHash;
     nullifier <== nf.out;
 
-    // 6) bind the proof to this challenge (Semaphore's signal trick)
+    // 7) bind the proof to this challenge (Semaphore's signal trick)
     signal sq;
     sq <== signalHash * signalHash;
 }
