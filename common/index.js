@@ -65,8 +65,10 @@ export function seasonNow(seasonSeconds, nowSeconds) {
 // tree is what vouched for the member, and that tree is cleared at the season boundary.
 //
 // Found on 2026-09-27 (review finding F1). The gateway returned only the epoch end. Epochs (7 days)
-// and seasons (90 days) do not share boundaries by default, so a grant minted just before a season
-// ended outlived it by up to six days, after the members tree had already been emptied. Pass season
+// and seasons (90 days) did not share boundaries under the schedule then in force, so a grant minted
+// just before a season ended outlived it by up to six days, after the members tree had already been
+// emptied. The two-tier epoch now defaults to the season (2026-09-29), so the default schedule has no
+// such gap, but an explicit schedule whose boundaries do not coincide still needs the cap. Pass season
 // and seasonSeconds only for a two-tier grant. Single-tier has no season, and its expiry is unchanged.
 export function grantExpiresAt({ epoch, epochSeconds, season = null, seasonSeconds = null }) {
   const epochEnd = (Number(epoch) + 1) * epochSeconds;

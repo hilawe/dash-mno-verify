@@ -32,7 +32,7 @@ npm run register -- \
 It finds your masternode in the gateway's published list, proves control, saves a secret
 you keep, and registers your commitment.
 
-Prove every epoch. This is the cheap proof, a few seconds and a small key, so it runs fine
+Prove every epoch, which in two-tier mode is once a season unless the gateway sets a shorter epoch. This is the cheap proof, a few seconds and a small key, so it runs fine
 on a Pi:
 
 ```bash

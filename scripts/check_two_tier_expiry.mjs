@@ -5,11 +5,14 @@
 // in test/grant_expiry.test.js pin the rule. This checks the WIRING: the real gateway, the real
 // `prover/two_tier.js prove` command, a real PLONK proof, and the real verify response.
 //
-// Two scenarios, each in a fresh gateway with its clock set by replacing Date.now in THIS process
+// Three scenarios, each in a fresh gateway with its clock set by replacing Date.now in THIS process
 // (the prover runs as a child with the real clock, which it does not use):
 // - 120 seconds before a season boundary that does not coincide with an epoch boundary. The grant
 //   must end AT the season boundary.
 // - The contrary control, ten days into a season. The grant must end at its epoch end.
+// - The two-tier DEFAULT schedule, with MNO_EPOCH_SECONDS unset, ten days into a season. The epoch
+//   defaults to the season (2026-09-29), so the grant must end at the season end. Under a one-week
+//   epoch it would end at the epoch end instead, so the expected value tells the two apart.
 //
 // The member is seeded through the project's own RegistrationStore, as a heavy registration proof
 // would have written it, so only the cheap members proof runs. Needs circuits/build/mno_members.zkey
@@ -29,7 +32,7 @@ import { contextHash, epochNow, seasonNow, scheduleId } from "../common/index.js
 import { makeDmlRootHasher } from "../common/dml_root.js";
 import { releaseProvingThreads } from "../prover/proving_threads.js";
 
-const EPOCH = 7 * 24 * 3600; // the defaults, which do not share boundaries
+const EPOCH = 7 * 24 * 3600; // an explicit two-tier schedule whose boundaries do not coincide
 const SEASON = 90 * 24 * 3600;
 const PLATFORM = "test";
 const COMMUNITY = "expiry-check";
@@ -48,7 +51,9 @@ const F = poseidon.F;
 const dmlRoot = await makeDmlRootHasher();
 const realDateNow = Date.now;
 
-async function scenario(name, fakeNow, expected) {
+async function scenario(name, fakeNow, expected, { defaultEpoch = false } = {}) {
+  // With MNO_EPOCH_SECONDS unset, the two-tier default is the season length.
+  const epochLen = defaultEpoch ? SEASON : EPOCH;
   const dir = mkdtempSync(join(tmpdir(), "expiry-check-"));
   let gateway = null;
   Date.now = () => fakeNow * 1000;
@@ -62,13 +67,13 @@ async function scenario(name, fakeNow, expected) {
     // Seed one member for this season and context, as registration would have.
     const secret = BigInt("0x" + randomBytes(24).toString("hex")).toString();
     const commitment = F.toObject(poseidon([F.e(BigInt(secret))])).toString();
-    const store = new RegistrationStore(new FileBackend(join(dir, "registrations.jsonl"), scheduleId(EPOCH, SEASON), false));
+    const store = new RegistrationStore(new FileBackend(join(dir, "registrations.jsonl"), scheduleId(epochLen, SEASON), false));
     const seeded = await store.append({ season, contextHash: CTX, regNullifier: "12345", commitment, engine: "groth16", statement: "derive" });
     if (seeded?.invalid || seeded?.duplicate) throw new Error(`seeding the member failed: ${JSON.stringify(seeded)}`);
 
     const config = buildConfig({
       MNO_MODE: "two-tier",
-      MNO_EPOCH_SECONDS: String(EPOCH),
+      ...(defaultEpoch ? {} : { MNO_EPOCH_SECONDS: String(EPOCH) }),
       MNO_SEASON_SECONDS: String(SEASON),
       MNO_ORACLE_SOURCE: join(dir, "root.json"),
       MNO_ALLOW_UNSIGNED_ORACLE: "1",
@@ -81,6 +86,7 @@ async function scenario(name, fakeNow, expected) {
       MNO_NULLIFIER_PATH: join(dir, "nullifiers.sqlite"),
       MNO_TIME_MARKS_PATH: join(dir, "time_marks.json"),
     });
+    if (config.epochSeconds !== epochLen) throw new Error(`FAIL ${name}: the gateway's epoch is ${config.epochSeconds} s, expected ${epochLen} s`);
     gateway = await createGateway({ config });
     await gateway.listen(0);
     const base = `http://127.0.0.1:${gateway.server.address().port}`;
@@ -102,7 +108,7 @@ async function scenario(name, fakeNow, expected) {
     const { nonce, proof, publicSignals } = JSON.parse(readFileSync(join(dir, "proof.json"), "utf8"));
     const out = await post("/v1/verify", { nonce, proof, publicSignals, account: "expiry-check" });
 
-    const epochEnd = (epochNow(EPOCH, fakeNow) + 1) * EPOCH;
+    const epochEnd = (epochNow(epochLen, fakeNow) + 1) * epochLen;
     const line = `${name}: verify ok=${out.ok}, expiresAt=${out.expiresAt}, expected=${expected}, epoch end=${epochEnd}, season end=${(season + 1) * SEASON}`;
     if (out.ok !== true || out.expiresAt !== expected) throw new Error(`FAIL ${line} ${out.reason ?? ""}`);
     console.log(`PASS ${line}`);
@@ -122,6 +128,7 @@ try {
   await scenario("120 s before a season boundary", seasonEnd - 120, seasonEnd);
   const mid = s * SEASON + 10 * 24 * 3600;
   await scenario("contrary, ten days into the season", mid, (epochNow(EPOCH, mid) + 1) * EPOCH);
+  await scenario("default schedule, ten days into the season", mid, seasonEnd, { defaultEpoch: true });
   console.log("two-tier grant expiry verified with real members proofs");
 } catch (err) {
   console.error(err.message);

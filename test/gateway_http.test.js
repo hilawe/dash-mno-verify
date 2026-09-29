@@ -57,13 +57,25 @@ after(() => rm(FIXTURE_DIR, { recursive: true, force: true }));
 
 async function startGateway(extraEnv = {}) {
   const port = await freePort();
+  // Every durable file defaults into a fresh directory per launch, so no case reads state that another
+  // case, or an earlier run in this checkout, left in the repository's data/ directory. The gateway's
+  // own defaults resolve there, and a registration file left from an older run under the one-week
+  // two-tier epoch refused every two-tier boot here once that default became the season (2026-09-29).
+  // A case that names a path in extraEnv still gets the path it named.
+  const state = await mkdtemp(join(FIXTURE_DIR, "state-"));
+  const isolated = {
+    MNO_REG_PATH: join(state, "registrations.jsonl"),
+    MNO_NULLIFIER_PATH: join(state, "nullifiers.sqlite"),
+    MNO_TIME_MARKS_PATH: join(state, "time_marks.json"),
+    MNO_PLATFORM_SCHEDULE_PATH: join(state, "platform_schedule.json"),
+  };
   // The gateway fails closed without auth and without trusted oracle keys, so tests run in the
   // explicit unauthenticated and unsigned-oracle modes unless a case opts in via extraEnv. Drop any
   // MNO_ADAPTER_SECRET inherited from the shell, so a developer who exported one (per the docs) does
   // not flip the default test gateway into authenticated mode.
   // MNO_ALLOW_EPHEMERAL_NULLIFIERS is deliberate here: these tests want the in-memory spent set, and
   // the gateway refuses "memory" without the opt-in so a deployment cannot land on it by default.
-  const env = { ...process.env, MNO_MODE: "single", MNO_STORE: "memory", MNO_ALLOW_EPHEMERAL_NULLIFIERS: "1", MNO_ALLOW_UNAUTH_GATEWAY: "1", MNO_ALLOW_UNSIGNED_ORACLE: "1", MNO_GATEWAY_PORT: String(port), MNO_VKEY: FIXTURE_GROTH16_VKEY, MNO_REG_VKEY: FIXTURE_GROTH16_VKEY, ...extraEnv };
+  const env = { ...process.env, ...isolated, MNO_MODE: "single", MNO_STORE: "memory", MNO_ALLOW_EPHEMERAL_NULLIFIERS: "1", MNO_ALLOW_UNAUTH_GATEWAY: "1", MNO_ALLOW_UNSIGNED_ORACLE: "1", MNO_GATEWAY_PORT: String(port), MNO_VKEY: FIXTURE_GROTH16_VKEY, MNO_REG_VKEY: FIXTURE_GROTH16_VKEY, ...extraEnv };
   if (!("MNO_ADAPTER_SECRET" in extraEnv)) delete env.MNO_ADAPTER_SECRET;
   const proc = spawn("node", ["core/gateway.js"], {
     cwd: REPO,
@@ -1908,10 +1920,14 @@ test("a clock regression makes /v1/members report the regression, not blame the 
   // schedule fields are REQUIRED: marks written under a different epoch or season length describe a
   // different numbering and are discarded rather than compared, so a fixture omitting them is
   // silently ignored and the test passes for no reason. That is the fixture rule (derive it from
-  // what the real writer produces) and a first version of this test omitted them.
+  // what the real writer produces) and a first version of this test omitted them. The gateway below is
+  // given the SAME lengths explicitly, so a change of default cannot silently desynchronize the two,
+  // which is how this test failed when the two-tier epoch default became the season (2026-09-29).
+  const EPOCH_S = 7 * 24 * 3600;
+  const SEASON_S = 90 * 24 * 3600;
   await writeFile(marks, JSON.stringify({
-    epochSeconds: 7 * 24 * 3600,
-    seasonSeconds: 90 * 24 * 3600,
+    epochSeconds: EPOCH_S,
+    seasonSeconds: SEASON_S,
     epoch: 9_999_999,
     season: 9_999_999,
     regression: null,
@@ -1922,6 +1938,8 @@ test("a clock regression makes /v1/members report the regression, not blame the 
     MNO_MODE: "two-tier",
     MNO_ALLOW_ANY_REGISTER_CONTEXTS: "1",
     MNO_TIME_MARKS_PATH: marks,
+    MNO_EPOCH_SECONDS: String(EPOCH_S),
+    MNO_SEASON_SECONDS: String(SEASON_S),
   });
   try {
     const res = await fetch(`${gw.base}/v1/members?context=12345`);

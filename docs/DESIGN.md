@@ -66,6 +66,15 @@ runs only a Poseidon-only membership proof in that tree. The cost is coarser fre
 because member commitments are unlinkable to nodes, a sold node cannot be revoked
 individually, so membership re-anchors to current ownership only at each season boundary.
 
+For the same reason the two-tier epoch defaults to the season length (`MNO_EPOCH_SECONDS` unset
+in two-tier mode), so a member registers and makes one membership proof per season, 90 days by
+default. The per-epoch proof never reads the masternode list again, so a shorter epoch never made
+a sold node lose access sooner. What a shorter epoch buys is a faster move to a new platform
+account and a faster lapse for an inactive member, and the Discord pilot (2026-09-29) found a
+manual proof every week too much to ask of members for that. An operator who wants a shorter
+epoch sets `MNO_EPOCH_SECONDS`. Single-tier keeps a one-week default, because there each epoch's
+proof is the heavy one against the current list.
+
 Both tiers are wired. With `MNO_MODE=two-tier` the gateway loads the registration and
 members keys and exposes `POST /v1/register` (verify a registration proof, then write one
 durable record holding the season, context, registration nullifier, and member commitment)

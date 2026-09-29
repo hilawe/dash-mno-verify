@@ -80,6 +80,26 @@ test("an explicit MNO_CHALLENGE_TTL overrides the mode default in either mode", 
   assert.equal(buildConfig({ MNO_MODE: "single", MNO_CHALLENGE_TTL: "300" }).challengeTtlSeconds, 300);
 });
 
+// The Discord pilot (2026-09-29) found a manual proof every week too much to ask of members. In two-tier
+// mode the per-epoch proof never reads the masternode list again, so the epoch defaults to the season and
+// a member acts once a season. Single-tier keeps a week, because there each epoch's proof is the heavy one
+// against the current list.
+test("the epoch defaults to the season in two-tier mode and to one week in single-tier", () => {
+  const two = buildConfig({ MNO_MODE: "two-tier" });
+  assert.equal(two.seasonSeconds, 90 * 24 * 3600);
+  assert.equal(two.epochSeconds, two.seasonSeconds);
+  assert.equal(buildConfig({ MNO_MODE: "single" }).epochSeconds, 7 * 24 * 3600);
+  assert.equal(buildConfig({}).epochSeconds, 7 * 24 * 3600, "single-tier is the default mode");
+});
+
+test("the two-tier epoch follows a changed season, and an explicit MNO_EPOCH_SECONDS wins in either mode", () => {
+  assert.equal(buildConfig({ MNO_MODE: "two-tier", MNO_SEASON_SECONDS: "86400" }).epochSeconds, 86400);
+  assert.equal(buildConfig({ MNO_MODE: "two-tier", MNO_SEASON_SECONDS: "86400", MNO_EPOCH_SECONDS: "1800" }).epochSeconds, 1800);
+  assert.equal(buildConfig({ MNO_MODE: "single", MNO_EPOCH_SECONDS: "3600" }).epochSeconds, 3600);
+  assert.equal(buildConfig({ MNO_MODE: "single", MNO_SEASON_SECONDS: "86400" }).epochSeconds, 7 * 24 * 3600, "single-tier does not follow the season");
+  assert.throws(() => buildConfig({ MNO_MODE: "two-tier", MNO_SEASON_SECONDS: "0" }), /MNO_SEASON_SECONDS must be an integer/, "reading the season first keeps its validation");
+});
+
 // A review of the Groth16 candidate found that MNO_REGISTRATION_ENGINE=plonk booted against the committed
 // PLONK registration key, which verifies the registration circuit from before the key-0 rejection and the
 // purpose tag, and accepted a real pre-candidate registration proof. The engine is retired at config.

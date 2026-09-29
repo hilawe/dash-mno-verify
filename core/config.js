@@ -54,14 +54,25 @@ function intEnv(env, name, defaultValue, { min = 1, max = Infinity } = {}) {
 // a test can produce. The module-level `config` below is the process environment applied to it, so
 // nothing about running the gateway changes.
 export function buildConfig(env = process.env) {
-  // Read once here because a default below depends on it. Validated with the rest further down.
+  // Read once here because defaults below depend on them. Validated with the rest further down.
   const mode = env.MNO_MODE ?? "single";
+  const seasonSeconds = intEnv(env, "MNO_SEASON_SECONDS", 90 * 24 * 3600);
   const config = {
     port: intEnv(env, "MNO_GATEWAY_PORT", 8787),
 
-    // How a membership epoch is sized. One week by default. A sold node loses access
-    // within one epoch, because it can no longer produce a fresh proof.
-    epochSeconds: intEnv(env, "MNO_EPOCH_SECONDS", 7 * 24 * 3600),
+    // How a membership epoch is sized, which is how often a member proves again to keep access.
+    //
+    // In single-tier mode it is one week by default. Every proof there is the heavy one against the
+    // current masternode list, so a sold node loses access within one epoch.
+    //
+    // In two-tier mode it defaults to the season length, so a member acts once a season: register,
+    // then one per-epoch proof. That proof shows membership in the season's members tree and never
+    // reads the masternode list again, so a shorter epoch never made a sold node lose access sooner.
+    // The season bounds that either way. What a shorter epoch buys is a faster move to a new platform
+    // account and a faster lapse for an inactive member, and the Discord pilot (2026-09-29) found a
+    // manual proof every week too much to ask of members for that. An explicit MNO_EPOCH_SECONDS still
+    // wins, and a changed MNO_SEASON_SECONDS moves this default with it.
+    epochSeconds: intEnv(env, "MNO_EPOCH_SECONDS", mode === "two-tier" ? seasonSeconds : 7 * 24 * 3600),
 
     // How long an issued challenge stays valid before the member must request a new one. The
     // default depends on the mode, because the member proves AGAINST the challenge and the two modes
@@ -300,7 +311,7 @@ export function buildConfig(env = process.env) {
     // Two-tier keys and season length.
     registrationVkeyPath: env.MNO_REG_VKEY ?? "circuits/build/mno_registration_vkey.json",
     membersVkeyPath: env.MNO_MEMBERS_VKEY ?? "circuits/build/mno_members_vkey.json",
-    seasonSeconds: intEnv(env, "MNO_SEASON_SECONDS", 90 * 24 * 3600),
+    seasonSeconds, // 90 days by default, read at the top because the two-tier epoch default follows it
 
     // The registration engine and statement this gateway offers (two-tier). "groth16"/"derive" is the
     // default and the only circuit engine, the compiled mno_registration circuit under its own Groth16

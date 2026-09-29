@@ -70,6 +70,9 @@ until the blockers in REVIEW_FINDINGS_dash-mno-verify_2026-06-26.md are closed.
   use, no registration step.
 - Two tier (`MNO_MODE=two-tier`). A heavy seasonal registration proves masternode control once and
   emits a member commitment, then a cheap per-epoch proof shows membership in the members tree.
+  The epoch defaults to the season length in this mode, so a member acts once a season. The
+  per-epoch proof never re-reads the masternode list, so a shorter epoch would not revoke a sold
+  node any sooner (see `docs/DESIGN.md`).
 
 `MNO_STORE` selects the nullifier backend: `sqlite` (the DEFAULT, durable, single gateway),
 `memory` (ephemeral, opt-in via `MNO_ALLOW_EPHEMERAL_NULLIFIERS`), or `platform` (shared across
