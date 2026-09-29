@@ -22,8 +22,9 @@ import {
   OverwriteType,
 } from "discord.js";
 import process from "node:process";
-import { proveInstructions } from "../../common/prover_instructions.js";
-import { assertSafeGatewayUrl } from "../../common/gateway_url.js";
+import { proveSteps, memberGuideUrl } from "../../common/prover_instructions.js";
+import { assertSafeGatewayUrl, memberGatewayUrl } from "../../common/gateway_url.js";
+import { verifyReply, verifiedReply, accessEndedNotice, failureReply, splitForDiscord } from "./messages.js";
 import {
   GrantLedger,
   authorizesTarget,
@@ -46,6 +47,17 @@ const TOKEN = process.env.DISCORD_TOKEN;
 const APP_ID = process.env.DISCORD_APP_ID;
 const GUILD_ID = process.env.DISCORD_GUILD_ID;
 const GATEWAY = assertSafeGatewayUrl(process.env.MNO_GATEWAY_URL ?? "http://127.0.0.1:8787");
+// The address members' provers use, which the /verify reply prints. Not GATEWAY when the bot reaches
+// the gateway on loopback, because a member's computer cannot (common/gateway_url.js).
+const MEMBER_GATEWAY = memberGatewayUrl(GATEWAY);
+if (MEMBER_GATEWAY === null) {
+  console.warn(
+    "[discord] MNO_MEMBER_GATEWAY_URL is not set and MNO_GATEWAY_URL is a loopback address, so members are " +
+      "shown <gateway-url> and must get the gateway address from an admin. Set MNO_MEMBER_GATEWAY_URL to the " +
+      "public https address of the gateway.",
+  );
+}
+const GUIDE_URL = memberGuideUrl();
 // Adapter bearer token the gateway requires when MNO_ADAPTER_SECRET is set there. Sent on the
 // account-bearing calls so the gateway trusts the account this adapter vouches for (review B1/M5).
 const ADAPTER_SECRET = process.env.MNO_ADAPTER_SECRET;
@@ -215,10 +227,12 @@ async function repairLiveGrants() {
 async function sweepAndNotify() {
   const revoked = await ledger.sweep();
   await repairLiveGrants().catch((e) => console.error("[discord] repair pass failed:", e.message));
+  if (revoked.length === 0) return;
+  const guildName = (await getGuild().catch(() => null))?.name ?? null;
   for (const userId of revoked) {
     try {
       const u = await client.users.fetch(userId);
-      await u.send("Your anonymous masternode verification has expired. Run /verify again to renew access.");
+      await u.send(accessEndedNotice({ guildName }));
     } catch {}
   }
 }
@@ -551,28 +565,13 @@ async function handleInteraction(i) {
     const file = new AttachmentBuilder(Buffer.from(JSON.stringify(challenge, null, 2)), {
       name: "challenge.json",
     });
-    // Commands render as code, notes as text. A two-tier first-timer is told to register BEFORE using
-    // a challenge (review finding F2), and every member sees when this challenge stops being accepted,
-    // as a Discord timestamp that shows in their own time zone.
-    const steps = proveInstructions(challenge.mode, { gateway: GATEWAY, platform: "discord", community: GUILD_ID, role: CONTEXT_ID })
-      .map((l) => (l.startsWith("npm run ") ? "   `" + l + "`" : l));
-    const deadline = Number.isFinite(challenge.challengeExpiresAt)
-      ? `This challenge expires <t:${challenge.challengeExpiresAt}:R>. If it expires, run \`/verify\` again. Within the same season you do not need to register again.`
-      : "If this challenge expires, run `/verify` again. Within the same season you do not need to register again.";
-    await i.editReply({
-      content: [
-        "Anonymous masternode verification.",
-        "",
-        "On the machine holding your masternode voting key:",
-        ...steps,
-        "",
-        "Download `challenge.json` below for the proof step. " + deadline,
-        "Then run `/submit` here and attach the `proof.json` it produces.",
-        "",
-        "Your key, and which node you control, never leave your device. The bot learns only that some valid masternode vouched for you.",
-      ].join("\n"),
-      files: [file],
-    });
+    // The layout is adapters/discord/messages.js. A two-tier first-timer is told to register BEFORE using
+    // a challenge (review finding F2), and every time is a Discord timestamp in the member's time zone.
+    const steps = proveSteps(challenge.mode, { gateway: MEMBER_GATEWAY, platform: "discord", community: GUILD_ID, role: CONTEXT_ID });
+    // The file rides with the first piece. Any further piece follows, still visible only to the member.
+    const [first, ...rest] = splitForDiscord(verifyReply({ challenge, steps, guideUrl: GUIDE_URL }));
+    await i.editReply({ content: first, files: [file] });
+    for (const content of rest) await i.followUp({ content, flags: MessageFlags.Ephemeral });
     return;
   }
 
@@ -602,8 +601,7 @@ async function handleInteraction(i) {
       body: JSON.stringify({ ...payload, account: i.user.id }),
     });
     const out = await res.json();
-    if (!out.ok)
-      return i.editReply(`Verification failed (${out.reason ?? "unknown"}). Run \`/verify\` to start over.`);
+    if (!out.ok) return i.editReply(failureReply(out.reason));
     if (!Number.isFinite(out.expiresAt)) {
       console.error("[discord] gateway returned no valid expiresAt");
       return i.editReply("The verification response was malformed. Run `/verify` to try again.");
@@ -655,9 +653,7 @@ async function handleInteraction(i) {
           "is no need to verify again, and doing so will not help until the next epoch.",
       );
     }
-    const until = new Date(out.expiresAt * 1000).toISOString().replace("T", " ").slice(0, 16);
-    const where = "access to the masternode channel";
-    return i.editReply(`Verified. You have ${where} for this epoch (until ${until} UTC). Run \`/verify\` again after it rolls over to keep access.`);
+    return i.editReply(verifiedReply({ expiresAt: out.expiresAt, channelIds: GRANT_CHANNEL_IDS }));
   }
 }
 

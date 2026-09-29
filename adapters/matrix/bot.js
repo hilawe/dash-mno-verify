@@ -6,8 +6,8 @@
 // room. It uses the Matrix Client-Server API directly, so it needs no extra dependency.
 import process from "node:process";
 import { randomUUID } from "node:crypto";
-import { proveInstructions } from "../../common/prover_instructions.js";
-import { assertSafeGatewayUrl } from "../../common/gateway_url.js";
+import { proveInstructions, memberGuideUrl } from "../../common/prover_instructions.js";
+import { assertSafeGatewayUrl, memberGatewayUrl } from "../../common/gateway_url.js";
 import { RoomStateTracker, isPrivateDirectRoomState } from "./room_privacy.js";
 import { GrantLedger } from "../common/grant_ledger.js";
 import { markReconciled, reconciliationDone } from "../common/reconcile.js";
@@ -18,6 +18,10 @@ const TOKEN = process.env.MATRIX_ACCESS_TOKEN;
 const USER_ID = process.env.MATRIX_USER_ID; // @yourbot:matrix.org
 const GATED_ROOM = process.env.MATRIX_GATED_ROOM; // !roomid:matrix.org, bot must be able to invite
 const GATEWAY = assertSafeGatewayUrl(process.env.MNO_GATEWAY_URL ?? "http://127.0.0.1:8787");
+// The address members' provers use, which the instructions print (common/gateway_url.js). Null when
+// the adapter reaches the gateway on loopback and no MNO_MEMBER_GATEWAY_URL is set.
+const MEMBER_GATEWAY = memberGatewayUrl(GATEWAY);
+const GUIDE_URL = memberGuideUrl();
 // Adapter bearer token the gateway requires when MNO_ADAPTER_SECRET is set there (review B1/M5).
 // This is the gateway token, distinct from the Matrix access token used by api() below.
 const ADAPTER_SECRET = process.env.MNO_ADAPTER_SECRET;
@@ -75,7 +79,7 @@ async function handle(roomId, sender, body, state) {
       [
         "Anonymous masternode verification, step 1 of 2.",
         "On the machine holding your masternode voting key, save the challenge below as challenge.json, then:",
-        ...proveInstructions(challenge.mode, { gateway: GATEWAY, platform: "matrix", community: COMMUNITY, role: ROLE }),
+        ...proveInstructions(challenge.mode, { gateway: MEMBER_GATEWAY, guide: GUIDE_URL, platform: "matrix", community: COMMUNITY, role: ROLE }),
         "then paste the resulting proof.json back into this room.",
         "Your key, and which node you control, never leave your device.",
         "",

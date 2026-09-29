@@ -18,6 +18,8 @@ export MATRIX_ACCESS_TOKEN=...           # the bot's access token
 export MATRIX_USER_ID=@yourbot:matrix.org
 export MATRIX_GATED_ROOM=!roomid:matrix.org
 export MNO_GATEWAY_URL=http://127.0.0.1:8787
+export MNO_MEMBER_GATEWAY_URL=https://your-gateway   # what members' provers connect to. The line above is
+                                                    # loopback, which a member's computer cannot reach.
 
 # recovery only
 # MATRIX_RESET_CLOCK=1 drops the adapter's clock floor to the current time, for the case where a large

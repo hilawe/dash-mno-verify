@@ -96,6 +96,8 @@ and the full set is in the adapter's README.
 # Discord. MNO_ADAPTER_SECRET must be the same value the gateway runs with, or its calls get 401.
 export DISCORD_TOKEN=... DISCORD_APP_ID=... DISCORD_GUILD_ID=...
 export MNO_GATEWAY_URL=http://127.0.0.1:8787
+export MNO_MEMBER_GATEWAY_URL=https://your-gateway   # what members' provers connect to. The line above is
+                                                    # loopback, which a member's computer cannot reach.
 export MNO_ADAPTER_SECRET=<the same value the gateway uses>
 # Channel mode (recommended): add verified members to the private channel(s), no public role.
 export DISCORD_GRANT_CHANNEL_IDS=<channel id,...>

@@ -1221,10 +1221,8 @@ async function bootGateway({ config = buildConfig(process.env) } = {}, release) 
         // (review finding F2). That is the store's lifetime OR the end of the challenge's epoch (and, in
         // two-tier, its season), whichever comes first, since verify refuses a rolled-over period.
         // Rounded down, so it is never later than the store's own expiry.
-        const challengeExpiresAt = Math.min(
-          nowSec() + config.challengeTtlSeconds,
-          grantExpiresAt({ epoch, epochSeconds: config.epochSeconds, ...(twoTier ? { season: challengeSeason, seasonSeconds: config.seasonSeconds } : {}) }),
-        );
+        const accessEndsAt = grantExpiresAt({ epoch, epochSeconds: config.epochSeconds, ...(twoTier ? { season: challengeSeason, seasonSeconds: config.seasonSeconds } : {}) });
+        const challengeExpiresAt = Math.min(nowSec() + config.challengeTtlSeconds, accessEndsAt);
         const sig = signalHash(nonce, account).toString();
         // The season is recorded with the challenge so the verify path can tell whether the season it
         // was minted in is still current. Without it a two-tier verify could only compare root store
@@ -1249,6 +1247,13 @@ async function bootGateway({ config = buildConfig(process.env) } = {}, release) 
           // received null and fell back to whichever accepted secret readdir happened to return first,
           // which after a rollover can be last season's, absent from the current tree.
           ...(twoTier ? { season: challengeSeason } : {}),
+          // When access granted on this challenge would end, and in two-tier mode when this season's
+          // registration ends, so an adapter can tell the member both before they prove. Periods run on
+          // fixed shared boundaries, so a member who proves late in one gets correspondingly less, and
+          // the Discord pilot (2026-09-29) found nothing told them so. It is informational only. The
+          // grant's real end is the expiresAt the verify returns, computed the same way.
+          accessEndsAt,
+          ...(twoTier ? { seasonEndsAt: (Number(challengeSeason) + 1) * config.seasonSeconds } : {}),
         });
       }
 

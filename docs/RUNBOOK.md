@@ -119,6 +119,8 @@ Invite the bot with the `bot` and `applications.commands` scopes, and give it "M
 ```bash
 export DISCORD_TOKEN=... DISCORD_APP_ID=... DISCORD_GUILD_ID=...
 export MNO_GATEWAY_URL=http://127.0.0.1:8787
+export MNO_MEMBER_GATEWAY_URL=https://your-gateway   # what members' provers connect to. The line above is
+                                                    # loopback, which a member's computer cannot reach.
 export MNO_ADAPTER_SECRET=$SECRET                    # the SAME value the gateway uses
 export DISCORD_GRANT_CHANNEL_IDS=<private channel id> # comma-separate several
 export DISCORD_CONTEXT_ID=mn-members                 # a stable label the proof is scoped to
@@ -128,6 +130,8 @@ npm run bot
 On a successful proof the bot adds the member to the channel with a per-user permission overwrite, which is the automated form of how you add people by hand today. Nothing shows on their public profile. The verification itself happens in ephemeral replies only the member sees. Let the bot do the adds rather than adding people to that channel by hand, since its expiry sweep resets the access it manages.
 
 ## 5. The member's side, on the masternode itself
+
+`docs/MEMBER_GUIDE.md` is the member-facing version of this section, and the Discord bot links it from its `/verify` reply.
 
 The heavy once-a-season registration uses a Groth16 proving key of about 120 MB. Until the multi-party ceremony runs, it is an INTERIM key from a single-contributor setup (`docs/CEREMONY.md`), so do not gate anything of value on it. On a 6-vCPU testnet server, in a container capped at 3 CPUs and 4 GiB, the registration proof took 65 and 77 s with a peak of about 1.5 GiB (measured 2026-09-27 on the circuit before the purpose tag and key-0 rejection, which add about 400 constraints to 254,000), and on a 16 GB laptop the whole registration, fetching the list through the gateway commit, took about 16 s. Plan for about 2 GB of free memory. The masternode the member already operates is still the natural place to run it, since the voting key is already there, and running it in a container with a memory cap (for example `docker run --memory=4g`) keeps a proof that runs short of memory from affecting the node. The per-epoch proof after that is small (a 35 MB key) and runs anywhere. The PLONK keys before this change needed 2.3 GB and about 7 GB of memory.
 
@@ -140,8 +144,8 @@ bash scripts/fetch_keys.sh            # the 35 MB per-epoch key and the wasms, a
 bash scripts/fetch_keys.sh --large registration    # the registration key, about 120 MB, checked against its sha256
 ```
 
-- Once a season, BEFORE asking for a challenge: `npm run register -- --gateway https://your-gateway --platform discord --community <guild id> --role mn-members --voting-key-file key.wif`. This needs the registration key (about 120 MB) and takes about a minute or two. It needs no challenge, which matters because a challenge lasts only ten minutes. See the network-path warning below.
-- Every epoch, in Discord (once a season by default, because the two-tier epoch defaults to the season length): `/verify` gives a challenge and shows when it expires, the member runs `npm run prove-epoch -- --gateway https://your-gateway --challenge challenge.json` (about 30 seconds), and `/submit` hands the resulting `proof.json` back. The bot adds them to the channel. If the challenge expires, `/verify` again gives a fresh one, and within the same season there is no need to register again.
+- Once a season, BEFORE asking for a challenge: `npm run register -- --gateway https://your-gateway --platform discord --community <guild id> --role mn-members --voting-key-file voting-key.txt`. This needs the registration key (about 120 MB) and takes about a minute or two. It needs no challenge, which matters because a challenge lasts only ten minutes. See the network-path warning below.
+- Every epoch, in Discord (once a season by default, because the two-tier epoch defaults to the season length): `/verify` gives a challenge, shows when it expires and how long access would last, and lays out the steps with the member-facing gateway address filled in, the member runs `npm run prove-epoch -- --gateway https://your-gateway --challenge challenge.json` (about 30 seconds), and `/submit` hands the resulting `proof.json` back. The bot adds them to the channel. If the challenge expires, `/verify` again gives a fresh one, and within the same season there is no need to register again.
 
 Network-path warning for two-tier: both the seasonal register and the per-epoch prove connect to the gateway directly (register posts to it, prove fetches the members tree from it), so the gateway sees the source address on both. If you run either on the masternode, that address is the node's own advertised service address, which is in the public masternode list, and the gateway operator can learn which node it is. The proof stays zero-knowledge, so this is a network-path exposure only, but it applies to BOTH two-tier steps, not registration alone. Run them over an anonymizing path (for example Tor) or from a machine whose public egress address cannot be matched to the node (a machine behind the same network address is not separation). The prover prints a reminder when the gateway is not loopback. Single-tier proving contacts no gateway and has no such exposure. See `docs/THREAT_MODEL.md` ("What each party learns").
 

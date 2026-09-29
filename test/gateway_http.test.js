@@ -396,6 +396,37 @@ test("an explicit MNO_CHALLENGE_TTL sets the reported deadline", async () => {
   }
 });
 
+// The Discord pilot (2026-09-29). Periods run on fixed shared boundaries, so a member who proves late in
+// one gets less access, and nothing told them. The challenge now says when access granted on it would
+// end and, in two-tier mode, when the season's registration ends.
+test("the challenge reports when access would end, and in two-tier mode when the season ends", async () => {
+  const oracle = join(dir, "root.json");
+  const single = await startGateway({ MNO_ORACLE_SOURCE: oracle, MNO_ORACLE_REFRESH: "3600", MNO_EPOCH_SECONDS: "100" });
+  try {
+    const ch = await challenge(single.base);
+    assert.equal(ch.accessEndsAt, (ch.epoch + 1) * 100, "single-tier access ends with the epoch");
+    assert.equal("seasonEndsAt" in ch, false, "single-tier has no season");
+  } finally {
+    single.proc.kill();
+  }
+  // A 300-second epoch inside a 1,000-second season. Which end comes first depends on the wall clock
+  // (the season ends first in 100 of every 1,000 seconds), so this checks the WIRING of accessEndsAt to
+  // the shared rule. The rule itself, including the season-first cap, is pinned deterministically in
+  // test/grant_expiry.test.js.
+  const two = await startGateway({
+    MNO_ORACLE_SOURCE: oracle, MNO_ORACLE_REFRESH: "3600", MNO_MODE: "two-tier", MNO_ALLOW_ANY_REGISTER_CONTEXTS: "1",
+    MNO_EPOCH_SECONDS: "300", MNO_SEASON_SECONDS: "1000",
+  });
+  try {
+    const ch = await challenge(two.base);
+    assert.equal(ch.seasonEndsAt, (ch.season + 1) * 1000, "the season's registration ends at its boundary");
+    assert.equal(ch.accessEndsAt, Math.min((ch.epoch + 1) * 300, ch.seasonEndsAt), "access ends with the epoch or the season, whichever is first");
+    assert.ok(ch.challengeExpiresAt <= ch.accessEndsAt, "and the challenge never outlives the access it would grant");
+  } finally {
+    two.proc.kill();
+  }
+});
+
 test("the reported deadline never runs past the challenge's epoch, which verify would refuse", async () => {
   // A 100-second epoch ends long before the 30-minute single-tier lifetime, and a proof for a
   // rolled-over epoch is refused, so the deadline shown to the member must be the epoch end.

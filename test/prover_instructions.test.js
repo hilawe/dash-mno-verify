@@ -5,13 +5,14 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { proveInstructions } from "../common/prover_instructions.js";
+import { proveInstructions, proveSteps, VOTING_KEY_FILE } from "../common/prover_instructions.js";
 import { parseTwoTierArgs } from "../prover/two_tier_args.js";
 
 // Pin the prover steps the adapters show. Every command must be copy-pasteable, so the gateway URL,
 // platform, community, and role are filled in from the adapter's context (a wrong guess would register
-// into a tree that does not satisfy the challenge), and only <key.wif>, the member's own voting-key
-// file, stays a placeholder. The single-tier prover reads the oracle locally, so it needs none of it.
+// into a tree that does not satisfy the challenge), and the member's own voting-key file has a fixed
+// name the setup guide tells them to create, so nothing is left to fill in. The single-tier prover
+// reads the oracle locally, so it needs none of it.
 const CTX = { gateway: "https://gw.example", platform: "discord", community: "C123", role: "R456" };
 const commands = (lines) => lines.filter((l) => l.startsWith("npm run "));
 const argsOf = (cmd) => cmd.split(" -- ")[1].split(" ");
@@ -44,11 +45,11 @@ test("two-tier fills in the concrete gateway, platform, community, and role", ()
   // lookup that finds the real file.
   assert.doesNotMatch(prove, /--secret/, "an explicit --secret disables the prover's context lookup");
   assert.match(register, /^npm run register -- /);
-  for (const part of ["--gateway https://gw.example", "--platform discord", "--community C123", "--role R456", "--voting-key-file <key.wif>"]) {
+  for (const part of ["--gateway https://gw.example", "--platform discord", "--community C123", "--role R456", "--voting-key-file voting-key.txt"]) {
     assert.ok(register.includes(part), `register is missing ${part}`);
   }
   for (const line of [prove, register]) {
-    const unfilled = (line.match(/<[^>]+>/g) ?? []).filter((p) => p !== "<key.wif>");
+    const unfilled = line.match(/<[^>]+>/g) ?? [];
     assert.deepEqual(unfilled, [], `unfilled placeholders in: ${line}`);
   }
 });
@@ -65,7 +66,7 @@ test("no step passes the voting key as a bare argument, where shell history and 
 test("the displayed two-tier commands parse with the real two_tier option parser", () => {
   const [register, prove] = commands(proveInstructions("two-tier", CTX));
   const r = parseTwoTierArgs(["register", ...argsOf(register)]);
-  assert.equal(r.values["voting-key-file"], "<key.wif>");
+  assert.equal(r.values["voting-key-file"], VOTING_KEY_FILE);
   assert.equal(r.values.community, "C123");
   const p = parseTwoTierArgs(["prove", ...argsOf(prove)]);
   assert.equal(p.values.challenge, "challenge.json");
@@ -78,7 +79,7 @@ test("the displayed single-tier command parses with the real prover CLI", () => 
   const [cmd] = commands(proveInstructions("single", CTX));
   const dir = mkdtempSync(join(tmpdir(), "instr-"));
   try {
-    const args = argsOf(cmd).map((a) => (a === "<key.wif>" ? join(dir, "key.wif") : a));
+    const args = argsOf(cmd).map((a) => (a === VOTING_KEY_FILE ? join(dir, VOTING_KEY_FILE) : a));
     const cli = fileURLToPath(new URL("../prover/prover.js", import.meta.url));
     let stderr = "";
     try {
@@ -113,4 +114,29 @@ test("two-tier without context falls back to angle-bracket placeholders", () => 
 
 test("an unknown mode falls back to the single-tier steps", () => {
   assert.deepEqual(proveInstructions(undefined, CTX), proveInstructions("single"));
+});
+
+// Found in the Discord pilot (2026-09-29). An adapter on the gateway's host passed its own loopback
+// address, and the instructions told members to connect to their own computer. An adapter that knows
+// no member-facing address passes null, and the command must then show a placeholder, not an address.
+test("a null gateway prints the placeholder rather than an address", () => {
+  const { register, prove } = proveSteps("two-tier", { ...CTX, gateway: null });
+  assert.match(register, /--gateway <gateway-url> /);
+  assert.match(prove, /--gateway <gateway-url> /);
+  assert.doesNotMatch(register + prove, /127\.0\.0\.1|localhost/);
+});
+
+test("the instruction lines carry exactly the commands proveSteps gives, in order", () => {
+  for (const mode of ["single", "two-tier"]) {
+    const { register, prove } = proveSteps(mode, CTX);
+    assert.deepEqual(commands(proveInstructions(mode, CTX)), [register, prove].filter(Boolean));
+  }
+});
+
+test("a setup guide link is appended in two-tier mode when the adapter has one, and omitted otherwise", () => {
+  const withGuide = proveInstructions("two-tier", { ...CTX, guide: "https://example.org/guide" });
+  assert.equal(withGuide.at(-1), "New to this? The setup guide is at https://example.org/guide");
+  assert.ok(!proveInstructions("two-tier", CTX).some((l) => /setup guide/.test(l)));
+  // The guide covers the two-tier setup only, so a single-tier member is not sent to it.
+  assert.ok(!proveInstructions("single", { ...CTX, guide: "https://example.org/guide" }).some((l) => /setup guide/.test(l)));
 });

@@ -219,11 +219,15 @@ export DISCORD_TOKEN=...                 # bot token
 export DISCORD_APP_ID=...                # application id
 export DISCORD_GUILD_ID=...              # the server id
 export MNO_GATEWAY_URL=http://127.0.0.1:8787
+export MNO_MEMBER_GATEWAY_URL=https://your-gateway   # what members' provers connect to. The line above is
+                                                    # loopback, which a member's computer cannot reach.
 export MNO_ADAPTER_SECRET=...            # the same value the gateway runs with, or its calls get 401
 
 # Add verified members to the private channel(s). This is the only grant mode.
 export DISCORD_GRANT_CHANNEL_IDS=111111111111111111,222222222222222222
 export DISCORD_CONTEXT_ID=mn-members     # stable context the proof is scoped to (optional)
+# MNO_MEMBER_GUIDE_URL overrides the setup-guide link in the /verify reply (default: docs/MEMBER_GUIDE.md
+# on GitHub). Set it empty to leave the link out.
 # DISCORD_GRANT_MODE=role and DISCORD_MNO_ROLE_ID are refused. A Discord role is visible on the
 # member's profile card, so it disclosed who holds a masternode.
 

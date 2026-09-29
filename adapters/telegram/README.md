@@ -14,6 +14,8 @@ access is taken back when the epoch lapses.
 export TELEGRAM_BOT_TOKEN=...        # from BotFather
 export TELEGRAM_GROUP_ID=-100...     # the gated chat id (bot must be admin)
 export MNO_GATEWAY_URL=http://127.0.0.1:8787
+export MNO_MEMBER_GATEWAY_URL=https://your-gateway   # what members' provers connect to. The line above is
+                                                    # loopback, which a member's computer cannot reach.
 
 # recovery only
 # TELEGRAM_RESET_CLOCK=1 drops the adapter's clock floor to the current time, for the case where a large

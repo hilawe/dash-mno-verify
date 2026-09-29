@@ -5,6 +5,8 @@ only `node:http`, and it talks to the same gateway endpoints as every other adap
 
 ```bash
 export MNO_GATEWAY_URL=http://127.0.0.1:8787
+export MNO_MEMBER_GATEWAY_URL=https://your-gateway   # what members' provers connect to. The line above is
+                                                    # loopback, which a member's computer cannot reach.
 export MNO_WEB_COMMUNITY=example.org   # scopes the context hash for this site
 export MNO_WEB_PORT=8080
 npm run web                            # add this script, or: node adapters/web/server.js

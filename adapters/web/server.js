@@ -11,11 +11,15 @@
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
 import process from "node:process";
-import { proveInstructions } from "../../common/prover_instructions.js";
-import { assertSafeGatewayUrl } from "../../common/gateway_url.js";
+import { proveInstructions, memberGuideUrl } from "../../common/prover_instructions.js";
+import { assertSafeGatewayUrl, memberGatewayUrl } from "../../common/gateway_url.js";
 
 const PORT = Number(process.env.MNO_WEB_PORT ?? 8080);
 const GATEWAY = assertSafeGatewayUrl(process.env.MNO_GATEWAY_URL ?? "http://127.0.0.1:8787");
+// The address members' provers use, which the instructions print (common/gateway_url.js). Null when
+// the adapter reaches the gateway on loopback and no MNO_MEMBER_GATEWAY_URL is set.
+const MEMBER_GATEWAY = memberGatewayUrl(GATEWAY);
+const GUIDE_URL = memberGuideUrl();
 // Adapter bearer token the gateway requires when MNO_ADAPTER_SECRET is set there (review B1/M5).
 // Server-side only; it is never exposed to the browser.
 const ADAPTER_SECRET = process.env.MNO_ADAPTER_SECRET;
@@ -139,7 +143,7 @@ const server = createServer(async (req, res) => {
       const challenge = await r.json();
       // Send the prover command(s) for the gateway's mode alongside the challenge, computed with the
       // shared helper, so the page shows the right command without duplicating the logic in browser JS.
-      return send(res, 200, { challenge, proverInstructions: proveInstructions(challenge.mode, { gateway: GATEWAY, platform: "web", community: COMMUNITY_ID, role: ROLE_ID }) }, setCookie);
+      return send(res, 200, { challenge, proverInstructions: proveInstructions(challenge.mode, { gateway: MEMBER_GATEWAY, guide: GUIDE_URL, platform: "web", community: COMMUNITY_ID, role: ROLE_ID }) }, setCookie);
     }
 
     if (req.method === "POST" && req.url === "/api/submit") {

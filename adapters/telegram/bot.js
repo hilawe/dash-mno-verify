@@ -19,8 +19,8 @@
 // link and to restrict members. Set TELEGRAM_GROUP_ID to that chat's id.
 import { Bot, InputFile } from "grammy";
 import process from "node:process";
-import { proveInstructions } from "../../common/prover_instructions.js";
-import { assertSafeGatewayUrl } from "../../common/gateway_url.js";
+import { proveInstructions, memberGuideUrl } from "../../common/prover_instructions.js";
+import { assertSafeGatewayUrl, memberGatewayUrl } from "../../common/gateway_url.js";
 import { GrantLedger } from "../common/grant_ledger.js";
 import { requireReconciled } from "../common/reconcile.js";
 import { contextHash } from "../../common/index.js";
@@ -32,6 +32,10 @@ const GROUP_ID = process.env.TELEGRAM_GROUP_ID;
 const COMMUNITY_ID = process.env.TELEGRAM_COMMUNITY ?? String(GROUP_ID);
 const ROLE_ID = process.env.TELEGRAM_ROLE ?? "member";
 const GATEWAY = assertSafeGatewayUrl(process.env.MNO_GATEWAY_URL ?? "http://127.0.0.1:8787");
+// The address members' provers use, which the instructions print (common/gateway_url.js). Null when
+// the adapter reaches the gateway on loopback and no MNO_MEMBER_GATEWAY_URL is set.
+const MEMBER_GATEWAY = memberGatewayUrl(GATEWAY);
+const GUIDE_URL = memberGuideUrl();
 // Adapter bearer token the gateway requires when MNO_ADAPTER_SECRET is set there (review B1/M5).
 const ADAPTER_SECRET = process.env.MNO_ADAPTER_SECRET;
 const authHeaders = ADAPTER_SECRET ? { authorization: `Bearer ${ADAPTER_SECRET}` } : {};
@@ -121,17 +125,22 @@ bot.command("verify", async (ctx) => {
 
   // The challenge carries no secret, so it is safe to send. The member feeds it to the
   // prover on their own machine, where the voting key never leaves.
+  // The steps go in their own message rather than the document's caption. A caption is limited to 1,024
+  // characters, and the instructions with a guide link and a long gateway address can pass that, in
+  // which case Telegram refused the document and the member got neither the file nor the steps. A
+  // message allows 4,096.
   await ctx.replyWithDocument(
     new InputFile(Buffer.from(JSON.stringify(challenge, null, 2)), "challenge.json"),
-    {
-      caption: [
-        "Step 1 of 2. On the machine holding your masternode voting key:",
-        ...proveInstructions(challenge.mode, { gateway: GATEWAY, platform: "telegram", community: COMMUNITY_ID, role: ROLE_ID }),
-        "Then send me the proof.json it produces.",
-        "",
-        "Your key, and which node you control, never leave your device.",
-      ].join("\n"),
-    }
+    { caption: "Your challenge file. The steps are in the next message." },
+  );
+  await ctx.reply(
+    [
+      "Step 1 of 2. On the machine holding your masternode voting key:",
+      ...proveInstructions(challenge.mode, { gateway: MEMBER_GATEWAY, guide: GUIDE_URL, platform: "telegram", community: COMMUNITY_ID, role: ROLE_ID }),
+      "Then send me the proof.json it produces.",
+      "",
+      "Your key, and which node you control, never leave your device.",
+    ].join("\n"),
   );
 });
 
