@@ -41,7 +41,84 @@ Not enforced by anything, so they depend on the session:
   mainnet) and the install profile where it matters.
 - Stage exact paths, never a directory and never `-A`.
 
-## Current state, September 29, 2026
+## Current state, September 29, 2026 (evening)
+
+Main carries `c38e0b7`, `00f292c`, `6419801`, `478ffcc`, and this handoff once pushed. The suite is 834
+tests. The last pushed commit whose CI was read is `00f292c` (all three jobs green).
+
+### Done this session
+
+- The two-tier epoch defaults to the season (`c38e0b7`), so a member registers and proves once a season,
+  90 days by default. Single-tier keeps one week. `docs/DESIGN.md` and `docs/THREAT_MODEL.md` say why a
+  shorter two-tier epoch never revoked a departed node sooner.
+- The member messages were rewritten and the bots stopped printing their own loopback gateway address
+  (`00f292c`, `MNO_MEMBER_GATEWAY_URL`).
+- An outside review of `00f292c` (`docs/reviews/REVIEW_FINDINGS_dash-mno-verify_2026-09-29.md`). Its
+  documentation landed in `6419801` after a fact-check that corrected seven claims. Its draft
+  walkthrough assumed a tester joining this project's own pilot, and was retargeted to
+  `docs/LINUX_PILOT.md`, a tester running their own gateway and bot.
+- Its runtime findings F1 to F5 and a new list-trust finding were fixed in `478ffcc`. The list-trust
+  gap was that registration took the masternode list from the gateway on trust. `register --node-list`
+  now builds it from the member's own node. One focused confirmation review returned three minor
+  residuals, all fixed and re-checked (APPROVE).
+- The Discord testnet pilot on the crono project's testnet server ran 2026-09-28 and 2026-09-29 and is
+  stopped. Crono's wallet was not paused and stayed at the chain tip.
+
+### Pilot measurements (testnet, one evonode, one member, container limits as stated)
+
+- Registration, 3 CPUs and a 4 GiB cap: 70.3 s with a 1.79 GB peak (2026-09-29), after 83.4 s and 88.9 s
+  on 2026-09-28.
+- Per-period members proof, 2 CPUs and a 1 GiB cap: 36.7 s and 69 s. The difference was not measured.
+- Admission and revocation: `/verify`, the proof, and `/submit` granted access to the channel. The bot
+  cleared the member's channel permission 14 s after the period ended and sent the expiry message.
+- The season rolled over at 00:00 UTC as designed. The members tree emptied, and registering again
+  took 70.3 s.
+- Findings: a server owner cannot observe a grant, since they see every channel. Revocation leaves an
+  empty permission entry per member. Both pilot containers ended with exit code 137 when stopped, so
+  neither finished shutting down within the 10 s grace, though stored state survived every restart.
+
+### Standing decisions
+
+- Membership is proved with the voting key, not the owner key. `docs/DESIGN.md` gives the cost of the
+  owner key.
+- Pasta runs any pilot on DCG's own infrastructure. Nothing on the crono project's server or this
+  project's Discord bot is shared. A one-question message draft is in Hilawe's Downloads folder,
+  pointing to `docs/LINUX_PILOT.md`, to be sent once this push lands.
+- The setup ceremony plans Hilawe and Pasta as independent contributors to both heavy setups, kept
+  separate from pilot testing. The interim keys stay labeled as a single-contributor setup.
+- There will never be an external audit or specialist review.
+
+### Open, in order
+
+1. Pasta's pilot on DCG infrastructure using `docs/LINUX_PILOT.md`, including its Part C acceptance
+   checks. The review's F6 checklist (Part A) gates any public exposure of a gateway.
+2. F9. Triage the 19 npm advisory entries by whether the gateway, prover, or tooling reaches them.
+3. Ceremony scheduling with Pasta.
+4. The gateway and bot do not finish shutting down within 10 s. Check it in the restart acceptance
+   check before deciding whether it needs work.
+5. F8. A bot-owned Discord exclusion policy, only when a community requires excluding individuals.
+6. F7. The primary checkout's heavy keys are the old 2.3 GB PLONK files. Run
+   `scripts/fetch_keys.sh --large registration` before any local registration run.
+7. Delete the 4.5 GB benchmark folder on the crono project's server, awaiting Hilawe's approval. The
+   stopped pilot's folder is also still there.
+8. The real Discord server id of the pilot appears in a test fixture in the public history of
+   `00f292c`. It is not a credential and the fixture now uses a synthetic id. Rewriting history for it
+   is not recommended.
+9. The standalone circuit checker stays deferred.
+
+### What forced rework this session
+
+- A stop command that Hilawe interrupted had already run on the server, so the pilot stopped hours before
+  it was reported as running. Feeds the re-verify-before-reporting rule.
+- Hands-on Discord steps named a `/challenge` command that does not exist. Feeds the rule to check command
+  names against the code before giving steps.
+- The first message rewrite drew a REVISE (Telegram's caption limit, guide scope, message length,
+  unescaped server names, key-file permissions). Feeds the per-change review.
+- The outside review's documentation carried seven claims the code contradicted, and the review wrote
+  into the working tree during active work. Feeds fact-checking outside documents against the code and
+  staging exact paths.
+
+## Historical state, September 29, 2026 (review of 00f292c)
 
 The reviewed source is `00f292c26494bfcd123dfa6dfabf386e3a43b3a3`. The current assessment and evidence
 are in [the September 29 review](reviews/REVIEW_FINDINGS_dash-mno-verify_2026-09-29.md). The older
