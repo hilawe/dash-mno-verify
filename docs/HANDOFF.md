@@ -116,7 +116,8 @@ wallet at the chain tip.
 ### Open, in order
 
 1. Pasta's first pass on DCG infrastructure using `docs/LINUX_PILOT.md`: one registration and one
-   admission on a single Linux host, stopping at the first snag. The recovery checks, a separate proving
+   admission on a single Linux host, stopping at the first snag. Hilawe sent the request on 2026-09-30
+   and is waiting for the step and error, or the admission, in return. The recovery checks, a separate proving
    computer with a public address, and the ceremony are optional follow-ups. The moderator guide's
    section 5 gates any public exposure of a gateway.
 2. F9 is triaged in `docs/DEPENDENCY_AUDIT.md`. A same-major update fixed the Discord chain (`discord.js`
@@ -125,14 +126,16 @@ wallet at the chain tip.
    code. The Dash SDK's gRPC defects would be reached by the optional Platform backend. Making that
    backend live now includes a Dash SDK migration. The bot logged in, reconciled, and admitted a member
    on 14.27.0 in the 2026-09-30 live run.
-3. Ceremony scheduling with Pasta.
+3. The setup ceremony with Pasta, with each of them contributing to both heavy setups on separate
+   machines. Hilawe proposed it to Pasta on 2026-09-30, and no date is agreed yet.
 4. The gateway and bot do not finish shutting down within 10 s. Check it in the restart acceptance
    check before deciding whether it needs work.
 5. F8. A bot-owned Discord exclusion policy, only when a community requires excluding individuals.
 6. F7. The primary checkout's heavy keys are the old 2.3 GB PLONK files. Run
    `scripts/fetch_keys.sh --large registration` before any local registration run.
-7. Delete the 4.5 GB benchmark folder on the crono project's server, awaiting Hilawe's approval. The
-   stopped pilot's folder is also still there.
+7. Done 2026-09-30, with Hilawe's approval. The project's three folders on the crono project's server
+   were deleted, including every copy of the bot token and the pilot keys, and the scripts and logs
+   (no secrets) were archived to Hilawe's Downloads. A future run on that server starts fresh.
 8. The real Discord server id of the pilot appears in a test fixture in the public history of
    `00f292c`. It is not a credential and the fixture now uses a synthetic id. Rewriting history for it
    is not recommended.
