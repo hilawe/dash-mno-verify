@@ -20,7 +20,7 @@
 import { Bot, InputFile } from "grammy";
 import process from "node:process";
 import { proveInstructions, memberGuideUrl } from "../../common/prover_instructions.js";
-import { PRIVACY_LINE, renewalLine, uncertainResultLine, refusalFromResponse, scheduleLinesUtc } from "../../common/member_text.js";
+import { PRIVACY_LINE, renewalLine, uncertainResultLine, refusalFromResponse, scheduleLinesUtc, isChallengeFile, CHALLENGE_NOT_PROOF } from "../../common/member_text.js";
 import { privateOnly, GROUP_VERIFY_REFUSAL } from "./private_only.js";
 import { assertSafeGatewayUrl, memberGatewayUrl } from "../../common/gateway_url.js";
 import { GrantLedger } from "../common/grant_ledger.js";
@@ -167,6 +167,8 @@ bot.on("message:document", privateOnly(async (ctx) => {
   } catch {
     return ctx.reply("That file is not a readable proof.json. Run /verify to start over.");
   }
+  // Answered here, before the gateway is asked, so the challenge stays usable.
+  if (isChallengeFile(payload)) return ctx.reply(CHALLENGE_NOT_PROOF);
 
   // Submit the account this user is identified by. The gateway binds the verify to it (review B1).
   let out, status;

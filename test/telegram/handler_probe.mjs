@@ -14,6 +14,7 @@ const challenge = { mode: "two-tier", nonce: "n", signalHash: "1", epoch: 1, roo
 
 const record = { fetches: [], fileFetches: 0, getFileCalls: 0, replies: [] };
 let verifyResponse = { ok: true, status: 200, body: { ok: true, expiresAt: 1796256000 } };
+let uploaded = { nonce: "n", proof: {}, publicSignals: [] };
 const commands = {};
 const handlers = {};
 class Bot {
@@ -47,7 +48,7 @@ await mod.link(async (spec) => {
   let values;
   if (spec === "grammy") values = { Bot, InputFile };
   else if (spec === "node:process") values = { default: { env } };
-  else if (spec.endsWith("/bounded_fetch.js")) values = { MAX_PROOF_BYTES: 65536, fetchJsonCapped: async () => (record.fileFetches++, { nonce: "n", proof: {}, publicSignals: [] }) };
+  else if (spec.endsWith("/bounded_fetch.js")) values = { MAX_PROOF_BYTES: 65536, fetchJsonCapped: async () => (record.fileFetches++, uploaded) };
   else if (spec.endsWith("/grant_ledger.js")) values = { GrantLedger };
   else if (spec.endsWith("/reconcile.js")) values = { requireReconciled: async () => {}, markReconciled: async () => {}, reconciliationDone: async () => true };
   else values = spec.startsWith(".") ? await import(pathToFileURL(resolve(repo, dirname(rel), spec))) : await import(spec);
@@ -87,4 +88,20 @@ await handlers["message:document"]({
   reply: async (text) => record.replies.push(text),
 });
 out["document:private:401"] = structuredClone(record);
+
+// The challenge file uploaded in place of the proof.
+verifyResponse = { ok: true, status: 200, body: { ok: true, expiresAt: 1796256000 } };
+uploaded = challenge;
+record.fetches = []; record.fileFetches = 0; record.getFileCalls = 0; record.replies = [];
+await handlers["message:document"]({
+  chat: { type: "private", id: 123 },
+  from: { id: 456 },
+  message: { document: { file_size: 500 } },
+  getFile: async () => (record.getFileCalls++, { file_path: "fixture.json" }),
+  // Present so that a handler missing the challenge check runs through to the end, and the test fails
+  // on what it asserts (a gateway call) rather than on a missing stand-in.
+  api: { createChatInviteLink: async () => ({ invite_link: "https://t.me/+example" }) },
+  reply: async (text) => record.replies.push(text),
+});
+out["document:private:challenge"] = structuredClone(record);
 process.stdout.write(JSON.stringify(out));

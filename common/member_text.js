@@ -77,6 +77,21 @@ export function refusalFromResponse(status, body, verify) {
   return { code, text: SERVICE };
 }
 
+// A challenge file sent where the proof belongs (2026-09-30, when a member attached challenge.json
+// because it was the newest file in their folder). It carries the challenge's signal hash and no proof,
+// so it is recognized from its contents, whatever the browser named it, and answered before the gateway
+// is asked, which leaves the challenge usable.
+export function isChallengeFile(payload) {
+  return (
+    payload !== null && typeof payload === "object" && !Array.isArray(payload) &&
+    typeof payload.signalHash === "string" && !("proof" in payload)
+  );
+}
+
+export const CHALLENGE_NOT_PROOF =
+  "That is the challenge file, not the proof. Run the prove command on it, which saves proof.json in the " +
+  "same folder, and submit that. Sending the challenge did not use it up.";
+
 // The challenge deadline and the season end as UTC text, for platforms without a local-time markup.
 export function scheduleLinesUtc(challenge) {
   const utc = (t) => new Date(t * 1000).toISOString().replace("T", " ").slice(0, 16) + " UTC";

@@ -7,7 +7,7 @@
 // it gave times in UTC and called the period an "epoch", and its deadline read "expires 32 minutes ago"
 // once it had passed, because a relative timestamp was spliced after the word "expires".
 
-import { PRIVACY_LINE, renewalLine, uncertainResultLine, refusalFromResponse } from "../../common/member_text.js";
+import { PRIVACY_LINE, renewalLine, uncertainResultLine, refusalFromResponse, CHALLENGE_NOT_PROOF } from "../../common/member_text.js";
 
 const MAX_CONTENT = 2000; // Discord's limit on a message's content
 const VERIFY = "type `/verify`";
@@ -126,6 +126,11 @@ export function accessEndedNotice({ guildName = null } = {}) {
 export function failureReply(reason, status) {
   const { code, text } = refusalFromResponse(status, { reason }, VERIFY);
   return `**Not verified.** ${text}\n-# Reason code: \`${code}\``;
+}
+
+// The challenge file attached to /submit in place of the proof (common/member_text.js).
+export function challengeNotProofReply() {
+  return `**Not the proof.** ${CHALLENGE_NOT_PROOF.replace("proof.json", "`proof.json`")}`;
 }
 
 // When the verify request failed in transit and the outcome is unknown (common/member_text.js).

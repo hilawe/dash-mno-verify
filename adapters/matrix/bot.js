@@ -7,7 +7,7 @@
 import process from "node:process";
 import { randomUUID } from "node:crypto";
 import { proveInstructions, memberGuideUrl } from "../../common/prover_instructions.js";
-import { PRIVACY_LINE, renewalLine, uncertainResultLine, refusalFromResponse, scheduleLinesUtc } from "../../common/member_text.js";
+import { PRIVACY_LINE, renewalLine, uncertainResultLine, refusalFromResponse, scheduleLinesUtc, isChallengeFile, CHALLENGE_NOT_PROOF } from "../../common/member_text.js";
 import { assertSafeGatewayUrl, memberGatewayUrl } from "../../common/gateway_url.js";
 import { RoomStateTracker, isPrivateDirectRoomState } from "./room_privacy.js";
 import { GrantLedger } from "../common/grant_ledger.js";
@@ -98,6 +98,9 @@ async function handle(roomId, sender, body, state) {
   } catch {
     return;
   }
+  // A pasted challenge used to be ignored without a word. In a private room the member is told what it
+  // is. In a shared room it is still ignored, since replying would announce what it was.
+  if (isChallengeFile(payload)) return isPrivate() ? sendText(roomId, CHALLENGE_NOT_PROOF) : undefined;
   if (!payload?.nonce || !payload?.proof || !payload?.publicSignals) return;
 
   // Only accept a proof in a private direct room, the same restriction as !verify. If a member pastes

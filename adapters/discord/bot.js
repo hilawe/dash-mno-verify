@@ -24,7 +24,8 @@ import {
 import process from "node:process";
 import { proveSteps, memberGuideUrl } from "../../common/prover_instructions.js";
 import { assertSafeGatewayUrl, memberGatewayUrl } from "../../common/gateway_url.js";
-import { verifyReply, verifiedReply, accessEndedNotice, failureReply, uncertainReply, splitForDiscord } from "./messages.js";
+import { verifyReply, verifiedReply, accessEndedNotice, failureReply, uncertainReply, challengeNotProofReply, splitForDiscord } from "./messages.js";
+import { isChallengeFile } from "../../common/member_text.js";
 import {
   GrantLedger,
   authorizesTarget,
@@ -595,6 +596,8 @@ async function handleInteraction(i) {
     } catch {
       return i.editReply("That attachment is not a readable proof.json. Run `/verify` to start over.");
     }
+    // Answered here, before the gateway is asked, so the challenge stays usable.
+    if (isChallengeFile(payload)) return i.editReply(challengeNotProofReply());
 
     // Submit the account this user is identified by. The gateway binds the verify to it (review B1).
     // A request that fails in transit leaves the outcome unknown, because the gateway may already have

@@ -14,7 +14,7 @@
 // leaves the key in shell history and the process list, so it warns.
 // The adapter mints challenge.json (it holds the gateway token) and submits the resulting proof.json.
 import * as snarkjs from "snarkjs";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import { buildPoseidon } from "circomlibjs";
 import { wifToPriv, leafFromPriv } from "../common/dml.js";
@@ -25,6 +25,7 @@ import { releaseProvingThreads } from "./proving_threads.js";
 import { parseTwoTierArgs } from "./two_tier_args.js";
 import { merklePathFor } from "../common/merkle_path.js";
 import { loadMasternodeList } from "./masternode_list.js";
+import { writeFileWhole } from "./write_whole.js";
 import {
   defaultSecretPath,
   findSecretForContext,
@@ -263,7 +264,8 @@ async function prove(a) {
   }
 
   const out = a.out ?? "proof.json";
-  await writeFile(out, JSON.stringify({ nonce: ch.nonce, proof, publicSignals }, null, 2));
+  // Whole or not at all, so a member watching for proof.json never attaches a half-written file.
+  await writeFileWhole(out, JSON.stringify({ nonce: ch.nonce, proof, publicSignals }, null, 2));
   console.log(`Wrote ${out}. Submit it through your adapter, which calls /v1/verify. Your secret never left this machine.`);
 }
 

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { isPrivateChat, privateOnly, GROUP_VERIFY_REFUSAL } from "../adapters/telegram/private_only.js";
+import { CHALLENGE_NOT_PROOF } from "../common/member_text.js";
 
 // Review finding F1 (2026-09-29). The Telegram bot answered /verify and checked uploaded proofs in group
 // chats, so the group saw who sought or completed masternode verification. These drive the REAL
@@ -61,4 +62,12 @@ test("a gateway refusal with no reason code is reported as a service problem wit
   assert.equal(r.replies.length, 1);
   assert.match(r.replies[0], /^Not verified\. This is a problem with the verification service, not with your proof\./);
   assert.match(r.replies[0], /Reason code: http-401$/);
+});
+
+// 2026-09-30. A member attached challenge.json, the newest file in their folder, in place of the proof.
+test("a challenge file uploaded as the proof is named as such, and the gateway is not asked", () => {
+  const r = runs["document:private:challenge"];
+  assert.equal(r.fileFetches, 1, "it was downloaded and read");
+  assert.deepEqual(r.fetches, [], "but never sent to the gateway, so the challenge stays usable");
+  assert.deepEqual(r.replies, [CHALLENGE_NOT_PROOF]);
 });

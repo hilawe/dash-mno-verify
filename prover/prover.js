@@ -8,7 +8,8 @@
 //   node prover/prover.js --challenge challenge.json --voting-key-file key.wif [--oracle oracle/root.json]
 // The key may also be piped in with --voting-key-stdin. --voting-key <WIF> still works but leaves
 // the key in shell history and the process list, so it warns.
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
+import { writeFileWhole } from "./write_whole.js";
 import { parseArgs } from "node:util";
 import * as snarkjs from "snarkjs";
 import { buildPoseidon } from "circomlibjs";
@@ -85,5 +86,6 @@ try {
 } finally {
   await releaseProvingThreads();
 }
-await writeFile(values.out, JSON.stringify({ nonce: challenge.nonce, proof, publicSignals }, null, 2));
+// Whole or not at all, so a member watching for proof.json never attaches a half-written file.
+await writeFileWhole(values.out, JSON.stringify({ nonce: challenge.nonce, proof, publicSignals }, null, 2));
 console.log(`Wrote ${values.out}. Submit it through your adapter. Your voting key never left this machine.`);
