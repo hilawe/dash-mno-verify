@@ -99,8 +99,8 @@ tests. CI was read green on all three jobs for `dfe17f6` (run 36658007622).
    section 5 gates any public exposure of a gateway.
 2. F9 is triaged in `docs/DEPENDENCY_AUDIT.md`. A same-major update fixed the Discord chain (`discord.js`
    14.27.0, whose overwrite and permission code is byte-identical to 14.26.4's) and three build-time
-   packages. The rest are not reached by this project's code, except the Dash SDK's gRPC defects,
-   which only the Platform backend would reach. Making that backend live now includes a Dash SDK
+   packages. In the SQLite configuration the pilot runs, the rest are not reached by this project's
+   code. The Dash SDK's gRPC defects would be reached by the optional Platform backend. Making that backend live now includes a Dash SDK
    migration. The bot has not yet logged in to Discord on 14.27.0.
 3. Ceremony scheduling with Pasta.
 4. The gateway and bot do not finish shutting down within 10 s. Check it in the restart acceptance

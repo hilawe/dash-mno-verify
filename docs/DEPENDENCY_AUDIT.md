@@ -5,6 +5,11 @@ count of exposures, because one advisory repeats through every package that depe
 one. Each entry below records how it arrives, whether this project's code reaches the affected
 function with input an outsider controls, and what was done.
 
+The conclusion is scoped to the supported configuration, a gateway with `MNO_STORE=sqlite` and the
+Discord bot, which is what the Linux pilot runs. In that configuration none of the remaining entries is
+reached. The optional Platform backend (`MNO_STORE=platform`) is a different case, below, and the bot
+has not yet logged in to Discord on the updated library.
+
 ## Counts
 
 | Install | Before | After the update below |
@@ -24,7 +29,7 @@ byte-identical, and so are `GuildChannel`'s `memberPermissions`, `rolePermission
 and `permissionsFor`. Its two changed `GuildChannel` members, `permissionsLocked` and `manageable`, are
 not used by the adapter.
 
-## Remaining entries
+## Remaining entries, in the SQLite configuration unless a row says otherwise
 
 | Advisory package | Arrives through | Loaded by | Affected function and input | Reached | Resolution |
 | --- | --- | --- | --- | --- | --- |

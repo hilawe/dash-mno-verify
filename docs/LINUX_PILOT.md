@@ -11,11 +11,8 @@ This is a testnet pilot on interim single-contributor keys, so do not gate anyth
 
 In the first pass everything runs on **one Linux machine**, called the pilot host below. It holds
 the testnet node, the gateway, the bot, and the prover, and nothing is exposed to the internet. This
-is the arrangement the project's own testnet pilot used on 2026-09-28 and 2026-09-29. The gateway and
-bot use that run's container settings and the oracle loop is the same, with its host-specific parts
-removed. Two details differ from what ran there. That pilot ran the prover in a container rather than
-directly, and it reached its node through dashmate, so step 3's wrapper for a plain Dash Core node is
-untested.
+is the arrangement the project's own testnet pilot used on 2026-09-28 and 2026-09-29, and the gateway
+and bot use that run's container settings.
 
 Each block says where it runs, either **pilot host** or **Discord**. A block for **your desktop** only
 moves a file between your Discord client and the pilot host.
@@ -23,8 +20,8 @@ moves a file between your Discord client and the pilot host.
 ## What you need
 
 - A Linux pilot host with Docker, Git, curl, Node.js 22.13 or newer, and about 4 GiB of free memory.
-- A synced testnet Dash node on that host that `dash-cli` can reach, and the voting private key of a
-  testnet masternode.
+- A synced testnet Dash node on that host that `dash-cli` (or dashmate) can reach, and the voting
+  private key of a testnet masternode.
 - A disposable Discord server you own, with a private channel that `@everyone` cannot see. Turn on
   Discord's Developer Mode (User Settings, Advanced) so you can right-click to copy IDs.
 - A Discord application and bot from the developer portal. Keep its bot token and application ID.
@@ -33,14 +30,31 @@ moves a file between your Discord client and the pilot host.
 - A second, ordinary Discord account in that server to verify from. A server owner or administrator
   sees every channel already, so their account cannot show the channel appearing.
 
+## 0. Check before you start
+
+**Pilot host.** For a node run by dashmate, replace the last line with `dashmate core cli "getblockchaininfo"`.
+
+```bash
+docker --version
+git --version
+node --version
+free -h
+dash-cli -testnet getblockchaininfo | grep -E '"chain"|"blocks"|"headers"|initialblockdownload'
+```
+
+Continue only if every command works, Node is 22.13 or newer, `"chain"` is `"test"`, `"blocks"` equals
+`"headers"`, and `"initialblockdownload"` is `false`. Otherwise stop here and send back what you saw.
+That is a useful result too.
+
 ## 1. Get the code and keys
 
-**Pilot host.** This is the last commit that changed code. Later commits change only documentation.
+**Pilot host.** Use exactly this commit. It is the one whose continuous-integration checks passed and
+whose recipe was run as written below. Newer commits are not covered by that run.
 
 ```bash
 git clone https://github.com/hilawe/dash-mno-verify.git ~/mno-pilot/repo
 cd ~/mno-pilot/repo
-git checkout --detach 478ffcc00bd4309429bddb0985a901cf29423139
+git checkout --detach PINNED_COMMIT
 npm ci
 bash scripts/fetch_keys.sh --large registration
 ```
@@ -70,30 +84,61 @@ Expect three files in `secrets`, each readable only by you, and `pilot.conf`.
 
 ## 3. Start the oracle, gateway, and bot
 
-**Pilot host.** The oracle reads the masternode list through a `dash-cli` on its search path. Make
-that name select testnet. For a plain Dash Core node:
+Run 3a to 3d in one terminal, in order, and stop at the first check that does not show what it should.
+The first container start downloads Docker's official `node:22-bookworm` image. The pilot uses
+30-minute access periods and one-day seasons so the boundaries can be seen within a day.
+
+### 3a. Point the oracle at the node
+
+**Pilot host.** The oracle finds the node through a program named `dash-cli` in `~/mno-pilot/bin`,
+which it puts first on its search path. That wrapper must call the real program by its full path, or it
+would find itself and run forever. So resolve the real one first, while `~/mno-pilot/bin` is not on the
+path.
 
 ```bash
-printf '#!/bin/sh\nexec dash-cli -testnet "$@"\n' > ~/mno-pilot/bin/dash-cli && chmod +x ~/mno-pilot/bin/dash-cli
-~/mno-pilot/bin/dash-cli getblockcount
+REAL="$(command -v dash-cli)"
+case "$REAL" in
+  "" | "$HOME/mno-pilot/bin/"*) echo "Stop: no dash-cli found outside ~/mno-pilot/bin" ;;
+  *) printf '#!/bin/sh\nexec "%s" -testnet "$@"\n' "$REAL" > ~/mno-pilot/bin/dash-cli && chmod +x ~/mno-pilot/bin/dash-cli && cat ~/mno-pilot/bin/dash-cli ;;
+esac
+PATH="$HOME/mno-pilot/bin:$PATH" dash-cli getblockcount
 ```
 
-With dashmate, write `exec dashmate core cli "$*"` as the second line instead. The check should print a
-block height.
+The wrapper printed should name the real `dash-cli` by its full path, and the last line, which uses the
+oracle's exact search path, should print a block height. With dashmate instead of a plain node, use this
+block instead. dashmate's `core cli` takes the whole command as one argument.
 
-Then start the three services. The first run downloads Docker's official `node:22-bookworm` image. The
-pilot uses 30-minute access periods and one-day seasons so the boundaries can be seen within a day. The
-oracle loop records its own process ID in `run/oracle.pid`, which step 6 uses to stop it.
+```bash
+REAL="$(command -v dashmate)"
+case "$REAL" in
+  "" | "$HOME/mno-pilot/bin/"*) echo "Stop: no dashmate found outside ~/mno-pilot/bin" ;;
+  *) printf '#!/bin/sh\nexec "%s" core cli "$*"\n' "$REAL" > ~/mno-pilot/bin/dash-cli && chmod +x ~/mno-pilot/bin/dash-cli && cat ~/mno-pilot/bin/dash-cli ;;
+esac
+PATH="$HOME/mno-pilot/bin:$PATH" dash-cli getblockcount
+```
+
+### 3b. Start the oracle
+
+**Pilot host.**
+
+```bash
+cd ~/mno-pilot && . ./pilot.conf
+setsid bash -c 'echo $$ > "$HOME/mno-pilot/run/oracle.pid"; cd "$HOME/mno-pilot"; export PATH="$HOME/mno-pilot/bin:$PATH" MNO_ORACLE_SIGNING_KEY="$HOME/mno-pilot/secrets/oracle-key.txt"; while true; do node repo/oracle/oracle.js --out data/root.json >> run/oracle.log 2>&1; sleep 120; done' </dev/null >/dev/null 2>&1 &
+sleep 20; tail -1 run/oracle.log
+```
+
+Check: the log line reads `[oracle] dash-cli height ..., N leaves, root ... signed by ... -> data/root.json`.
+The oracle loop records its own process ID in `run/oracle.pid`, which step 6 uses to stop it.
+
+### 3c. Start the gateway
+
+**Pilot host.**
 
 ```bash
 cd ~/mno-pilot && . ./pilot.conf
 PUB="$(grep '^MNO_ORACLE_PUBKEYS=' secrets/oracle-key.txt | cut -d= -f2-)"
 CTX="$(cd repo && node --input-type=module -e 'import {contextHash} from "./common/index.js"; console.log(contextHash({platform:"discord", communityId: process.argv[1], roleId: "mn-members"}).toString())' "$GUILD_ID")"
 U="$(id -u):$(id -g)"; H="$HOME/mno-pilot"
-
-setsid bash -c 'echo $$ > "$HOME/mno-pilot/run/oracle.pid"; cd "$HOME/mno-pilot"; export PATH="$HOME/mno-pilot/bin:$PATH" MNO_ORACLE_SIGNING_KEY="$HOME/mno-pilot/secrets/oracle-key.txt"; while true; do node repo/oracle/oracle.js --out data/root.json >> run/oracle.log 2>&1; sleep 120; done' </dev/null >/dev/null 2>&1 &
-sleep 20; tail -1 run/oracle.log
-
 docker run -d --name mno-pilot-gateway --memory=1g --cpus=2 -p 127.0.0.1:8787:8787 --user "$U" \
   -v "$H/repo:/work:ro" -v "$H/data:/data" -v "$H/secrets:/secrets:ro" -w /work \
   -e MNO_MODE=two-tier -e MNO_STORE=sqlite -e MNO_NULLIFIER_PATH=/data/nullifiers.sqlite \
@@ -102,7 +147,19 @@ docker run -d --name mno-pilot-gateway --memory=1g --cpus=2 -p 127.0.0.1:8787:87
   -e MNO_EPOCH_SECONDS=1800 -e MNO_SEASON_SECONDS=86400 \
   node:22-bookworm sh -c 'export MNO_ADAPTER_SECRET="$(cat /secrets/adapter.secret)"; exec node core/gateway.js'
 sleep 10; curl -fsS http://127.0.0.1:8787/v1/health; printf '\n'
+```
 
+Check: the JSON starts `{"ok":true,"canChallenge":true,"canVerify":true,"canRegister":true,"mode":"two-tier"`.
+The gateway is published only on the pilot host's loopback address, so it is not reachable from the
+internet.
+
+### 3d. Start the bot
+
+**Pilot host.**
+
+```bash
+cd ~/mno-pilot && . ./pilot.conf
+U="$(id -u):$(id -g)"; H="$HOME/mno-pilot"
 docker run -d --name mno-pilot-bot --memory=512m --network host --user "$U" \
   -v "$H/repo:/work:ro" -v "$H/data/bot:/botdata" -v "$H/secrets:/secrets:ro" -w /work \
   -e "DISCORD_APP_ID=$APP_ID" -e "DISCORD_GUILD_ID=$GUILD_ID" -e "DISCORD_GRANT_CHANNEL_IDS=$CHANNEL_ID" \
@@ -113,15 +170,9 @@ docker run -d --name mno-pilot-bot --memory=512m --network host --user "$U" \
 sleep 15; docker logs mno-pilot-bot 2>&1 | grep '\[discord\]'
 ```
 
-What each check should show:
-
-- The oracle log ends with `[oracle] dash-cli height ..., N leaves, root ... signed by ... -> data/root.json`.
-- The health check prints JSON starting `{"ok":true,"canChallenge":true,"canVerify":true,"canRegister":true,"mode":"two-tier"`.
-- The bot log includes `slash commands registered`, `logged in as ...`, and `reconciled; interactions are open`.
-
-The gateway is published only on the pilot host's loopback address, so nothing here is reachable from
-the internet. The bot shows members `http://127.0.0.1:8787` in its commands, which works because the
-prover also runs on the pilot host.
+Check: the log includes `slash commands registered`, `logged in as ...`, and `reconciled; interactions are open`.
+The bot shows members `http://127.0.0.1:8787` in its commands, which works because the prover also runs
+on the pilot host.
 
 ## 4. Register
 
@@ -156,6 +207,9 @@ channel list. That is the end of the first pass.
 ## 6. Stop
 
 **Pilot host.** This stops only what the pilot started. Stored state stays in `~/mno-pilot/data`.
+Stopping the bot does not take back access it already granted. Discord keeps a member's channel
+permission until the bot, running again, removes it after the period ends, or until you remove the
+member's entry by hand in the channel's permission settings.
 
 ```bash
 cd ~/mno-pilot && kill -- "-$(cat run/oracle.pid)" && rm run/oracle.pid
