@@ -15,6 +15,10 @@ part of it. It stays on PLONK under the universal setup and needs no ceremony.
 Production publication (hosting the final proving keys, committing the verification keys, updating
 `keys.manifest.json`) and deployment are separate steps after the ceremony, listed at the end.
 
+Read [SETUP_PRIVACY.md](SETUP_PRIVACY.md) before describing the ceremony to members. Setup
+randomness is not a key for decoding honest proofs, but forged membership can expose the private chat.
+The current interim setup and the proposed Hilawe-and-Pasta contributions are separate events.
+
 ## What is fixed before anyone contributes
 
 Everything a contribution depends on is named in `circuits/ceremony/FREEZE.json` and does not change for
@@ -180,9 +184,11 @@ What that means:
   the script feeds to snarkjs through the prompt from the system's random source and never writes
   anywhere. Whoever controlled that machine at that moment could forge admission proofs these keys
   accept.
-- The coordinator already runs the gateway, which can admit anyone directly, so for the pilot this gives
-  no one a power the operator did not already have. Member privacy is unchanged for keys that verify
-  against the record.
+- The coordinator already runs the gateway, which can admit anyone directly. With the intended,
+  correctly generated parameters and correct proving software, retaining setup secrets does not give
+  someone a way to decrypt honest members' proofs. Forged admission can still expose the private
+  chat to unauthorized readers. Verification against the setup record alone is not an unconditional
+  privacy guarantee. See [Setup and member privacy](SETUP_PRIVACY.md) for the assumptions and limits.
 - It is labeled interim wherever its keys appear, and it must not gate anything of value.
 
 The multi-party ceremony later either continues this chain, with the outside contributors adding to the

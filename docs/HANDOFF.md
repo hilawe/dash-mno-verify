@@ -41,7 +41,51 @@ Not enforced by anything, so they depend on the session:
   mainnet) and the install profile where it matters.
 - Stage exact paths, never a directory and never `-A`.
 
-## CURRENT STATE, 2026-09-27
+## Current state, September 29, 2026
+
+The reviewed source is `00f292c26494bfcd123dfa6dfabf386e3a43b3a3`. The current assessment and evidence
+are in [the September 29 review](reviews/REVIEW_FINDINGS_dash-mno-verify_2026-09-29.md). The older
+section below is historical, including its then-current proving costs and open findings. Season-capped
+access, the default season-length access period, Groth16 integration, selective key fetching, and the
+message rewrite have since landed. Do not redo that completed work from the older summary.
+
+The released heavy keys are approximately 122 MB each and remain interim single-contributor keys.
+The latest review exercised a fresh download and a complete local registration and admission with the
+released keys, a signed synthetic oracle, an authenticated adapter, and the default registration-root
+age. The complete local test suite and the exact baseline's three continuous-integration jobs passed.
+The review report records counts, timings, artifact identities, and limitations once.
+
+This working tree contains documentation improvements, not runtime repairs. Start with
+[the moderator guide](MODERATOR_GUIDE.md), [the member guide](MEMBER_GUIDE.md), and
+[the Linux pilot walkthrough](LINUX_PILOT.md). Code-generated
+[message previews](reviews/MEMBER_MESSAGE_PREVIEWS_2026-09-29.md) show the current strings, including
+their remaining defects. The old runbook now points to these current instructions.
+
+The largest reproduced adapter defect is Telegram handling verification in group chats. Both the
+challenge and successful proof-submission paths disclose verification activity there. Add a private-chat
+guard before any gateway or file request before a privacy-sensitive Telegram launch. Runtime copy also
+needs accurate privacy language, shell-safe arguments, and correct renewal and retry instructions.
+Discord still has no supported individual exclusion policy while the bot keeps granting access.
+
+The next runnable outcome is a Linux member joining the Discord testnet pilot through a reachable
+member endpoint, followed by a recorded recovery and revocation check. Its actual host configuration
+and public exposure have not been checked or changed in this review. A tunnel must not publish an
+unauthenticated development gateway or wallet interfaces. The current local checkout also contains
+stale ignored heavy proving artifacts, which were preserved. The fresh proof run used a separate
+verified copy.
+
+[The setup privacy explanation](SETUP_PRIVACY.md) distinguishes hidden proof witnesses from forged
+admission and network metadata. Setup randomness is not a proof-decryption key under the intended
+verified parameters and correct software. Forged admission can still expose private chat. Hilawe and
+Pasta are proposed independent contributors to both setups, not a completed ceremony. The revised
+Linux contributor guide verifies the compiler and incoming artifacts before contributing.
+
+- Complete the bounded Discord acceptance run using the new guides and a named operator.
+- Repair the Telegram private-chat boundary before claiming Telegram privacy readiness.
+- Preserve one review and one focused repair confirmation under `WORKING_METHOD.md`.
+- Leave Git changes, publication, and deployment to the repository owner under the global handoff rules.
+
+## Historical state, September 27, 2026
 
 The reviewed revision is `53f636a`. All three continuous-integration jobs passed, and the full local
 suite independently passed 722 tests. The review and measurements are recorded once in

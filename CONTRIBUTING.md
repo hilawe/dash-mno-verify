@@ -29,7 +29,7 @@ large proving keys are fetched with `scripts/fetch_keys.sh --large` or rebuilt w
 
 ## Running it
 
-To stand up a gated community end to end, follow `docs/RUNBOOK.md` (front to back) or the Quickstart in
+To stand up a gated community end to end, follow `docs/MODERATOR_GUIDE.md` (front to back) or the Quickstart in
 `README.md`. Direct-node mode (`MNO_DML_SOURCE=node`) reads the masternode list from a Dash node you run
 yourself, so no oracle key is trusted.
 

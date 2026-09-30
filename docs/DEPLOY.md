@@ -4,6 +4,9 @@ This is the front-to-back guide for standing up a masternode-verified gated comm
 for a member to get into one. The other docs go deep on single pieces. This one is the path
 through all of them.
 
+For the current step-by-step operator path, start with [MODERATOR_GUIDE.md](MODERATOR_GUIDE.md).
+It includes the required two-tier registration-context allowlist and platform-specific launch checks.
+
 ## What you run, and who needs what
 
 There are four programs:
@@ -80,7 +83,7 @@ openssl rand -hex 32                # store the output where the gateway and ada
 
 MNO_ADAPTER_SECRET=<that value> MNO_ORACLE_PUBKEYS=<oracle public key> npm run gateway   # single-tier, :8787
 # or
-MNO_ADAPTER_SECRET=<that value> MNO_ORACLE_PUBKEYS=<oracle public key> MNO_MODE=two-tier npm run gateway
+MNO_ADAPTER_SECRET=<that value> MNO_ORACLE_PUBKEYS=<oracle public key> MNO_MODE=two-tier MNO_REGISTER_CONTEXTS=<derived context hash> npm run gateway
 ```
 
    If you front the gateway with a reverse proxy, set `MNO_TRUST_PROXY=1` so the per-client rate
@@ -107,12 +110,10 @@ export DISCORD_GRANT_CHANNEL_IDS=<channel id,...>
 npm run bot
 ```
 
-Choose the grant mode for your privacy needs. In `channel` mode the bot adds a verified member to the
-private channel with a per-user permission overwrite, so nothing about their masternode shows on their
-public profile. In `role` mode it assigns a role, which is simpler but visible on the profile card and
-so reveals who holds a masternode. The bot also revokes access once a member's epoch grant lapses and
+The bot grants only private-channel access through per-user permission overwrites. It does not assign
+a public membership role. Role mode is removed and refuses to start. The bot also revokes access once a member's epoch grant lapses and
 they have not re-verified. The full set of variables is in `adapters/discord/README.md`. For the
-opinionated, copy-paste version of this whole setup see `docs/RUNBOOK.md`.
+opinionated, step-by-step version of this whole setup see `docs/MODERATOR_GUIDE.md`.
 
 The other adapters are `npm run telegram`, `npm run matrix`, and `npm run web`, documented
 under `adapters/`.
@@ -134,7 +135,7 @@ bash scripts/fetch_keys.sh         # downloads and checksum-verifies the members
    member hands back to the adapter, which submits it. The member never holds the adapter secret.
 
 ```bash
-# once a season, the heavy proof. Plan for about 2 GB of free memory (measured, docs/RUNBOOK.md step 5)
+# once a season, the heavy proof. Plan for about 2 GB of free memory (measured, docs/REDUCING_PROVING_COST.md)
 npm run register -- --gateway https://the-gateway --platform discord --community <id> --role <id> --voting-key-file key.wif
 
 # every epoch, the cheap proof, fine on a Raspberry Pi. The adapter gave you challenge.json.
@@ -152,7 +153,7 @@ key to use, and it never leaves your machine.
 
 ## The two decisions
 
-- `MNO_MODE`. Use `two-tier`. A member registers once a season with the heavy proof, then every epoch runs the cheap proof that works on small hardware, about sixty times faster per epoch than single-tier. In two-tier mode the epoch defaults to the season length, so by default both happen once a season. Set `MNO_EPOCH_SECONDS` for a shorter epoch (see `docs/DESIGN.md` for what that buys). `single` is simpler but every proof is the heavy one.
+- `MNO_MODE`. Use `two-tier`. A member registers once a season with the heavy proof, then every epoch runs the cheap proof that works on small hardware, lighter than single-tier, with the actual difference depending on hardware. In two-tier mode the epoch defaults to the season length, so by default both happen once a season. Set `MNO_EPOCH_SECONDS` for a shorter epoch (see `docs/DESIGN.md` for what that buys). `single` is simpler but every proof is the heavy one.
 - Lifetimes. A grant ends with its epoch, and a two-tier grant also ends with its season, whichever comes first. A challenge lasts ten minutes in two-tier mode, where the member proves against it with the cheap proof after registering, and thirty minutes in single-tier mode, where the heavy proof is made against the challenge itself. `MNO_CHALLENGE_TTL` overrides either. Upgrading a gateway that already issued two-tier grants does not shorten them. Grants issued before this rule (2026-09-27) can outlive their season by up to one epoch, so upgrade at the start of a season, or accept that bounded overlap once.
 - Upgrading a two-tier gateway from before 2026-09-29 that left `MNO_EPOCH_SECONDS` unset. It ran a one-week epoch, and its durable stores record that schedule, so the upgraded gateway refuses to start and names both schedules. Set `MNO_EPOCH_SECONDS=604800` to keep the one-week epoch, or move to the new default at a season boundary by pointing `MNO_NULLIFIER_PATH` and `MNO_REG_PATH` at fresh files, after which members register again.
 - Clock. The gateway records the highest epoch and season it has seen (`MNO_TIME_MARKS_PATH`, default `data/time_marks.json`) and refuses to issue challenges, verify, or register if the clock later reads earlier than that, answering 503 and reporting `ok: false` on `/v1/health`. Going backwards would rebuild a past season's members tree from records still on disk and revive memberships that were meant to have lapsed, so it fails closed instead. Keep the host on NTP. If a clock jumped far forward and was then corrected, the gateway stays refused until real time passes the mark; deleting the marks file is the deliberate override, and only do it once you know the host's time is right.

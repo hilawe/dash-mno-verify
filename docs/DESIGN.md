@@ -16,15 +16,15 @@ behind one leaf, and a nullifier for one-time use.
 
 In a DIP-3 registration the owner and voting keys are stored as `hash160` values, while
 the operator key is a full BLS public key. The membership set has to be expressible from
-public data, and the voting-key hashes already are. The voting key also controls only
-governance votes, never funds, so asking a member to prove with it carries no financial
-risk. Anchoring on `keyIDVoting` therefore proves "owner or their voting delegate," which
+public data, and the voting-key hashes already are. The voting key authorizes governance votes rather
+than collateral spending. It remains a sensitive governance credential and must stay private.
+Anchoring on `keyIDVoting` therefore proves "owner or their voting delegate," which
 is the right granularity for a social channel. Anchor on `keyIDOwner` instead if you need
 the owner specifically.
 
 Evonodes (the high-performance masternodes that host Dash Platform, 4,000 DASH collateral)
-are included on the same terms as regular masternodes. The oracle's only filter is the
-ENABLED status, evonodes carry a votingaddress like any other node, and the DIP-4
+are included on the same terms as regular masternodes. The oracle selects ENABLED entries and excludes
+the key-zero placeholder leaf. Evonodes carry a votingaddress like any other node, and the DIP-4
 commitment code serializes their version-2 entries with the type field and Platform port
 (validated against a mainnet block holding 2,627 regular and 344 evo entries). Membership
 is per voting key, not collateral-weighted, so an evonode earns exactly one membership per
@@ -35,13 +35,13 @@ oracle publish a type-filtered tree as its own context rather than by changing t
 ## The three pieces
 
 1. Oracle. Reads the DML and publishes a Poseidon Merkle root over the voting-key hashes, alongside the ordered real leaves. Public input, deterministic function, so the root is reproducible. The gateway recomputes the root from the published leaves and rejects any snapshot whose root does not hash from them, which catches an inconsistent or transport-corrupted snapshot. Recomputation only proves internal consistency, so the oracle also signs the snapshot (Ed25519 over the root, height, block hash, depth, and timestamp), and the gateway adopts a snapshot only when a quorum of pinned oracle keys has signed it (`MNO_ORACLE_PUBKEYS`, `MNO_ORACLE_QUORUM`). The signature covers the root, which commits to the leaves, so a host that merely serves the JSON cannot forge a membership set. The gateway fails closed, refusing to start without pinned keys unless `MNO_ALLOW_UNSIGNED_ORACLE` is set. This authenticates the leaf set against a trusted key, not yet against the chain's own masternode-list commitment, which the signed block hash is the anchor for (see the threat model). A URL source must be https, is fetched with a timeout and a streaming size cap, and an accepted root is dropped once its snapshot ages past `MNO_ORACLE_MAX_AGE`.
-2. Prover. Runs locally. Proves `Q = d.G`, that `hash160(Q)` is a leaf under the published root, and emits `nullifier = Poseidon(Poseidon(d), epoch, contextHash)`.
+2. Prover. Runs locally. Proves `Q = d.G`, that `hash160(Q)` is a leaf under the published root, and emits a purpose-tagged nullifier over the private-key hash, epoch, and context. The fixed tag is defined in `circuits/purpose_tags.circom`.
 3. Gateway. Verifies the proof against the current root, current epoch, the community context, and the one-time challenge, records the nullifier, and returns a grant. The account-bearing endpoints (`/v1/challenge`, `/v1/verify`) require an adapter bearer token (`Authorization: Bearer $MNO_ADAPTER_SECRET`) when that secret is set, so the account is vouched for by a trusted adapter rather than chosen by any HTTP caller, which is what makes the B1 account binding authoritative. The gateway refuses to start without that secret unless `MNO_ALLOW_UNAUTH_GATEWAY=1` is set for local use. `/v1/register` is member-driven and proof-authenticated, so it takes no token; its guards are the registration proof, the once-per-(season, context) registration nullifier, and the rate limit. All request endpoints are rate-limited per client and the pending-challenge map is capped, and the read-only endpoints (`/v1/members`, `/v1/dml`, `/v1/health`) are public. Adapters call the gateway and never touch the cryptography.
 
 ## The nullifier does three jobs
 
 - Epoch-rotating freshness. One fresh nullifier per epoch. Sell the node and you cannot produce next epoch's proof, so access lapses within one epoch.
-- Sybil resistance. For a fixed epoch and context, one voting key yields one nullifier, so one voting key maps to one membership. The circuit constrains the private key `d` below the secp256k1 group order `n`, so `d` is the canonical scalar in `[0, n)`. Without that, `d` and `d + n` share a public key (the same leaf) but hash to different nullifiers, which would let one node mint two memberships per epoch (review finding M1). The nullifier is derived from `d`, the voting private key, not from the public `hash160(Q)` leaf, so it stays unlinkable to the published leaf set. Because it binds the voting key and not the collateral, masternodes that share a delegated voting key collapse to one membership (see the threat model's delegation limit).
+- Sybil resistance. For a fixed epoch and context, one voting key yields one nullifier, so one voting key maps to one membership. The circuit constrains the private key `d` below the secp256k1 group order `n`, so `d` is the canonical scalar in `[1, n)`. Without that, `d` and `d + n` share a public key (the same leaf) but hash to different nullifiers, which would let one node mint two memberships per epoch (review finding M1). The nullifier is derived from `d`, the voting private key, not from the public `hash160(Q)` leaf, so it stays unlinkable to the published leaf set. Because it binds the voting key and not the collateral, masternodes that share a delegated voting key collapse to one membership (see the threat model's delegation limit).
 - Cross-context unlinkability. The context hash scopes the nullifier to one platform, community, and role, so the same key produces unrelated nullifiers elsewhere.
 
 ## Idempotent grants
@@ -57,7 +57,7 @@ and a sold node is evicted within one epoch.
 
 The reason to split into two tiers is proving cost. Under the original PLONK keys, measured on
 a 16 GB laptop, the single-tier membership proof took minutes (a 2.3 GB proving key, and a circuit
-of roughly 174k constraints), while the cheap members proof takes about 7 seconds. Under Groth16,
+of 253,845 rank-one constraints before the subsequent circuit hardening), while the cheap members proof takes about 7 seconds. Under Groth16,
 with a 120 MB key, the heavy proof takes about 16 to 20 seconds on the same laptop and about a
 minute on a 3-CPU server, so the gap is smaller than it was. When proving runs on a member's own machine every epoch, that gap is the whole
 argument. The two-tier flow does the expensive secp256k1 and hash160 work once per season

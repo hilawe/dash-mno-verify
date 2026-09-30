@@ -79,7 +79,7 @@ export function buildConfig(env = process.env) {
     // prove at very different speeds (review finding F2, 2026-09-27). A two-tier member makes the
     // cheap per-epoch proof, about 30 seconds measured on a testnet VPS, having registered BEFORE
     // taking the challenge, so ten minutes is ample. A single-tier member makes the heavy proof
-    // against the challenge itself, measured at 9 to 14 minutes (docs/RUNBOOK.md step 5), which a
+    // against the challenge itself, measured at 9 to 14 minutes under the earlier PLONK keys, which a
     // ten-minute challenge could not survive. Thirty minutes is about twice the slowest measurement.
     challengeTtlSeconds: intEnv(env, "MNO_CHALLENGE_TTL", mode === "single" ? 1800 : 600),
 

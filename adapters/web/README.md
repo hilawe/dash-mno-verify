@@ -12,6 +12,9 @@ export MNO_WEB_PORT=8080
 npm run web                            # add this script, or: node adapters/web/server.js
 ```
 
+Read [the moderator guide](../../docs/MODERATOR_GUIDE.md) before exposing this reference adapter.
+Set `MNO_ADAPTER_SECRET` to match the gateway and allowlist the web registration context.
+
 ## Routes
 
 - `GET /` the landing page with the verify flow.

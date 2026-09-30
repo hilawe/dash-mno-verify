@@ -2,13 +2,17 @@
 
 This guide is for a Dash masternode owner joining a masternode-only channel that uses dash-mno-verify,
 for example on Discord. You prove that you hold a masternode's voting key without revealing which
-masternode it is. The community's bot learns only that some masternode on the current list vouched for
-you.
+masternode it is. The bot also knows your platform account. The proof hides the voting key and selected node, while
+connection metadata and the community's size can affect anonymity.
 
 It covers communities running the two-tier mode, which the deployment guide recommends and which the
 bot's `/verify` reply shows as a register step followed by a proof step. A single-tier community's
 reply has no register step, and its setup, which needs a local copy of the published masternode list,
 is in `prover/README.md`.
+
+Linux testers running their own pilot can use [the Linux pilot walkthrough](LINUX_PILOT.md).
+Read [the setup privacy explanation](SETUP_PRIVACY.md) for what the ceremony protects and what it
+does not. The current release uses interim single-contributor setup keys.
 
 ## How often you do this
 
@@ -21,7 +25,7 @@ Each time, there are four steps:
 1. Register (a heavier proof, 1 to 2 minutes).
 2. Type `/verify` in the community to get a challenge file.
 3. Make a proof from the challenge (about a minute).
-4. Type `/submit` and attach the proof.
+4. Submit only `proof.json` using the platform instructions below.
 
 A community can set a shorter access period, in which case steps 2 to 4 repeat within the season and
 registration stays once a season.
@@ -44,24 +48,24 @@ In a terminal, in a folder where you keep tools:
 git clone https://github.com/hilawe/dash-mno-verify
 cd dash-mno-verify
 npm ci --omit=optional
-bash scripts/fetch_keys.sh
 bash scripts/fetch_keys.sh --large registration
 ```
 
-The last two commands download the proving keys and check each one against the checksums in
+The last command downloads the proving keys and checks each one against the checksums in
 `keys.manifest.json`. The registration key is about 120 MB. Run every command below from this
 `dash-mno-verify` folder, because registration saves a secret file here that the proof step looks for.
 
 ## Put your voting key in a file
 
 The commands read the key from a file named `voting-key.txt`, so it never appears in your shell
-history. If the key is in a Dash Core wallet, this writes it to a new file only you can read. It
-removes any earlier `voting-key.txt` first, because a file that already exists keeps its old
-permissions:
+history. If the key is in a Dash Core wallet, this writes it to a new file only you can read. Use a new file and refuse to overwrite an existing one. For a local mainnet wallet, run:
 
 ```bash
-rm -f voting-key.txt && (umask 077 && dash-cli dumpprivkey YOUR_VOTING_ADDRESS > voting-key.txt) && chmod 600 voting-key.txt && echo saved
+(umask 077; set -o noclobber; dash-cli dumpprivkey YOUR_VOTING_ADDRESS > voting-key.txt) && echo saved
 ```
+
+Stop if the command fails. Do not remove an existing key file without understanding what it contains.
+For testnet, use `dash-cli -testnet` consistently. A wallet name may also be needed.
 
 Replace `YOUR_VOTING_ADDRESS` with your masternode's voting address. `dash-cli protx info <your protx
 hash>` shows it as `votingAddress`. If your key lives in another tool, export the private key from
@@ -87,13 +91,30 @@ When your access ends, the bot sends you a direct message, if you accept direct 
 members. Repeat from step 1 in a new season, or from
 step 2 if the community uses a shorter access period and the season has not ended.
 
+## Platform-specific submission
+
+| Platform | Get the challenge | Submit the proof | Successful result |
+| --- | --- | --- | --- |
+| Discord | `/verify` in the visible verification channel, with a private reply | `/submit` with `proof.json` in its attachment field | Named private channel becomes available |
+| Telegram | `/verify` privately to the bot | Send `proof.json` as a document in that private chat, not `/submit` | Follow the join-request link from the same account |
+| Matrix | `!verify` in the supported private direct room | Paste the proof file's contents into that room | Accept the invitation to the gated room |
+| Web | Get challenge on the gate page | Upload `proof.json` on that page | Open its members area in the same browser session |
+
+Telegram currently lacks an enforced private-chat guard. Do not verify in a group. Matrix requires
+an invite-only two-person room with joined-only history and does not support encrypted room events.
+These limits are explained in the moderator guide.
+
+Keep a private backup of the member secret file for the season. Losing it can prevent recovery until
+the next season. Moderators cannot recover it from a proof and should never ask you to upload it.
+
 ## Keeping which masternode is yours private
 
-The proof reveals nothing about which masternode you control. The network path can. Registration and
+The intended proof hides which masternode you control. The network path can identify it. Registration and
 the prove step connect to the gateway directly, so the gateway sees the address you connect from. If
 you run them on the masternode server itself, that address is in the public masternode list and the
-gateway operator could match the two. Run them over Tor or from a network whose address cannot be tied
-to your masternode. The prover prints this reminder whenever the gateway is remote.
+gateway operator could match the two. Prefer a separate computer on a network whose address cannot be tied to your masternode. Tor needs
+separately configured and tested routing for the command-line prover. Opening Tor Browser does not
+configure it. The prover prints this reminder whenever the gateway is remote.
 
 ## If the bot says "Not verified"
 

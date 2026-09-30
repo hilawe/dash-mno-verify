@@ -211,7 +211,7 @@ In `channel` mode, treat the configured channels as bot-managed. The bot cannot 
 
 ## Setup
 
-1. Create a Discord application and bot, and invite it to your server with the `bot` and `applications.commands` scopes. For `role` mode grant it "Manage Roles" and place the bot's role above the masternode role. For `channel` mode grant it "Manage Roles", or "Manage Permissions" on each private channel, so it can edit per-user channel overwrites.
+1. Create a Discord application and bot, and invite it to your server with the `bot` and `applications.commands` scopes. Grant it "Manage Roles", or "Manage Permissions" on each private channel, so it can edit per-user channel overwrites. Per-channel access is the only mode, since role mode was removed.
 2. Set the environment, then run `npm run bot`.
 
 ```bash

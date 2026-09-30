@@ -20,7 +20,7 @@ npm run prove -- --challenge challenge.json --voting-key-file key.wif --oracle o
 to the gateway directly, so a member does not assemble files by hand.
 
 Register once per season. This is the heavy proof, so plan for about 2 GB of free memory, not a
-Raspberry Pi (measured figures in `docs/RUNBOOK.md`, step 5):
+Raspberry Pi (measured figures in `docs/REDUCING_PROVING_COST.md`):
 
 ```bash
 npm run register -- \

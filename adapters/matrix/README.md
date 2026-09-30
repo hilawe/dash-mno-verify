@@ -4,11 +4,18 @@ Gates a Matrix room behind anonymous masternode verification. It uses the Matrix
 Client-Server API directly, so it needs no extra dependency, and grants access by inviting
 the member to the gated room.
 
+Use [the moderator guide](../../docs/MODERATOR_GUIDE.md) for the shared gateway, adapter secret,
+registration-context allowlist, and platform acceptance checks.
+
 ## Setup
 
 1. Create a Matrix account for the bot and get an access token for it.
 2. Put the bot in the gated room with permission to invite users AND to kick them (removal at expiry needs the kick power level, typically 50).
 3. Set the environment, then run `npm run matrix`.
+
+The bot does not decrypt encrypted room events. Use a supported unencrypted direct room for this
+prototype and understand that participating homeservers can read it. The adapter needs
+`MNO_ADAPTER_SECRET` matching the gateway.
 
 Members verify in a direct chat with the bot whose history visibility is "joined". A freshly created direct message often defaults to "shared", which the bot declines, so a member may need to set the room's history visibility to "Members only (since they joined)" before running `!verify`. A configured private verification room is tracked as a follow-up in `TODO.md`.
 
@@ -32,6 +39,8 @@ export MATRIX_GRANT_LEDGER_DB=data/matrix-grants.db  # where granted access is r
 # An older JSON ledger at MATRIX_GRANT_LEDGER (default data/matrix-grants.json) is migrated
 # into it on first start, then renamed with a .migrated suffix.
 
+```
+
 Only one adapter process may run against a given ledger at a time, and the database enforces it: it is
 opened in an exclusive locking mode, so the operating system holds it for the life of the process and a
 second one is refused. The lock is released whenever the process ends, however it ends, so a restart is
@@ -46,16 +55,8 @@ start, see the grant expire, remove it, and forget the member, after which the o
 takes effect. That leaves access the ledger does not know about. No local lock prevents it, because the
 process holding the lock is gone and the side effect is on the platform's servers.
 
-Two limits on that, both real. **Keep the ledger on local storage.** SQLite's exclusion is the
-filesystem's, and its own documentation warns that locking is unreliable on network filesystems such
-as NFS, where two hosts can both believe they hold it. Nothing detects this, and the consequence is
-both a lost guarantee and possible file corruption. **A process terminated mid-request is not
-covered.** If the bot persists a grant, sends the platform the request, the platform accepts it, and
-the bot is then terminated before the effect lands, a replacement can start, see the grant expire,
-remove it, and forget the member, after which the original request still takes effect. That leaves
-access the ledger does not know about. No local lock can prevent it, because the process holding the
-lock is gone and the side effect is on the platform's servers.
 
+```bash
 export MATRIX_SWEEP_SECONDS=60                      # how often lapsed access is taken back
 ```
 

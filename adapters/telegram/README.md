@@ -4,6 +4,9 @@ Gates a Telegram group behind anonymous masternode verification. It talks to the
 gateway endpoints as every other adapter. Admission is bound to the account that proved, and
 access is taken back when the epoch lapses.
 
+Use [the moderator guide](../../docs/MODERATOR_GUIDE.md) for the shared gateway, adapter secret,
+registration-context allowlist, and platform acceptance checks.
+
 ## Setup
 
 1. Create a bot with @BotFather and get its token.
@@ -28,6 +31,8 @@ export TELEGRAM_GRANT_LEDGER_DB=data/telegram-grants.db  # where granted access 
 # An older JSON ledger at TELEGRAM_GRANT_LEDGER (default data/telegram-grants.json) is migrated
 # into it on first start, then renamed with a .migrated suffix.
 
+```
+
 Only one adapter process may run against a given ledger at a time, and the database enforces it: it is
 opened in an exclusive locking mode, so the operating system holds it for the life of the process and a
 second one is refused. The lock is released whenever the process ends, however it ends, so a restart is
@@ -42,24 +47,23 @@ start, see the grant expire, remove it, and forget the member, after which the o
 takes effect. That leaves access the ledger does not know about. No local lock prevents it, because the
 process holding the lock is gone and the side effect is on the platform's servers.
 
-Two limits on that, both real. **Keep the ledger on local storage.** SQLite's exclusion is the
-filesystem's, and its own documentation warns that locking is unreliable on network filesystems such
-as NFS, where two hosts can both believe they hold it. Nothing detects this, and the consequence is
-both a lost guarantee and possible file corruption. **A process terminated mid-request is not
-covered.** If the bot persists a grant, sends the platform the request, the platform accepts it, and
-the bot is then terminated before the effect lands, a replacement can start, see the grant expire,
-remove it, and forget the member, after which the original request still takes effect. That leaves
-access the ledger does not know about. No local lock can prevent it, because the process holding the
-lock is gone and the side effect is on the platform's servers.
 
+```bash
 export TELEGRAM_SWEEP_SECONDS=60                        # how often lapsed access is taken back
 export TELEGRAM_LINK_TTL_SECONDS=3600                   # how long the join-request link stays usable
 ```
 
+## Current privacy limitation
+
+The current handlers do not enforce private-chat-only verification. Use the bot in a direct message
+for testing, and repair both the command and document handlers before a privacy-sensitive launch.
+Group replies can reveal that the sender is verifying masternode control. A request to use direct
+messages is not an enforced guard.
+
 ## Flow
 
-1. A member sends `/verify`. The bot fetches a challenge from the gateway and returns it as `challenge.json`.
-2. The member runs the prover locally with their voting key and that challenge.
+1. A member sends `/verify` in a private chat with the bot. The bot fetches a challenge from the gateway and returns it as `challenge.json`.
+2. A two-tier member registers first, obtains a fresh challenge, then proves locally.
 3. The member sends `proof.json` back to the bot. The bot verifies it through the gateway, records the grant, and replies with a link that creates a JOIN REQUEST.
 4. The member follows the link and asks to join. The bot approves the request only if that Telegram account holds a live grant, and declines it otherwise.
 5. When the epoch lapses, a sweep removes the member (a ban immediately followed by an unban, so they are not left banned and can rejoin after re-verifying).
@@ -71,6 +75,9 @@ binds a proof to one Telegram account, and the adapter then handed out something
 use, so a forwarded or intercepted link admitted a different account entirely. A join-request
 link cannot do that, because following it only asks to join and the bot approves the request
 solely for the account that proved. A forwarded link grants nobody.
+
+The adapter also needs `MNO_ADAPTER_SECRET` matching the gateway. A new or existing group needs
+the target-scoped reconciliation acknowledgment described in the moderator guide before first start.
 
 ## Why this proves the seam
 

@@ -102,7 +102,7 @@ Known issues and the planned work are tracked in `TODO.md`.
 ## Contributing
 
 See `CONTRIBUTING.md` for setup, the test and continuous-integration expectations, the pull-request
-flow, and the house style. `docs/RUNBOOK.md` takes an operator from a clone to a running gated channel.
+flow, and the house style. `docs/MODERATOR_GUIDE.md` takes an operator from a clone to a running gated channel.
 
 ## License
 

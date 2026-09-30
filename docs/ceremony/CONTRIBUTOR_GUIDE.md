@@ -1,98 +1,168 @@
-# Contributing to the dash-mno-verify setup ceremony
+# Contributing to the setup ceremony on Linux
 
-Thank you for contributing. This guide is everything you need, start to finish, and takes about half an
-hour on a laptop, most of it downloads. The procedure behind it is `docs/CEREMONY.md`.
+This walkthrough supports Linux on x86-64, reported by `uname -m` as `x86_64`. It uses the exact
+compiler binary recorded in the freeze. An ARM Linux machine needs a separately verified build path.
+Do not run the Linux binary on macOS. The frozen macOS asset can be checked separately, but its name
+does not establish native Apple silicon support.
 
-## What you are doing, and why it matters
+The two proposed contributors are Hilawe and Pasta, each using a separate machine and independent
+randomness. Participation is voluntary and is recorded only after the contributions actually occur.
+The interim pilot setup is not this ceremony.
 
-dash-mno-verify lets a Dash masternode owner prove membership in a community without revealing which
-masternode they control. Two of its circuits are proved under Groth16, which needs a one-time setup per
-circuit. Each contributor mixes private randomness into that setup and then discards it. The setup is
-secure if at least ONE contributor really discarded theirs, so your contribution protects everyone as long
-as you do not keep or share your randomness.
+## What you are doing
 
-You contribute to two setups in one sitting, one per circuit, with separate randomness for each. You end
-up holding no key and no secret, and the ceremony gives you no view of who uses the system later.
+You add private randomness to two public mathematical setup files, one for single-tier admission and
+one for seasonal registration. No voting key, wallet, collateral, node address, or member secret is
+needed. The output files are public. Your private contribution randomness must remain secret and be
+discarded.
 
-## What you need
+At least one honest, uncompromised contribution in each verified setup prevents reconstruction of its
+trapdoor under the proof system's assumptions. This protects against forged membership. Setup secrets
+do not decode honest proofs, but forged admission could expose private conversations. Read
+[the privacy explanation](../SETUP_PRIVACY.md) and [the full ceremony procedure](../CEREMONY.md).
 
-- A machine you control, macOS or Linux, with about 4 GB of free memory and 2 GB of free disk.
-- Node.js 22.13 or later, git, and curl.
-- The two files the coordinator sends you for your turn, and the sha256 of each, announced publicly.
+## What you need before starting
 
-## 1. Get the frozen source and check it
+- Your own Linux x86-64 machine, with about 4 GiB available memory and at least 4 GB free disk.
+- Node.js 22.13 or newer, Git, curl, and the standard `sha256sum` utility.
+- The announced ceremony source reference, a reference containing the approved freeze, and both
+  incoming `.zkey` files with their independently announced file hashes.
+- The agreed contributor order and complete beacon policy, including the fallback rule.
 
-    git clone https://github.com/hilawe/dash-mno-verify.git
-    cd dash-mno-verify
-    git checkout <the ceremony tag from the announcement>
-    npm ci --omit=optional
+Download and compilation time depend on your machine and connection. Reserve an uninterrupted session
+rather than relying on a fixed half-hour promise. Use a machine without terminal recording or untrusted
+software, and avoid creating a snapshot that preserves live contribution secrets.
 
-Fetch the official circom 2.2.3 release binary for your platform. The macOS asset is named
-`circom-macos-amd64` but runs natively on Apple silicon.
+## 1. Get the announced source
 
-    curl -fsSL -o circom https://github.com/iden3/circom/releases/download/v2.2.3/circom-linux-amd64
-    chmod +x circom
+These commands are for a new checkout on your own machine. Ask for the actual announcement reference
+before continuing. Do not use a guessed release tag or the latest moving branch.
 
-Confirm the circuits are the frozen ones. This compiles both from source and compares them with
-`circuits/ceremony/FREEZE.json`, and checks the compiler is one of the frozen release binaries.
+```bash
+git clone https://github.com/hilawe/dash-mno-verify.git dash-mno-ceremony
+cd dash-mno-ceremony
+read -r -p 'Approved ceremony reference containing FREEZE.json: ' CEREMONY_REF
+git checkout --detach "$CEREMONY_REF"
+npm ci --omit=optional
+mkdir -p data/ceremony/bin data/ceremony/work
+```
 
-    CIRCOM=./circom node scripts/freeze_candidate.mjs --check
+The announcement should identify the source commit named by the freeze and the reference containing
+that freeze. A later commit that adds the freeze can differ from its recorded source commit without
+changing the circuits. Verify both identities against the announcement.
 
-It must print `the fresh compile matches circuits/ceremony/FREEZE.json`. If it does not, stop and tell
-the coordinator.
+## 2. Verify the compiler before running it
 
-## 2. Prepare the working files
+```bash
+test "$(uname -s)" = Linux && test "$(uname -m)" = x86_64
+curl --fail --show-error --location \
+  https://github.com/iden3/circom/releases/download/v2.2.3/circom-linux-amd64 \
+  --output data/ceremony/bin/circom
+node --input-type=module <<'NODE'
+import {readFileSync} from 'node:fs';
+import {createHash} from 'node:crypto';
+const freeze=JSON.parse(readFileSync('circuits/ceremony/FREEZE.json','utf8'));
+const expected=freeze.compiler.releaseBinaries['circom-linux-amd64'];
+const actual=createHash('sha256').update(readFileSync('data/ceremony/bin/circom')).digest('hex');
+if (!expected || actual!==expected) throw Error('Compiler fingerprint mismatch. Stop.');
+console.log('Compiler fingerprint matches the freeze');
+NODE
+```
 
-    mkdir -p ceremony-work
-    for c in mno_membership mno_registration; do
-      ./circom circuits/$c.circom --r1cs -o ceremony-work -l node_modules -l circuits/.deps >/dev/null
-    done
-    bash scripts/fetch_ptau.sh 20 ceremony-work/pot20.ptau
+Stop if any command fails. Only after the fingerprint matches, make the binary executable and check
+the compiled circuits. This fetches the pinned circuit dependency as part of the build.
 
-The last command downloads the public Powers of Tau (about 1.15 GB) and checks it against its published
-blake2b-512 hash.
+```bash
+chmod 700 data/ceremony/bin/circom
+CIRCOM="$PWD/data/ceremony/bin/circom" node scripts/freeze_candidate.mjs --check
+```
 
-## 3. Contribute, once per circuit
+Expect `the fresh compile matches circuits/ceremony/FREEZE.json`. If it does not, stop and report the
+error. Do not change a fingerprint to make the check pass.
 
-Do the following for `mno_membership`, then again for `mno_registration`. Put the file the coordinator
-sent you for that circuit at `ceremony-work/<circuit>_in.zkey`.
+## 3. Prepare the public working files
 
-    C=mno_membership   # then repeat with C=mno_registration
+```bash
+for C in mno_membership mno_registration; do
+  data/ceremony/bin/circom "circuits/$C.circom" --r1cs \
+    -o data/ceremony/work -l node_modules -l circuits/.deps || break
+done
+bash scripts/fetch_ptau.sh 20 data/ceremony/work/pot20.ptau
+```
 
-    # a. The file is the one the coordinator announced.
-    shasum -a 256 ceremony-work/${C}_in.zkey
+Confirm both compiled files exist and compare their hashes against the freeze before using them.
 
-    # b. It derives from the frozen circuit and the public Powers of Tau, through the contributions so far.
-    npx snarkjs zkey verify ceremony-work/$C.r1cs ceremony-work/pot20.ptau ceremony-work/${C}_in.zkey
+```bash
+node --input-type=module <<'NODE'
+import {readFileSync} from 'node:fs';
+import {createHash} from 'node:crypto';
+const f=JSON.parse(readFileSync('circuits/ceremony/FREEZE.json','utf8'));
+for (const name of ['mno_membership','mno_registration']) {
+  const h=createHash('sha256').update(readFileSync(`data/ceremony/work/${name}.r1cs`)).digest('hex');
+  if(h!==f.circuits[name].r1csSha256) throw Error(`${name} differs from the frozen circuit`);
+  console.log(`${name} matches`);
+}
+NODE
+```
 
-    # c. Contribute. Type a long random line when asked. It is mixed with your system's own randomness.
-    npx snarkjs zkey contribute ceremony-work/${C}_in.zkey ceremony-work/${C}_out.zkey --name="<your name>"
+The public Powers of Tau file is about 1.2 GB. The fetch script checks its published hash, including
+when a cached file already exists. It contains no member secrets.
 
-Check before contributing:
+## 4. Contribute to the first circuit
 
-- (a) prints exactly the sha256 the coordinator announced for that file;
-- (b) ends with `ZKey Ok!`, and the contributions it lists are the ones announced so far, with the same
-  names and hashes;
-- neither shows a beacon entry, since the beacon only comes after every contribution.
+Place the coordinator's incoming membership file at
+`data/ceremony/work/mno_membership_in.zkey`. Keep each circuit's files separate.
 
-If any check fails, stop and tell the coordinator. Do not contribute on a file you have not verified.
+```bash
+C=mno_membership
+sha256sum "data/ceremony/work/${C}_in.zkey"
+node_modules/.bin/snarkjs zkey verify \
+  "data/ceremony/work/$C.r1cs" data/ceremony/work/pot20.ptau \
+  "data/ceremony/work/${C}_in.zkey"
+```
 
-Step (c) prints a contribution hash, four lines of hex. Copy it exactly. Enter your randomness at the
-prompt, never with `-e` on the command line, which would leave it in your shell history.
+Before continuing, confirm the file hash matches the independent announcement, the verification ends
+with `ZKey Ok!`, and the listed contribution hashes match the announced chain. There must be no beacon
+entry yet. A name alone is not an authenticated contribution. Stop on any discrepancy.
 
-## 4. Publish, send, and discard
+```bash
+node_modules/.bin/snarkjs zkey contribute \
+  "data/ceremony/work/${C}_in.zkey" "data/ceremony/work/${C}_out.zkey" \
+  --name='Pasta'
+```
 
-1. Publish both contribution hashes, labeled by circuit, in one public post under an account people know
-   is yours (for example a comment on the ceremony's GitHub issue, or a signed message). This is what lets
-   anyone confirm later that your contribution is in the final keys.
-2. Send `ceremony-work/mno_membership_out.zkey` and `ceremony-work/mno_registration_out.zkey` to the
-   coordinator by the agreed channel. The files hold no secret, and the published hashes protect them in
-   transit.
-3. Close the terminal you contributed in. Your randomness existed only in that session's memory and at
-   the prompt. Do not write it down or reuse it.
+Supply fresh private randomness at the prompt. Do not pass it with `-e`, publish it, reuse a wallet
+secret, or record the terminal session. The software also uses system randomness. Copy the resulting
+public contribution hash exactly, labeled with the circuit name. Verify the output before sending it.
 
-## 5. After the ceremony
+```bash
+node_modules/.bin/snarkjs zkey verify \
+  "data/ceremony/work/$C.r1cs" data/ceremony/work/pot20.ptau \
+  "data/ceremony/work/${C}_out.zkey"
+sha256sum "data/ceremony/work/${C}_out.zkey"
+```
 
-The coordinator publishes a transcript. Run `snarkjs zkey verify` on each final key, as `docs/CEREMONY.md`
-step 4 describes, and confirm your two contribution hashes appear in the chains exactly as you published
-them. If either is missing or different, say so publicly.
+## 5. Repeat for registration
+
+Set `C=mno_registration`. Place the registration input at
+`data/ceremony/work/mno_registration_in.zkey`, then repeat every verification, contribution, and output
+check in step 4. Generate independent randomness. Do not copy the membership input or its randomness
+into the registration setup.
+
+## 6. Publish and complete
+
+Publish both labeled contribution hashes through an account or signed message you control. Send both
+public output files and their file hashes through the agreed transfer method. A file hash and a
+contribution hash are different values, so label them distinctly.
+
+Keep the public output files and verification logs. Do not retain private entropy. Closing a terminal
+is useful housekeeping but is not a guarantee that swap, recordings, malware, or machine snapshots
+contain no secret remnants. Use the agreed contribution environment and describe what you actually did.
+
+After the coordinator applies the agreed beacon, verify both final keys against the frozen circuits
+and phase-one file. Confirm your contribution hash is present in each chain. Independently check the
+beacon source, height, finality, value, and exponent under [CEREMONY.md](../CEREMONY.md). `ZKey Ok!`
+alone does not verify that the intended participants and beacon were used.
+
+The final keys become a separately reviewed publication step. Do not replace pilot keys, edit the
+release manifest, or deploy as part of your contribution.
