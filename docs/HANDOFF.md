@@ -98,8 +98,9 @@ tests. CI was read green on all three jobs for `dfe17f6` (run 36658007622).
 and 4 prompts answered from files, and a stand-in for the plain `dash-cli` wrapper form. Steps 0 to 6
 passed. Measured there: step 1 in 51 s, the first oracle snapshot in 40 s, the bot open 6 s after
 start, registration with `--node-list` in 48 s at about 1.44 GB, and the members proof in 24 s. The bot
-took the access back by 04:01:08 UTC, within a minute of the period ending at 04:00, and the stop step
-left no pilot containers, with crono's wallet at the chain tip.
+took the access back by 04:01:08 UTC, within a minute of the period ending at 04:00, and sent its
+access-ended message, which Hilawe confirmed. The stop step left no pilot containers, with crono's
+wallet at the chain tip.
 
 - The walkthrough's `dash-cli` wrapper had looped forever under the oracle's search path. Fixed in
   `b2f4efe` and run under that exact path.
@@ -108,8 +109,9 @@ left no pilot containers, with crono's wallet at the chain tip.
   including the pilot's own restart on 2026-09-29. Fixed in `8b30487`, with a test that fails on the
   old loop and a focused review (APPROVE).
 - A first `/submit` with `challenge.json` attached by mistake was refused as `http-400` without using
-  up the challenge, and the real proof then admitted the member. Two convenience changes are proposed,
-  not made: write `proof.json` only once finished, and name the challenge file when it is attached.
+  up the challenge, and the real proof then admitted the member. Two convenience changes followed in
+  `25ca07c`: the prover writes `proof.json` only once complete, and the bots name a challenge file sent
+  as the proof. The walkthrough now pins `25ca07c`, and states that the live run was at `8b30487`.
 
 ### Open, in order
 

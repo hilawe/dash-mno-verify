@@ -14,14 +14,19 @@ the testnet node, the gateway, the bot, and the prover, and nothing is exposed t
 is the arrangement the project's own testnet pilot used on 2026-09-28 and 2026-09-29, and the gateway
 and bot use that run's container settings.
 
-This recipe was run as written on 2026-09-30, at the commit pinned in step 1, on a Linux host with a
-synced testnet node reached through dashmate. Three things were done differently there, and nothing
+This recipe was run as written on 2026-09-30, at commit `8b30487`, on a Linux host with a synced
+testnet node reached through dashmate. Three things were done differently there, and nothing
 else. Node.js was a portable copy put on the search path. The prompts in steps 2 and 4 were answered
 from files, the voting key coming straight from the node's wallet into its file. And the plain
 `dash-cli` form of step 3a ran with a stand-in `dash-cli`, since that host had none. The run went from
 step 0 through the admission in step 5, saw the bot take the access back within a minute of the
-period ending, and ended with the stop in step 6. It found and fixed a bot defect that had stopped
-admissions from ever opening after a revocation.
+period ending and send its access-ended message, and ended with the stop in step 6. It found and fixed
+a bot defect that had stopped admissions from ever opening after a revocation.
+
+The commit pinned in step 1 adds two member-facing changes to `8b30487`, covered by the tests and
+continuous integration but not by that run. The prover now writes `proof.json` only once it is
+complete, and the bot names a challenge file sent where the proof belongs instead of refusing it as an
+incomplete proof.
 
 Each block says where it runs, either **pilot host** or **Discord**. A block for **your desktop** only
 moves a file between your Discord client and the pilot host.
@@ -57,13 +62,13 @@ That is a useful result too.
 
 ## 1. Get the code and keys
 
-**Pilot host.** Use exactly this commit. It is the one whose continuous-integration checks passed and
-whose recipe was run as written below. Newer commits are not covered by that run.
+**Pilot host.** Use exactly this commit. Its continuous-integration checks passed. Newer commits are
+not covered by this walkthrough.
 
 ```bash
 git clone https://github.com/hilawe/dash-mno-verify.git ~/mno-pilot/repo
 cd ~/mno-pilot/repo
-git checkout --detach 8b30487a4eac57ac956a04e8f846516c032cfbfb
+git checkout --detach 25ca07c78f1cb93b69577ef4a2ddb1ed749b9be1
 npm ci
 bash scripts/fetch_keys.sh --large registration
 ```
