@@ -38,6 +38,7 @@ import {
 // immediately before acting. Nine rounds of adding the check at the site a reviewer named, and leaving
 // its twin unguarded a few lines away, is what this import exists to end.
 import { clearManagedAllows, isDenialConflict } from "./permissions.js";
+import { reconcileChannel } from "./reconcile_channel.js";
 import { makeAccess } from "./access.js";
 import { contextHash } from "../../common/index.js";
 import { fetchJsonCapped, MAX_PROOF_BYTES } from "../../common/bounded_fetch.js";
@@ -452,8 +453,10 @@ async function reconcileGuild() {
   // from ever being revoked until a clean restart.
   const clear = async (userId, undo) => {
     try {
-      await undo();
-      removed.push(userId);
+      // Counted only when something was taken back. An overwrite that already allows nothing, which a
+      // revocation leaves behind, holds no access, and reporting it as taken back overstated the pass.
+      const cleared = await undo();
+      if (!Array.isArray(cleared) || cleared.length) removed.push(userId);
     } catch (e) {
       if (isGone(e)) return; // already gone; nothing to take back
       // A refusal is not a failure here, and must not be counted as one. This member carries a denial,
@@ -481,17 +484,17 @@ async function reconcileGuild() {
         if (isGone(e)) continue; // a deleted channel holds no access
         throw e;
       }
-      for (const [id, ow] of ch.permissionOverwrites.cache) {
-        if (ow.type !== OverwriteType.Member) continue; // role overwrites are the operator's business
-        if (id === client.user.id) continue;
-        if (authorizedNow(id, chId)) continue;
-        // Guarded per member, not by the startup snapshot alone. usableTargets checked this channel
-        // moments ago, but the loop below can run for a long time on a large channel and an
-        // administrator can add a denial while it runs. Clearing that denial lets a role-level allow
-        // through, so the pass whose whole purpose is taking access back would hand it out. All four
-        // round 9 reviewers found this one.
-        await clear(id, () => clearManagedAllows(ch, id));
-      }
+      // Over a snapshot of the member overwrites (reconcile_channel.js says why a live loop never ended).
+      // Guarded per member, not by the startup snapshot alone. usableTargets checked this channel
+      // moments ago, but the pass can run for a long time on a large channel and an administrator can
+      // add a denial while it runs. Clearing that denial lets a role-level allow through, so the pass
+      // whose whole purpose is taking access back would hand it out. All four round 9 reviewers found
+      // this one.
+      await reconcileChannel(ch, {
+        botId: client.user.id,
+        authorized: (id) => authorizedNow(id, chId),
+        clear: (id) => clear(id, () => clearManagedAllows(ch, id)),
+      });
     }
   }
 
