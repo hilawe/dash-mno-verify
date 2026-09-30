@@ -6,7 +6,7 @@ the gateway, oracle, secrets, network exposure, and backups. These may be the sa
 moderation should not require touching wallets or circuit tools.
 
 **Start with one gateway, one oracle source, and one platform.** Discord has the most complete member
-messages. Telegram needs a private-chat guard before a privacy-sensitive launch. Matrix requires
+messages. Telegram verifies only in private chats with the bot. Matrix requires
 careful direct-room settings. The web adapter is a reference implementation rather than a complete
 production account system. The [review findings](reviews/REVIEW_FINDINGS_dash-mno-verify_2026-09-29.md)
 record the outstanding limits.
@@ -252,11 +252,12 @@ On first launch, the adapter may refuse until reconciliation is recorded. For a 
 confirm no ordinary users already have access. Then run the specific target-scoped acknowledgment
 printed by the bot. Do not acknowledge an existing group without reviewing its membership.
 
-**Current code requires a repair before a privacy-sensitive Telegram pilot.** Both `/verify` and proof
-uploads must reject non-private chats before fetching a challenge or file. Until that is implemented,
-asking members to use direct messages is guidance, not an enforced privacy boundary.
+**Verification works only in a private chat with the bot.** In a group, `/verify` gets only an
+instruction to open a private chat, and an uploaded file is ignored, with no gateway call and no
+download (`adapters/telegram/private_only.js`, tested through the real handlers). It cannot retract a
+file a member already posted in a group.
 
-Once repaired, the member sends `/verify` privately to the bot, submits `proof.json` as a document in
+The member sends `/verify` privately to the bot, submits `proof.json` as a document in
 that same private chat, follows the returned link, and requests to join. There is no Telegram `/submit`
 command. A second account following the link must be declined. Confirm expiry removal and successful
 rejoining after a new valid proof. Do not test removal using the group owner or an administrator.
@@ -312,6 +313,6 @@ npm run discord:decommission -- channel:CHANNEL_ID --apply
 The first command changes nothing. Confirm successful removal before changing the managed channel
 list or restarting the bot. Never drop a channel from configuration and assume access disappeared.
 
-Before expanding beyond the pilot, finish the private-chat guard and accepted moderation policy, prove
+Before expanding beyond the pilot, agree an accepted moderation policy, prove
 a complete member journey and expiry on each platform actually used, and agree on who operates the
 service. Keep the other adapters outside the acceptance claim until their own live checks pass.

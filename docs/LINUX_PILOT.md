@@ -1,204 +1,188 @@
 # Linux pilot walkthrough
 
-This walkthrough is for a tester who runs a complete testnet pilot on their own infrastructure, joins
-it as a member from a separate Linux computer, and records the acceptance checks. It uses a disposable
-test community on Discord. Nothing here needs another operator's gateway, bot, or server.
+The first pass asks for one thing: register a testnet masternode and see a private Discord channel
+appear. Stop there, or at the first step that does not work, and send back the step number and the
+error. Nobody expects you to troubleshoot it. Recovery checks, a separate proving computer, a public
+address, and the setup ceremony are optional follow-ups at the end.
 
-The operator side is in [the moderator guide](MODERATOR_GUIDE.md), the member side is summarized in
-[the member guide](MEMBER_GUIDE.md), and [the setup privacy explanation](SETUP_PRIVACY.md) covers what
-the interim keys do and do not protect. This is a testnet pilot on interim single-contributor keys, so
-do not gate anything of value on it.
+This is a testnet pilot on interim single-contributor keys, so do not gate anything of value on it.
 
-## Part A. Stand up the pilot
+## Where things run
 
-Follow the moderator guide on a Linux host with a synced testnet Dash node. Use one durable gateway, the
-two-tier mode, and a disposable Discord server or a private test channel. For the acceptance checks in
-Part C, a short schedule makes the boundaries observable within a day, for example
-`MNO_EPOCH_SECONDS=1800` and `MNO_SEASON_SECONDS=86400`. Choose it before the first registration,
-because changing it later renumbers every period and the gateway then refuses its own stored state.
+In the first pass everything runs on **one Linux machine**, called the pilot host below. It holds
+the testnet node, the gateway, the bot, and the prover, and nothing is exposed to the internet. This
+is the arrangement the project's own testnet pilot used on 2026-09-28 and 2026-09-29. The gateway and
+bot use that run's container settings and the oracle loop is the same, with its host-specific parts
+removed. Two details differ from what ran there. That pilot ran the prover in a container rather than
+directly, and it reached its node through dashmate, so step 3's wrapper for a plain Dash Core node is
+untested.
 
-Before members can reach the gateway, confirm these on the deployed host rather than from its
-configuration files:
+Each block says where it runs, either **pilot host** or **Discord**. A block for **your desktop** only
+moves a file between your Discord client and the pilot host.
 
-- Adapter authentication is on, and its secret appears in no member command or log.
-- Oracle signatures are required and the oracle's public key is pinned in `MNO_ORACLE_PUBKEYS`.
-- `MNO_REGISTER_CONTEXTS` names exactly the pilot's context, and the testnet list is fresh.
-- Nullifiers, registrations, clock marks, and bot grants are on durable local storage.
-- The raw gateway port is reachable only through the intended front end. The gateway process listens
-  on every interface it has, so a container published only to the host's loopback address, behind the
-  front end, is what keeps it there.
-- The public route exposes only the member endpoints (`/v1/health`, `/v1/dml`, `/v1/members`,
-  `/v1/register`). The Dash node's RPC port, wallets, bot tokens, and any administrative interface stay
-  off it.
-- The bot's `MNO_MEMBER_GATEWAY_URL` is the public https address, and a `/verify` reply shows it in its
-  commands rather than `<gateway-url>`.
+## What you need
 
-A front end that ends TLS before the gateway, such as a content delivery network or a hosted tunnel,
-can read everything a member's prover sends and could change what it receives. The proofs reveal no key
-and no masternode, but that provider sees members' source addresses and timing, as the gateway operator
-does. Members who pass `--node-list` do not depend on the list it returns (Part B, step 5).
+- A Linux pilot host with Docker, Git, curl, Node.js 22.13 or newer, and about 4 GiB of free memory.
+- A synced testnet Dash node on that host that `dash-cli` can reach, and the voting private key of a
+  testnet masternode.
+- A disposable Discord server you own, with a private channel that `@everyone` cannot see. Turn on
+  Discord's Developer Mode (User Settings, Advanced) so you can right-click to copy IDs.
+- A Discord application and bot from the developer portal. Keep its bot token and application ID.
+  Invite it with the `bot` and `applications.commands` scopes and the "Manage Roles" permission. It
+  needs no privileged intent.
+- A second, ordinary Discord account in that server to verify from. A server owner or administrator
+  sees every channel already, so their account cannot show the channel appearing.
 
-## Part B. Join as a member from Linux
+## 1. Get the code and keys
 
-### 1. Check the machine
-
-Use a computer other than the masternode server, because connecting from the masternode's advertised
-address can identify it even though the proof does not. Open a Bash terminal and keep it for these steps.
+**Pilot host.** This is the last commit that changed code. Later commits change only documentation.
 
 ```bash
-node --version
-npm --version
-git --version
-curl --version
-uname -m
-free -h
-df -h .
-```
-
-Use Node.js 22.13 or newer. Allow about 4 GiB of memory headroom. The key downloads are about 175 MB,
-and the package installation uses more disk than that.
-
-### 2. Get the same software the gateway runs
-
-Use the commit the pilot's gateway runs, with its matching key manifest. A different commit can carry
-different keys, and its proofs would be refused.
-
-```bash
-git clone https://github.com/hilawe/dash-mno-verify.git dash-mno-pilot
-cd dash-mno-pilot
-read -r -p 'Commit the gateway runs: ' PILOT_COMMIT
-git checkout --detach "$PILOT_COMMIT"
-npm ci --omit=optional
+git clone https://github.com/hilawe/dash-mno-verify.git ~/mno-pilot/repo
+cd ~/mno-pilot/repo
+git checkout --detach 478ffcc00bd4309429bddb0985a901cf29423139
+npm ci
 bash scripts/fetch_keys.sh --large registration
 ```
 
-The last command fetches the shared files too and verifies every download against the manifest. Do not
-continue if any checksum fails.
+`npm ci` installs the Discord library too, which the bot needs. The key fetch prints each file name
+and checks it against `keys.manifest.json`. Stop if it prints `CHECKSUM MISMATCH` or fails.
 
-### 3. Enter the pilot's public values
+## 2. Private settings
 
-These are public configuration, not secrets. Keep the quotation marks in later commands.
-
-```bash
-read -r -p 'Pilot gateway address: ' PILOT_GATEWAY
-read -r -p 'Discord server ID: ' PILOT_GUILD
-read -r -p 'Proof context label: ' PILOT_CONTEXT
-export PILOT_GATEWAY PILOT_GUILD PILOT_CONTEXT
-curl --fail --show-error --silent "${PILOT_GATEWAY%/}/v1/health"
-printf '\n'
-```
-
-The health response should report `ok: true`. That alone does not show the oracle is fresh or that the
-context is enabled. Do not disable certificate checks or use an insecure transport override.
-
-### 4. Save the testnet voting private key
-
-You need the voting private key, not the collateral key, the operator key, a wallet seed, or an address.
-This creates a private folder outside the checkout, refuses to overwrite an existing file, and reads the
-key without showing it.
+**Pilot host.** Each command refuses to overwrite an existing file. The token prompt does not echo.
 
 ```bash
-mkdir -p "$HOME/.local/share/dash-mno-pilot"
-chmod 700 "$HOME/.local/share/dash-mno-pilot"
-PILOT_KEY_FILE="$HOME/.local/share/dash-mno-pilot/testnet-voting-key.txt"
-export PILOT_KEY_FILE
-(
-  umask 077
-  set -o noclobber
-  read -r -s -p 'Paste the TESTNET voting private key, then press Enter: ' PILOT_KEY
-  printf '\n'
-  test -n "$PILOT_KEY" || exit 1
-  printf '%s\n' "$PILOT_KEY" > "$PILOT_KEY_FILE"
-  unset PILOT_KEY
-)
-stat -c '%a %n' "$PILOT_KEY_FILE"
+mkdir -p ~/mno-pilot/secrets ~/mno-pilot/data/bot ~/mno-pilot/run ~/mno-pilot/bin
+chmod 700 ~/mno-pilot/secrets ~/mno-pilot/data
+cd ~/mno-pilot/repo
+(umask 077; set -o noclobber; node scripts/gen_oracle_key.mjs > ../secrets/oracle-key.txt)
+(umask 077; set -o noclobber; node -e 'console.log(require("crypto").randomBytes(32).toString("hex"))' > ../secrets/adapter.secret)
+(umask 077; set -o noclobber; read -r -s -p 'Discord bot token: ' T; printf '\n'; printf '%s\n' "$T" > ../secrets/discord.token; unset T)
+read -r -p 'Discord application ID: ' APP_ID
+read -r -p 'Discord server ID: ' GUILD_ID
+read -r -p 'Private channel ID: ' CHANNEL_ID
+(umask 077; set -o noclobber; printf 'APP_ID=%s\nGUILD_ID=%s\nCHANNEL_ID=%s\n' "$APP_ID" "$GUILD_ID" "$CHANNEL_ID" > ../pilot.conf)
+ls -l ../secrets ../pilot.conf
 ```
 
-Expect permission `600`. To export the key from Dash Core instead, `dash-cli -testnet protx info
-YOUR_PROTX_HASH` shows the voting address and `dash-cli -testnet dumpprivkey YOUR_VOTING_ADDRESS`
-exports its key if that wallet holds it. An encrypted, hardware, or watch-only wallet may need a
-different export. Running a masternode does not mean its server holds the voting key.
+Expect three files in `secrets`, each readable only by you, and `pilot.conf`.
 
-### 5. Export your own node's masternode list
+## 3. Start the oracle, gateway, and bot
 
-Registration can build the masternode list itself from your node instead of trusting the gateway's
-copy. Without it, whoever runs or fronts the gateway could serve a doctored list and narrow down which
-masternode is yours from whether you go on to register. On a machine with a synced testnet node:
+**Pilot host.** The oracle reads the masternode list through a `dash-cli` on its search path. Make
+that name select testnet. For a plain Dash Core node:
 
 ```bash
-dash-cli -testnet masternodelist json > mnlist.json
+printf '#!/bin/sh\nexec dash-cli -testnet "$@"\n' > ~/mno-pilot/bin/dash-cli && chmod +x ~/mno-pilot/bin/dash-cli
+~/mno-pilot/bin/dash-cli getblockcount
 ```
 
-Copy `mnlist.json` into `dash-mno-pilot`. With no node of your own, leave out `--node-list mnlist.json`
-below and accept that the list is the gateway's.
+With dashmate, write `exec dashmate core cli "$*"` as the second line instead. The check should print a
+block height.
 
-### 6. Register before taking the challenge you will use
+Then start the three services. The first run downloads Docker's official `node:22-bookworm` image. The
+pilot uses 30-minute access periods and one-day seasons so the boundaries can be seen within a day. The
+oracle loop records its own process ID in `run/oracle.pid`, which step 6 uses to stop it.
 
 ```bash
-npm run register -- \
-  --gateway "${PILOT_GATEWAY%/}" \
-  --platform discord \
-  --community "$PILOT_GUILD" \
-  --role "$PILOT_CONTEXT" \
-  --voting-key-file "$PILOT_KEY_FILE" \
-  --node-list mnlist.json
+cd ~/mno-pilot && . ./pilot.conf
+PUB="$(grep '^MNO_ORACLE_PUBKEYS=' secrets/oracle-key.txt | cut -d= -f2-)"
+CTX="$(cd repo && node --input-type=module -e 'import {contextHash} from "./common/index.js"; console.log(contextHash({platform:"discord", communityId: process.argv[1], roleId: "mn-members"}).toString())' "$GUILD_ID")"
+U="$(id -u):$(id -g)"; H="$HOME/mno-pilot"
+
+setsid bash -c 'echo $$ > "$HOME/mno-pilot/run/oracle.pid"; cd "$HOME/mno-pilot"; export PATH="$HOME/mno-pilot/bin:$PATH" MNO_ORACLE_SIGNING_KEY="$HOME/mno-pilot/secrets/oracle-key.txt"; while true; do node repo/oracle/oracle.js --out data/root.json >> run/oracle.log 2>&1; sleep 120; done' </dev/null >/dev/null 2>&1 &
+sleep 20; tail -1 run/oracle.log
+
+docker run -d --name mno-pilot-gateway --memory=1g --cpus=2 -p 127.0.0.1:8787:8787 --user "$U" \
+  -v "$H/repo:/work:ro" -v "$H/data:/data" -v "$H/secrets:/secrets:ro" -w /work \
+  -e MNO_MODE=two-tier -e MNO_STORE=sqlite -e MNO_NULLIFIER_PATH=/data/nullifiers.sqlite \
+  -e MNO_REG_PATH=/data/registrations.jsonl -e MNO_TIME_MARKS_PATH=/data/time_marks.json \
+  -e MNO_ORACLE_SOURCE=/data/root.json -e "MNO_ORACLE_PUBKEYS=$PUB" -e "MNO_REGISTER_CONTEXTS=$CTX" \
+  -e MNO_EPOCH_SECONDS=1800 -e MNO_SEASON_SECONDS=86400 \
+  node:22-bookworm sh -c 'export MNO_ADAPTER_SECRET="$(cat /secrets/adapter.secret)"; exec node core/gateway.js'
+sleep 10; curl -fsS http://127.0.0.1:8787/v1/health; printf '\n'
+
+docker run -d --name mno-pilot-bot --memory=512m --network host --user "$U" \
+  -v "$H/repo:/work:ro" -v "$H/data/bot:/botdata" -v "$H/secrets:/secrets:ro" -w /work \
+  -e "DISCORD_APP_ID=$APP_ID" -e "DISCORD_GUILD_ID=$GUILD_ID" -e "DISCORD_GRANT_CHANNEL_IDS=$CHANNEL_ID" \
+  -e DISCORD_CONTEXT_ID=mn-members -e MNO_GATEWAY_URL=http://127.0.0.1:8787 \
+  -e MNO_MEMBER_GATEWAY_URL=http://127.0.0.1:8787 \
+  -e DISCORD_GRANTS_DB=/botdata/grants.db -e DISCORD_SWEEP_SECONDS=60 \
+  node:22-bookworm sh -c 'export DISCORD_TOKEN="$(cat /secrets/discord.token)" MNO_ADAPTER_SECRET="$(cat /secrets/adapter.secret)"; exec node adapters/discord/bot.js'
+sleep 15; docker logs mno-pilot-bot 2>&1 | grep '\[discord\]'
 ```
 
-Success prints `registered at members-tree index` and names a saved secret file. Keep that
-`member.discord...secret.json` file private for the season. A retry must reuse it, so do not delete a
-pending secret after a timeout. If the prover warns that your node's list differs from the gateway's
-and registration is refused as `stale-or-unknown-root`, export the list again and re-run. Once
-registered, `rm -- "$PILOT_KEY_FILE"` removes this copy of the key. Keep the member secret file.
+What each check should show:
 
-### 7. Take a fresh challenge, prove, and submit
+- The oracle log ends with `[oracle] dash-cli height ..., N leaves, root ... signed by ... -> data/root.json`.
+- The health check prints JSON starting `{"ok":true,"canChallenge":true,"canVerify":true,"canRegister":true,"mode":"two-tier"`.
+- The bot log includes `slash commands registered`, `logged in as ...`, and `reconciled; interactions are open`.
 
-In the pilot's Discord server, type `/verify` from the account that should gain access. The reply is
-visible only to you. Save `challenge.json` into `dash-mno-pilot` under exactly that name, even if an
-earlier `/verify` was only to read the instructions.
+The gateway is published only on the pilot host's loopback address, so nothing here is reachable from
+the internet. The bot shows members `http://127.0.0.1:8787` in its commands, which works because the
+prover also runs on the pilot host.
+
+## 4. Register
+
+**Pilot host.** Save the testnet voting key without showing it, export the node's masternode list,
+and register. Registration takes 1 to 2 minutes and about 2 GB of memory.
 
 ```bash
-npm run prove-epoch -- \
-  --gateway "${PILOT_GATEWAY%/}" \
-  --challenge challenge.json
+cd ~/mno-pilot/repo && . ../pilot.conf
+(umask 077; set -o noclobber; read -r -s -p 'TESTNET voting private key: ' K; printf '\n'; printf '%s\n' "$K" > ../secrets/voting-key.txt; unset K)
+~/mno-pilot/bin/dash-cli masternodelist json > mnlist.json
+npm run register -- --gateway http://127.0.0.1:8787 --platform discord --community "$GUILD_ID" --role mn-members --voting-key-file ../secrets/voting-key.txt --node-list mnlist.json
 ```
 
-Expect `Wrote proof.json`. Type `/submit`, attach `proof.json` in the command's attachment field, and
-send it. The reply names the private channel and the time access ends. Open the channel to confirm.
+Expect `registered at members-tree index 0. Secret saved to member.discord...secret.json`. Keep that
+file until the season ends. Once registered, `rm ../secrets/voting-key.txt` removes the key copy.
 
-## Part C. Acceptance checks
+## 5. Verify in Discord
 
-Record each result with the time, the reply text or reason code, and what the channel list showed.
-Keep live platform results apart from the local and continuous-integration tests, which already pass.
+1. **Discord**, as the ordinary second account: in any channel it can see, type `/verify`, pick the
+   bot's command from the menu, and press Enter. A reply marked "Only you can see this" appears with
+   `challenge.json` attached. The challenge lasts ten minutes, so do steps 2 to 5 in one go.
+2. **Your desktop:** download `challenge.json` and copy it into `~/mno-pilot/repo` on the pilot host,
+   for example `scp challenge.json pilot-host:mno-pilot/repo/`.
+3. **Pilot host:** in `~/mno-pilot/repo`, run `npm run prove-epoch -- --gateway http://127.0.0.1:8787 --challenge challenge.json`.
+   It takes about a minute and prints `Wrote proof.json`.
+4. **Your desktop:** copy `proof.json` back, for example `scp pilot-host:mno-pilot/repo/proof.json .`.
+5. **Discord:** type `/submit`, attach `proof.json` in the command's `proof` field, and press Enter.
 
-1. **Admission.** A fresh ordinary account, not a server administrator, sees the private channel after
-   `/submit`. An administrator sees every channel anyway, so it cannot show this.
-2. **Wrong account refused.** Take a challenge with account A and submit its proof from account B. The
-   reply is `account-mismatch` and B gains nothing.
-3. **Expired challenge recovered.** Let a challenge pass its deadline, then submit its proof. The reply
-   is `unknown-or-expired-challenge`. A fresh `/verify`, a new proof, and a submit then admit the
-   member without registering again.
-4. **Same-account retry.** Submit a second fresh proof from the admitted account in the same period. It
-   is accepted, and access still ends at the same time.
-5. **Restart recovery.** Restart the gateway and the bot without touching their stored state. The
-   member keeps access, the gateway still lists the registration, and a new proof still verifies.
-6. **Revocation.** After the access end passes, the bot removes the member's channel access at its next
-   sweep and sends the access-ended message. Stopping the gateway does not revoke access, so revocation
-   is checked with both running.
+Success is a reply starting **Verified.** and the private channel appearing in the second account's
+channel list. That is the end of the first pass.
 
-Do not reset stored state to make a check pass, and do not change the schedule of a running pilot.
+## 6. Stop
 
-## Part D. Contribute to the setup ceremony
+**Pilot host.** This stops only what the pilot started. Stored state stays in `~/mno-pilot/data`.
 
-This is separate from membership testing and needs no voting key. Use [the Linux contributor
-guide](ceremony/CONTRIBUTOR_GUIDE.md) with the exact ceremony announcement, and wait for its announced
-source reference, incoming artifact hashes, and beacon policy. The membership checkout above is not the
-frozen ceremony checkout.
+```bash
+cd ~/mno-pilot && kill -- "-$(cat run/oracle.pid)" && rm run/oracle.pid
+docker stop mno-pilot-bot mno-pilot-gateway && docker rm mno-pilot-bot mno-pilot-gateway
+```
 
-Each contributor works on their own machine, once for each of the two heavy circuits:
+## What to send back
 
-1. Verify the incoming public file.
-2. Contribute independent randomness, and keep no copy of it.
-3. Publish the contribution hash and send back the public output file.
+Either "admitted", or the step number, the command, and the error text. Leave out tokens, keys, and
+secret files.
 
-Check afterwards that every contribution hash appears in the final published transcripts. The interim setup stays labeled as a single-contributor setup until those contributions
-are recorded and the ceremony's keys replace it.
+## Optional follow-ups
+
+None of these is part of the first pass.
+
+- **Recovery and revocation checks.** With the pilot still running, record the reply text for each.
+  - A proof from a challenge issued to another account is refused as `account-mismatch`.
+  - An expired challenge is refused, and a fresh `/verify` recovers.
+  - Restarting the gateway and bot keeps the member's access.
+  - The bot removes channel access within a minute after the 30-minute period ends.
+- **A separate proving computer and a public address.** This is the arrangement real members would use.
+  It splits the roles into three machines: the gateway host runs the gateway and bot, the testnet node
+  answers `dash-cli`, and the proving computer holds the voting key and runs the prover. The gateway
+  then needs a public https address, set as `MNO_MEMBER_GATEWAY_URL`, and the checks before exposing
+  it are in [the moderator guide, section 5](MODERATOR_GUIDE.md#5-expose-only-the-member-service-needed-for-the-pilot).
+  `mnlist.json` is made on the testnet node (`dash-cli -testnet masternodelist json > mnlist.json`) and
+  copied to the proving computer, the one machine that must have it. No project pilot has run this
+  arrangement yet.
+- **The setup ceremony.** Separate from membership testing and needing no voting key. See
+  [the contributor guide](ceremony/CONTRIBUTOR_GUIDE.md).

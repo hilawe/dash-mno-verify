@@ -44,7 +44,7 @@ Not enforced by anything, so they depend on the session:
 ## Current state, September 29, 2026 (evening)
 
 Main carries `c38e0b7`, `00f292c`, `6419801`, `478ffcc`, and this handoff once pushed. The suite is 834
-tests. The last pushed commit whose CI was read is `00f292c` (all three jobs green).
+tests. CI was read green on all three jobs for `dfe17f6` (run 36658007622).
 
 ### Done this session
 
@@ -57,10 +57,13 @@ tests. The last pushed commit whose CI was read is `00f292c` (all three jobs gre
   documentation landed in `6419801` after a fact-check that corrected seven claims. Its draft
   walkthrough assumed a tester joining this project's own pilot, and was retargeted to
   `docs/LINUX_PILOT.md`, a tester running their own gateway and bot.
-- Its runtime findings F1 to F5 and a new list-trust finding were fixed in `478ffcc`. The list-trust
-  gap was that registration took the masternode list from the gateway on trust. `register --node-list`
-  now builds it from the member's own node. One focused confirmation review returned three minor
-  residuals, all fixed and re-checked (APPROVE).
+- The five targeted runtime findings, F1 to F5, were repaired in `478ffcc`, and the list-trust gap was
+  addressed there too. That gap was that registration took the masternode list from the gateway on
+  trust. `register --node-list` now builds it from the member's own node, which protects a member who
+  uses it with an independently obtained list. The fallback without it still trusts the gateway, and
+  network metadata remains a separate exposure. One focused confirmation review returned three minor
+  residuals, all fixed and re-checked (APPROVE). Shutdown delay, dependency triage, and Discord
+  exclusion remain open below.
 - The Discord testnet pilot on the crono project's testnet server ran 2026-09-28 and 2026-09-29 and is
   stopped. Crono's wallet was not paused and stayed at the chain tip.
 
@@ -90,8 +93,10 @@ tests. The last pushed commit whose CI was read is `00f292c` (all three jobs gre
 
 ### Open, in order
 
-1. Pasta's pilot on DCG infrastructure using `docs/LINUX_PILOT.md`, including its Part C acceptance
-   checks. The review's F6 checklist (Part A) gates any public exposure of a gateway.
+1. Pasta's first pass on DCG infrastructure using `docs/LINUX_PILOT.md`: one registration and one
+   admission on a single Linux host, stopping at the first snag. The recovery checks, a separate proving
+   computer with a public address, and the ceremony are optional follow-ups. The moderator guide's
+   section 5 gates any public exposure of a gateway.
 2. F9. Triage the 19 npm advisory entries by whether the gateway, prover, or tooling reaches them.
 3. Ceremony scheduling with Pasta.
 4. The gateway and bot do not finish shutting down within 10 s. Check it in the restart acceptance
