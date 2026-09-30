@@ -97,7 +97,11 @@ tests. CI was read green on all three jobs for `dfe17f6` (run 36658007622).
    admission on a single Linux host, stopping at the first snag. The recovery checks, a separate proving
    computer with a public address, and the ceremony are optional follow-ups. The moderator guide's
    section 5 gates any public exposure of a gateway.
-2. F9. Triage the 19 npm advisory entries by whether the gateway, prover, or tooling reaches them.
+2. F9 is triaged in `docs/DEPENDENCY_AUDIT.md`. A same-major update fixed the Discord chain (`discord.js`
+   14.27.0, whose overwrite and permission code is byte-identical to 14.26.4's) and three build-time
+   packages. The rest are not reached by this project's code, except the Dash SDK's gRPC defects,
+   which only the Platform backend would reach. Making that backend live now includes a Dash SDK
+   migration. The bot has not yet logged in to Discord on 14.27.0.
 3. Ceremony scheduling with Pasta.
 4. The gateway and bot do not finish shutting down within 10 s. Check it in the restart acceptance
    check before deciding whether it needs work.

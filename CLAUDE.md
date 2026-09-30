@@ -121,7 +121,8 @@ migration, and the Platform path is not live yet.
 ## Security invariants (do not weaken without a clear reason)
 
 - THE DISCORD ADAPTER CANNOT CURRENTLY ENFORCE AN EXCLUSION, and no Discord-native mechanism fixes
-  that. Two independent facts combine, both verified in the installed `discord.js` 14.26.4 source:
+  that. Two independent facts combine, both verified in the `discord.js` 14.26.4 source, whose overwrite and
+  permission code is byte-identical in the installed 14.27.0 (checked 2026-09-29):
   - A member-level deny is not protectable. `permissionOverwrites.edit()` rebuilds both bitfields from
     its own cache and sends them whole, and Discord has no compare-and-set, so a deny the cache has
     not seen is destroyed by any change the bot makes to that member's entry.

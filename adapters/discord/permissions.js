@@ -125,7 +125,8 @@ function assertRoleOnlyAdds(guild, roleId, what) {
 //
 // discord.js `permissionOverwrites.edit()` is a read-modify-write against its own CACHE, inside the
 // library. It looks the existing entry up in the cache and hands it to `resolveOverwriteOptions`,
-// which rebuilds BOTH bitfields and sends them whole. Verified in 14.26.4. There is no partial update
+// which rebuilds BOTH bitfields and sends them whole. Verified in 14.26.4, and the overwrite code is
+// byte-identical in 14.27.0 (checked 2026-09-29). There is no partial update
 // on this API and Discord offers no compare-and-set.
 //
 // So a member-level DENY that the cache has not seen is destroyed by any edit this bot makes on that

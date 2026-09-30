@@ -179,7 +179,8 @@ that sentence is the thing this work closes.
 
 KNOWN GAP, THE DISCORD ADAPTER CANNOT ENFORCE AN EXCLUSION (2026-08-01). An operator has no way to
 keep a specific person out of a gated channel while this bot is granting access to it. Two facts
-combine, both verified in the installed `discord.js` 14.26.4 source and both found by reviewers on the
+combine, both verified in the `discord.js` 14.26.4 source (the overwrite and permission code is
+byte-identical in 14.27.0, checked 2026-09-29) and both found by reviewers on the
 same day the opposite was claimed here:
 
 - A member-level deny is not protectable. `permissionOverwrites.edit()` rebuilds both bitfields from
