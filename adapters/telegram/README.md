@@ -55,10 +55,11 @@ export TELEGRAM_LINK_TTL_SECONDS=3600                   # how long the join-requ
 
 ## Current privacy limitation
 
-The current handlers do not enforce private-chat-only verification. Use the bot in a direct message
-for testing, and repair both the command and document handlers before a privacy-sensitive launch.
-Group replies can reveal that the sender is verifying masternode control. A request to use direct
-messages is not an enforced guard.
+Verification works only in a private chat with the bot (`adapters/telegram/private_only.js`). In a
+group, supergroup, or channel, `/verify` gets only an instruction to open a private chat, and an
+uploaded file is ignored without a reply. Neither reaches the gateway or downloads anything, so the
+group does not see a challenge, a result, or an invitation. A member who already posted a file in a
+group has disclosed that much, and nothing can retract it.
 
 ## Flow
 

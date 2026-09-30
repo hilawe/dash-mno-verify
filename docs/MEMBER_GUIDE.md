@@ -74,10 +74,27 @@ there and save it in `voting-key.txt` the same way. The prover warns if other us
 Only registration reads this file. Delete it once you have registered (`rm voting-key.txt`) and
 create it again next season.
 
+## Export your own node's masternode list
+
+Registration can build the masternode list itself from your own Dash node, so it does not have to trust
+the gateway's copy. Otherwise whoever runs the gateway, or a service in front of it, could serve a
+doctored list and narrow down which masternode is yours from whether you go on to register. On the
+computer running your node:
+
+```bash
+dash-cli masternodelist json > mnlist.json
+```
+
+Use `dash-cli -testnet` on testnet, and copy `mnlist.json` into this folder. The register command in the
+bot's reply includes `--node-list mnlist.json`. With no node of your own, remove that option. The prover
+then uses the gateway's list and warns that it is unchecked. Export a fresh copy each time you register,
+because the list changes as masternodes join and leave. If registration is refused as
+`stale-or-unknown-root`, your node and the gateway were a block or two apart, so export again and retry.
+
 ## Each season
 
 1. **Register.** Copy the register command from the bot's `/verify` reply and run it here. It needs no
-   challenge. It finds your masternode in the published list, proves you hold its key, and saves a
+   challenge. It finds your masternode in your node's list, proves you hold its key, and saves a
    file named like `member.discord.<server>.<role>.s<season>.secret.json`. Keep that file for the
    season. It is what lets the next step prove membership without your voting key.
 2. **Get a challenge.** Type `/verify` in the community. The reply includes `challenge.json`. Save it
@@ -100,7 +117,8 @@ step 2 if the community uses a shorter access period and the season has not ende
 | Matrix | `!verify` in the supported private direct room | Paste the proof file's contents into that room | Accept the invitation to the gated room |
 | Web | Get challenge on the gate page | Upload `proof.json` on that page | Open its members area in the same browser session |
 
-Telegram currently lacks an enforced private-chat guard. Do not verify in a group. Matrix requires
+Telegram verification works only in a private chat with the bot. In a group, the bot answers `/verify`
+with that instruction and ignores uploaded files. Matrix requires
 an invite-only two-person room with joined-only history and does not support encrypted room events.
 These limits are explained in the moderator guide.
 
@@ -118,12 +136,14 @@ configure it. The prover prints this reminder whenever the gateway is remote.
 
 ## If the bot says "Not verified"
 
-The reply explains the problem and ends with a reason code you can give an admin. The common ones:
+The reply explains the problem and ends with a reason code you can give an admin. These are the
+common ones:
 
 | Reason code | What happened | What to do |
 |---|---|---|
 | `unknown-or-expired-challenge` | The challenge ran out or was already used | `/verify` again and prove with the new file |
 | `already-used` | Your membership already let a different Discord account in for this period | Use the account that verified first |
 | `account-mismatch` | The challenge was issued to a different Discord account | `/verify` from the account that submits |
-| `invalid-proof` | The proof did not match the challenge | Prove again from the latest challenge |
+| `invalid-proof` | The proof did not match the challenge, which is now used up | `/verify` again and prove with the new file |
 | `season-rolled-over`, `wrong-season` | A new season started | Register again, then `/verify` |
+| `http-401`, `http-5xx`, or another service code | The verification service is misconfigured or down | Tell an admin, since proving again cannot fix it |

@@ -24,7 +24,7 @@ import {
 import process from "node:process";
 import { proveSteps, memberGuideUrl } from "../../common/prover_instructions.js";
 import { assertSafeGatewayUrl, memberGatewayUrl } from "../../common/gateway_url.js";
-import { verifyReply, verifiedReply, accessEndedNotice, failureReply, splitForDiscord } from "./messages.js";
+import { verifyReply, verifiedReply, accessEndedNotice, failureReply, uncertainReply, splitForDiscord } from "./messages.js";
 import {
   GrantLedger,
   authorizesTarget,
@@ -594,14 +594,23 @@ async function handleInteraction(i) {
     }
 
     // Submit the account this user is identified by. The gateway binds the verify to it (review B1).
-    const res = await fetch(`${GATEWAY}/v1/verify`, {
-      method: "POST",
-      redirect: "error", // never follow a redirect off the guarded origin (it would carry the body in the clear)
-      headers: { "content-type": "application/json", ...authHeaders },
-      body: JSON.stringify({ ...payload, account: i.user.id }),
-    });
-    const out = await res.json();
-    if (!out.ok) return i.editReply(failureReply(out.reason));
+    // A request that fails in transit leaves the outcome unknown, because the gateway may already have
+    // taken the challenge, so the member is told exactly that (review finding F4, 2026-09-29).
+    let out, status;
+    try {
+      const res = await fetch(`${GATEWAY}/v1/verify`, {
+        method: "POST",
+        redirect: "error", // never follow a redirect off the guarded origin (it would carry the body in the clear)
+        headers: { "content-type": "application/json", ...authHeaders },
+        body: JSON.stringify({ ...payload, account: i.user.id }),
+      });
+      status = res.status;
+      out = await res.json();
+    } catch (e) {
+      console.error("[discord] verify request failed:", e.message);
+      return i.editReply(uncertainReply());
+    }
+    if (!out.ok) return i.editReply(failureReply(out.reason, status));
     if (!Number.isFinite(out.expiresAt)) {
       console.error("[discord] gateway returned no valid expiresAt");
       return i.editReply("The verification response was malformed. Run `/verify` to try again.");

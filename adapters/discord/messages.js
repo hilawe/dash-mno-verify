@@ -7,7 +7,10 @@
 // it gave times in UTC and called the period an "epoch", and its deadline read "expires 32 minutes ago"
 // once it had passed, because a relative timestamp was spliced after the word "expires".
 
+import { PRIVACY_LINE, renewalLine, uncertainResultLine, refusalFromResponse } from "../../common/member_text.js";
+
 const MAX_CONTENT = 2000; // Discord's limit on a message's content
+const VERIFY = "type `/verify`";
 
 const ts = (unix, style) => `<t:${unix}:${style}>`;
 const finite = (x) => Number.isFinite(x);
@@ -50,11 +53,12 @@ export function splitForDiscord(text, max = MAX_CONTENT) {
 // the setup guide link, since docs/MEMBER_GUIDE.md covers the two-tier setup only. The result can pass
 // Discord's limit with extreme configured values, so the caller sends it through splitForDiscord.
 export function verifyReply({ challenge, steps, guideUrl = null }) {
-  const lines = [
-    "## Masternode verification",
-    "This proves you run a Dash masternode without revealing which one. Your voting key, and which masternode is yours, never leave your computer.",
-    "",
-  ];
+  const lines = ["## Masternode verification", PRIVACY_LINE, ""];
+  // First-time setup (installing, fetching keys, exporting the key and the list) can outlast a ten-minute
+  // challenge, so a first-timer is told to finish it before using one (review finding F5).
+  if (steps.register) {
+    lines.push("**First time this season?** Set up and register first (step 1), then type `/verify` again for a fresh challenge.", "");
+  }
   if (finite(challenge?.challengeExpiresAt)) {
     const at = challenge.challengeExpiresAt;
     lines.push(`**Your challenge file is attached below.** Use it before **${ts(at, "t")}** (${ts(at, "R")}). If time runs out, type \`/verify\` again for a new one.`);
@@ -71,7 +75,7 @@ export function verifyReply({ challenge, steps, guideUrl = null }) {
     lines.push(
       "",
       `### ${++n}. Register (first time this season only)`,
-      `It needs no challenge and takes 1 to 2 minutes.${until} \`voting-key.txt\` is a file holding your masternode's voting private key, readable only by you.`,
+      `It needs no challenge and takes 1 to 2 minutes.${until} \`voting-key.txt\` is a file holding your masternode's voting private key, readable only by you. \`mnlist.json\` is your own node's masternode list (\`dash-cli masternodelist json > mnlist.json\`), so you do not have to trust the gateway's copy.`,
       block(steps.register),
     );
   }
@@ -106,7 +110,7 @@ export function verifiedReply({ expiresAt, channelIds = [] }) {
   const where = ids.length ? named + more : "the masternode channel";
   return [
     `**Verified.** You now have access to ${where}. It lasts until **${ts(expiresAt, "f")}** (${ts(expiresAt, "R")}).`,
-    "To keep access after that, type `/verify` again and follow its steps.",
+    renewalLine(VERIFY),
   ].join("\n");
 }
 
@@ -116,25 +120,17 @@ export function accessEndedNotice({ guildName = null } = {}) {
   return `Your masternode access ${where} has ended. To get it back, type \`/verify\` in the server and follow the steps.`;
 }
 
-// The plain explanation of a refused /submit, by the reason the gateway gave. The code itself is kept
-// on a quiet last line, so a member can quote it to an admin.
-const REASONS = {
-  "already-used": "This membership has already let a different Discord account in for this period. Each membership admits one account at a time.",
-  "unknown-or-expired-challenge": "That proof's challenge has expired or was already used. Type `/verify` for a new challenge, make a new proof from it, and submit that.",
-  "account-mismatch": "That proof was made from a challenge issued to a different Discord account. Type `/verify` from this account and use that challenge.",
-  "invalid-proof": "The proof did not check out. Make sure it was made from the challenge in your latest `/verify` reply, then type `/verify` to start over.",
-  "season-rolled-over": "A new season started while you were proving. Register again, then type `/verify` for a new challenge.",
-  "wrong-season": "Your proof was made for a season that has ended. Register again, then type `/verify` for a new challenge.",
-  "epoch-rolled-over": "A new access period started while you were proving. Type `/verify` for a new challenge and prove again.",
-  "wrong-epoch": "Your proof was made for an access period that has ended. Type `/verify` for a new challenge and prove again.",
-  "stale-or-unknown-root": "Your proof was made against a list that is no longer accepted. Type `/verify` for a new challenge and prove again.",
-  "clock-regressed": "The verification service has a clock problem. Try again later, and tell a server admin if it keeps happening.",
-};
-
-export function failureReply(reason) {
-  const code = typeof reason === "string" && /^[a-z-]{1,64}$/.test(reason) ? reason : "unknown";
-  const text = REASONS[code] ?? "Verification failed. Type `/verify` to start over.";
+// The plain explanation of a refused /submit (common/member_text.js). The code itself is kept on a quiet
+// last line, so a member can quote it to an admin. `status` is the gateway's HTTP status, which decides
+// the explanation when the response carries no reason code.
+export function failureReply(reason, status) {
+  const { code, text } = refusalFromResponse(status, { reason }, VERIFY);
   return `**Not verified.** ${text}\n-# Reason code: \`${code}\``;
+}
+
+// When the verify request failed in transit and the outcome is unknown (common/member_text.js).
+export function uncertainReply() {
+  return `**Result unknown.** ${uncertainResultLine(VERIFY)}`;
 }
 
 export { MAX_CONTENT };

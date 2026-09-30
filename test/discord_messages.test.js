@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { verifyReply, verifiedReply, accessEndedNotice, failureReply, splitForDiscord, escapeMarkdown, MAX_CONTENT } from "../adapters/discord/messages.js";
+import { verifyReply, verifiedReply, accessEndedNotice, failureReply, uncertainReply, splitForDiscord, escapeMarkdown, MAX_CONTENT } from "../adapters/discord/messages.js";
 import { proveSteps } from "../common/prover_instructions.js";
 
 // The Discord adapter's member-facing text (adapters/discord/messages.js), rewritten after the Discord
@@ -8,7 +8,7 @@ import { proveSteps } from "../common/prover_instructions.js";
 // prompted the rewrite.
 
 // Realistic lengths: an 18-digit guild id and a long https gateway, so the length check is not flattered.
-const CTX = { gateway: "https://verify.masternode-community.example.org", platform: "discord", community: "398654604268797954", role: "mn-members" };
+const CTX = { gateway: "https://verify.masternode-community.example.org", platform: "discord", community: "123456789012345678", role: "mn-members" };
 const T = { challengeExpiresAt: 1790700000, accessEndsAt: 1796256000, seasonEndsAt: 1796256000 };
 const twoTier = (over = {}) => verifyReply({ challenge: { mode: "two-tier", ...T, ...over }, steps: proveSteps("two-tier", CTX), guideUrl: "https://example.org/guide" });
 const fences = (text) => text.match(/```\n([^`]+)\n```/g) ?? [];
@@ -93,12 +93,54 @@ test("the access-ended notice names the server when it is known", () => {
 
 test("a refusal is explained in plain words and keeps the reason code for an admin", () => {
   const used = failureReply("already-used");
-  assert.match(used, /^\*\*Not verified\.\*\* This membership has already let a different Discord account in/);
+  assert.match(used, /^\*\*Not verified\.\*\* This membership has already let a different account in/);
   assert.match(used, /-# Reason code: `already-used`$/);
-  assert.match(failureReply("unknown-or-expired-challenge"), /expired or was already used/);
-  const other = failureReply("engine-mismatch");
-  assert.match(other, /Verification failed\. Type `\/verify` to start over\./);
-  assert.match(other, /`engine-mismatch`/);
+  assert.match(failureReply("unknown-or-expired-challenge"), /expired or was already used\. To start again, type `\/verify` for a new challenge/);
+  assert.match(failureReply("some-new-reason"), /Verification failed\. To start again, type `\/verify`\./);
+});
+
+// Review finding F4 (2026-09-29). Every refusal used to say "start over", including the ones a member
+// cannot fix, which sent them into retries that could never work.
+test("a service fault is told apart from a problem the member can fix", () => {
+  for (const code of ["context-not-served", "engine-mismatch", "zkvm-verifier-not-configured", "clock-regressed", "missing-account"]) {
+    const text = failureReply(code);
+    assert.match(text, /problem with the verification service, not with your proof\. Tell a server admin/, code);
+    assert.doesNotMatch(text, /\/verify/, `${code} must not send the member into a retry`);
+  }
+  assert.match(failureReply("season-rolled-over"), /Register again, then type `\/verify`/);
+});
+
+// Review finding F2 (2026-09-29). "Which masternode is yours never leaves your computer" is wider than
+// the proof. The network path can still reveal it.
+test("the privacy sentence claims no more than the proof gives", () => {
+  const text = twoTier();
+  assert.match(text, /This proves you control an eligible masternode voting key\. The key stays on your computer and the proof does not name your masternode, but the network you run the prover from can still reveal which one it is\./);
+  assert.doesNotMatch(text, /never leave|without revealing which one/);
+});
+
+// Review finding F5 (2026-09-29). Setup can outlast a ten-minute challenge.
+test("a first-timer is told to set up and register before using the challenge", () => {
+  const text = twoTier();
+  assert.ok(text.indexOf("**First time this season?** Set up and register first (step 1), then type `/verify` again for a fresh challenge.") < text.indexOf("**Your challenge file is attached below.**"));
+  const single = verifyReply({ challenge: { mode: "single", ...T }, steps: proveSteps("single", CTX) });
+  assert.doesNotMatch(single, /First time this season/, "single-tier has no registration to do first");
+});
+
+test("the register step explains the node list it asks for", () => {
+  assert.match(twoTier(), /`mnlist\.json` is your own node's masternode list \(`dash-cli masternodelist json > mnlist\.json`\)/);
+  assert.match(twoTier(), /--node-list mnlist\.json/);
+});
+
+// Review finding F4. Proving again before the boundary gains nothing, and a new season needs registering.
+test("the success reply says re-verifying early does not extend access, and when to register again", () => {
+  assert.match(verifiedReply({ expiresAt: 1 }), /Verifying again before then does not extend it\. After it ends, type `\/verify` again, and register first if a new season has started\./);
+});
+
+test("a lost verify response says the result is unknown rather than that the proof is still valid", () => {
+  const text = uncertainReply();
+  assert.match(text, /result is unknown/);
+  assert.doesNotMatch(text, /still valid/);
+  assert.match(text, /type `\/verify` for a fresh challenge and make a new proof from this account/);
 });
 
 test("a reason that is not a plain code is not echoed into the message", () => {
@@ -149,4 +191,25 @@ test("the setup guide is linked only in two-tier mode, the only setup it covers"
   const single = verifyReply({ challenge: { mode: "single", ...T }, steps: proveSteps("single", CTX), guideUrl: "https://example.org/guide" });
   assert.doesNotMatch(single, /setup guide/);
   assert.match(twoTier(), /setup guide/);
+});
+
+// Review of the repairs (2026-09-29). The gateway takes the challenge before these checks, so rebuilding
+// from it can only be refused again.
+test("a refusal that used up the challenge points to a fresh one, not the old one", () => {
+  for (const code of ["invalid-proof", "wrong-signal", "non-canonical-signal", "wrong-context"]) {
+    const text = failureReply(code);
+    assert.match(text, /Type `\/verify`( here)? for a new challenge and make a new proof from it\./, code);
+    assert.doesNotMatch(text, /latest reply|this community's challenge/, code);
+  }
+});
+
+test("a refusal with no reason code is classified by the gateway's status", () => {
+  for (const status of [401, 403, 500, 503]) {
+    const text = failureReply(undefined, status);
+    assert.match(text, /problem with the verification service, not with your proof/, String(status));
+    assert.match(text, new RegExp(`Reason code: \`http-${status}\``));
+  }
+  assert.match(failureReply(undefined, 400), /That file is not a complete proof\. Type `\/verify` for a new challenge/);
+  assert.match(failureReply(undefined, 429), /Too many attempts right now\. Wait a few minutes/);
+  assert.match(failureReply("already-used", 409), /already let a different account in/, "a reason code wins over the status");
 });

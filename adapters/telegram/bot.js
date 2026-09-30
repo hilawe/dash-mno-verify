@@ -20,6 +20,8 @@
 import { Bot, InputFile } from "grammy";
 import process from "node:process";
 import { proveInstructions, memberGuideUrl } from "../../common/prover_instructions.js";
+import { PRIVACY_LINE, renewalLine, uncertainResultLine, refusalFromResponse, scheduleLinesUtc } from "../../common/member_text.js";
+import { privateOnly, GROUP_VERIFY_REFUSAL } from "./private_only.js";
 import { assertSafeGatewayUrl, memberGatewayUrl } from "../../common/gateway_url.js";
 import { GrantLedger } from "../common/grant_ledger.js";
 import { requireReconciled } from "../common/reconcile.js";
@@ -100,7 +102,7 @@ bot.command("start", (ctx) =>
   ctx.reply("Run /verify to prove you control a masternode and get an invite to the group.")
 );
 
-bot.command("verify", async (ctx) => {
+bot.command("verify", privateOnly(async (ctx) => {
   let res;
   try {
     res = await fetch(`${GATEWAY}/v1/challenge`, {
@@ -139,13 +141,15 @@ bot.command("verify", async (ctx) => {
       ...proveInstructions(challenge.mode, { gateway: MEMBER_GATEWAY, guide: GUIDE_URL, platform: "telegram", community: COMMUNITY_ID, role: ROLE_ID }),
       "Then send me the proof.json it produces.",
       "",
-      "Your key, and which node you control, never leave your device.",
+      ...scheduleLinesUtc(challenge),
+      PRIVACY_LINE,
     ].join("\n"),
   );
-});
+}, (ctx) => ctx.reply(GROUP_VERIFY_REFUSAL)));
 
-// Step 2: the member sends back proof.json as a document.
-bot.on("message:document", async (ctx) => {
+// Step 2: the member sends back proof.json as a document. Only in a private chat (private_only.js). In a
+// group a document is ignored without a reply, since answering would announce what it was.
+bot.on("message:document", privateOnly(async (ctx) => {
   // Bounded intake (review finding F5). The rate and the platform's reported size are checked before
   // any download, and the download itself is capped in bytes and time (common/bounded_fetch.js).
   if (!submitLimiter.allow(String(ctx.from.id))) {
@@ -165,7 +169,7 @@ bot.on("message:document", async (ctx) => {
   }
 
   // Submit the account this user is identified by. The gateway binds the verify to it (review B1).
-  let out;
+  let out, status;
   try {
     const res = await fetch(`${GATEWAY}/v1/verify`, {
       method: "POST",
@@ -173,12 +177,16 @@ bot.on("message:document", async (ctx) => {
       headers: { "content-type": "application/json", ...authHeaders },
       body: JSON.stringify({ ...payload, account: String(ctx.from.id) }),
     });
+    status = res.status;
     out = await res.json();
   } catch (e) {
     console.error("[telegram] verify request failed:", e.message);
-    return ctx.reply("Cannot reach the verification service right now. Your proof is still valid; try again shortly.");
+    return ctx.reply(uncertainResultLine("send /verify"));
   }
-  if (!out.ok) return ctx.reply(`Verification failed (${out.reason ?? "unknown"}). Run /verify to start over.`);
+  if (!out.ok) {
+    const { code, text } = refusalFromResponse(status, out, "send /verify");
+    return ctx.reply(`Not verified. ${text}\nReason code: ${code}`);
+  }
 
   if (!Number.isFinite(out.expiresAt)) {
     console.error("[telegram] gateway returned no valid expiresAt");
@@ -207,9 +215,9 @@ bot.on("message:document", async (ctx) => {
   const until = new Date(out.expiresAt * 1000).toISOString().replace("T", " ").slice(0, 16);
   await ctx.reply(
     `Verified. Request to join here: ${link.invite_link}\n\nOnly this Telegram account will be approved, ` +
-      `so the link is no use to anyone else. Access lasts until ${until} UTC; re-verify before then to keep it.`,
+      `so the link is no use to anyone else. Access lasts until ${until} UTC. ${renewalLine("send /verify")}`,
   );
-});
+}, () => {}));
 
 // The admission decision. The link is public by nature, so this is the check that actually binds
 // access to the account that proved.

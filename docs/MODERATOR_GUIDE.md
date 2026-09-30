@@ -35,7 +35,7 @@ must contain the hash of that tuple. The member command and adapter must use the
 | Platform | Community value | Context label | Required platform permissions | Current limitation |
 | --- | --- | --- | --- | --- |
 | Discord | `DISCORD_GUILD_ID` | `DISCORD_CONTEXT_ID`, set it explicitly (for example `mn-members`), since it defaults to the first grant channel ID | Bot can view the target and manage its permission overwrites | No supported per-member exclusion while the bot keeps granting |
-| Telegram | `TELEGRAM_COMMUNITY`, default group identifier | `TELEGRAM_ROLE`, default `member` | Invite users and restrict members | Current handlers also accept group messages, requiring a code repair |
+| Telegram | `TELEGRAM_COMMUNITY`, default group identifier | `TELEGRAM_ROLE`, default `member` | Invite users and restrict members | Verification works only in private chats with the bot |
 | Matrix | `MATRIX_COMMUNITY`, default gated room identifier | `MATRIX_ROLE`, default `member` | Invite and kick users | Direct verification room must meet privacy checks and bot does not decrypt encrypted messages |
 | Web | `MNO_WEB_COMMUNITY` | `MNO_WEB_ROLE`, default `members` | Service operator controls the site | In-memory sessions and incomplete production hardening |
 

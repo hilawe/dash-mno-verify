@@ -19,8 +19,14 @@ the operator key is a full BLS public key. The membership set has to be expressi
 public data, and the voting-key hashes already are. The voting key authorizes governance votes rather
 than collateral spending. It remains a sensitive governance credential and must stay private.
 Anchoring on `keyIDVoting` therefore proves "owner or their voting delegate," which
-is the right granularity for a social channel. Anchor on `keyIDOwner` instead if you need
-the owner specifically.
+is the right granularity for a social channel.
+
+Anchoring on `keyIDOwner` instead would not be a configuration change. The owner key id is not in the
+simplified list entry that each block's coinbase commits to, while the voting key id is, so an oracle
+would have to fetch every registration transaction and check it against the committed registration
+hash to read owner key ids the chain vouches for. The circuits would not change, since both are
+`hash160` of a secp256k1 key. The larger cost falls on members, who would hand the prover a key that
+can change where the masternode's rewards are paid.
 
 Evonodes (the high-performance masternodes that host Dash Platform, 4,000 DASH collateral)
 are included on the same terms as regular masternodes. The oracle selects ENABLED entries and excludes

@@ -33,6 +33,10 @@
 // shows can paste the command unchanged (Discord pilot, 2026-09-29).
 export const VOTING_KEY_FILE = "voting-key.txt";
 
+// The member's own node's masternode list, so registration does not take the gateway's copy on trust
+// (prover/masternode_list.js). A member with no node of their own drops the option, as the guide says.
+export const NODE_LIST_FILE = "mnlist.json";
+
 // Where the adapters point a member who has never set up the prover. MNO_MEMBER_GUIDE_URL overrides it,
 // for a deployment that hosts its own copy, and an empty value turns the link off. Only https is
 // accepted, because the link is shown to members as trustworthy.
@@ -53,17 +57,30 @@ export function memberGuideUrl(env = process.env) {
   return url;
 }
 
+// POSIX single-quoting for a value pasted into a shell command (review finding F3, 2026-09-29). The
+// values come from operator configuration, not from members, but a Matrix room id starts with "!", a
+// context label can hold a space or a quote, and a pasted command must mean what it shows. A value made
+// only of characters with no shell meaning stays bare, so ordinary commands read as before. Anything
+// else is wrapped in single quotes, which also stop bash history expansion of "!", with an embedded
+// single quote written as '\''. "=" and "~" are left out of the bare set, because zsh expands a leading
+// "=" and shells expand a leading "~".
+const SHELL_BARE = /^[A-Za-z0-9_@%+:,./-]+$/;
+export function shellQuote(value) {
+  const s = String(value);
+  return s !== "" && SHELL_BARE.test(s) ? s : "'" + s.replace(/'/g, "'\\''") + "'";
+}
+
 // The commands alone, for an adapter that lays the steps out itself (the Discord adapter does). A null
 // or missing gateway prints <gateway-url>, because an adapter that knows no member-facing address
 // (common/gateway_url.js memberGatewayUrl) must not print one that cannot work.
 export function proveSteps(mode, ctx = {}) {
   if (mode === "two-tier") {
-    const gateway = ctx.gateway ?? "<gateway-url>";
-    const platform = ctx.platform ?? "<platform>";
-    const community = ctx.community ?? "<community-id>";
-    const role = ctx.role ?? "<role-id>";
+    const gateway = shellQuote(ctx.gateway ?? "<gateway-url>");
+    const platform = shellQuote(ctx.platform ?? "<platform>");
+    const community = shellQuote(ctx.community ?? "<community-id>");
+    const role = shellQuote(ctx.role ?? "<role-id>");
     return {
-      register: `npm run register -- --gateway ${gateway} --platform ${platform} --community ${community} --role ${role} --voting-key-file ${VOTING_KEY_FILE}`,
+      register: `npm run register -- --gateway ${gateway} --platform ${platform} --community ${community} --role ${role} --voting-key-file ${VOTING_KEY_FILE} --node-list ${NODE_LIST_FILE}`,
       prove: `npm run prove-epoch -- --gateway ${gateway} --challenge challenge.json`,
     };
   }
@@ -71,6 +88,7 @@ export function proveSteps(mode, ctx = {}) {
 }
 
 const KEY_NOTE = `${VOTING_KEY_FILE} is a file holding your masternode's voting private key, readable only by you.`;
+const LIST_NOTE = `${NODE_LIST_FILE} is your own node's masternode list (dash-cli masternodelist json > ${NODE_LIST_FILE}), so you do not have to trust the gateway's copy.`;
 
 export function proveInstructions(mode, ctx = {}) {
   const { register, prove } = proveSteps(mode, ctx);
@@ -79,7 +97,7 @@ export function proveInstructions(mode, ctx = {}) {
   const guide = ctx.guide ? [`New to this? The setup guide is at ${ctx.guide}`] : [];
   if (mode === "two-tier") {
     return [
-      `First time this season? Register first. It needs no challenge, takes 1 to 2 minutes, and is done once per season. ${KEY_NOTE} If your challenge runs out while you register, request a fresh challenge.`,
+      `First time this season? Set up the prover and register before using this challenge, then request a fresh challenge. Registration needs no challenge, takes 1 to 2 minutes, and is done once per season. ${KEY_NOTE} ${LIST_NOTE}`,
       register,
       "Then, in the folder holding challenge.json, make the proof before the challenge expires. It takes about a minute and saves proof.json.",
       prove,

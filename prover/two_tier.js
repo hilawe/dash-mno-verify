@@ -24,6 +24,7 @@ import { loadVotingKey } from "./voting_key.js";
 import { releaseProvingThreads } from "./proving_threads.js";
 import { parseTwoTierArgs } from "./two_tier_args.js";
 import { merklePathFor } from "../common/merkle_path.js";
+import { loadMasternodeList } from "./masternode_list.js";
 import {
   defaultSecretPath,
   findSecretForContext,
@@ -105,20 +106,38 @@ async function register(a) {
   const priv = wifToPriv(await loadVotingKey(a));
   const ctx = contextHash({ platform: a.platform, communityId: a.community, roleId: a.role }).toString();
 
-  const dml = await get(`${a.gateway}/v1/dml`);
+  // The list comes from the member's own node with --node-list, and otherwise from the gateway on trust
+  // (prover/masternode_list.js says why that matters).
+  const { leaves, root: listRoot, source } = await loadMasternodeList({
+    nodeListPath: a["node-list"],
+    gateway: a.gateway,
+    get,
+    depth: TREE_DEPTH,
+  });
+  const fromNode = source === "node";
   const health = await get(`${a.gateway}/v1/health`);
   const season = String(health.season);
 
   const myLeaf = leafFromPriv(priv).toString();
-  const index = dml.leaves.indexOf(myLeaf);
+  const index = leaves.indexOf(myLeaf);
   if (index < 0) {
-    console.error("Your voting key is not in the masternode list the gateway is using.");
+    console.error(
+      fromNode
+        ? "Your voting key is not in your node's masternode list. Check the node is synced and on the same network as the gateway."
+        : "Your voting key is not in the masternode list the gateway is using.",
+    );
     process.exit(1);
+  }
+  if (fromNode && health.dmlRoot != null && String(health.dmlRoot) !== listRoot) {
+    console.warn(
+      "[prover] your node's list differs from the gateway's current list. That is usual for a block or two.\n" +
+        "If registration is refused as stale-or-unknown-root, export the list again and re-run register.",
+    );
   }
 
   const poseidon = await buildPoseidon();
-  const { pathElements, pathIndices, root } = buildPath(poseidon, dml.leaves, index);
-  if (root !== dml.root) {
+  const { pathElements, pathIndices, root } = buildPath(poseidon, leaves, index);
+  if (root !== listRoot) {
     console.error("The masternode list moved while building the path. Re-run register.");
     process.exit(1);
   }
@@ -250,10 +269,12 @@ async function prove(a) {
 
 const USAGE =
   "usage:\n" +
-  "  node prover/two_tier.js register --gateway URL --platform P --community ID --role ID --voting-key-file PATH [--secret-out PATH]\n" +
+  "  node prover/two_tier.js register --gateway URL --platform P --community ID --role ID --voting-key-file PATH [--node-list PATH] [--secret-out PATH]\n" +
   "  node prover/two_tier.js prove --gateway URL --challenge challenge.json [--secret PATH] [--out proof.json]\n" +
   "\nThe voting key may be given as --voting-key-file PATH (recommended, mode 600), piped in with\n" +
-  "--voting-key-stdin, or as --voting-key WIF (discouraged: it lands in shell history).";
+  "--voting-key-stdin, or as --voting-key WIF (discouraged: it lands in shell history).\n" +
+  "--node-list PATH is a `masternodelist json` export from your own Dash node. With it the prover builds the\n" +
+  "masternode list itself instead of trusting the gateway's copy (recommended, see docs/MEMBER_GUIDE.md).";
 
 // Strict parsing (see two_tier_args.js). An unknown option, a missing value, or a stray word stops
 // here with the reason, rather than being silently dropped the way the old pairwise parser did.

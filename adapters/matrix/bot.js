@@ -7,6 +7,7 @@
 import process from "node:process";
 import { randomUUID } from "node:crypto";
 import { proveInstructions, memberGuideUrl } from "../../common/prover_instructions.js";
+import { PRIVACY_LINE, renewalLine, uncertainResultLine, refusalFromResponse, scheduleLinesUtc } from "../../common/member_text.js";
 import { assertSafeGatewayUrl, memberGatewayUrl } from "../../common/gateway_url.js";
 import { RoomStateTracker, isPrivateDirectRoomState } from "./room_privacy.js";
 import { GrantLedger } from "../common/grant_ledger.js";
@@ -81,7 +82,8 @@ async function handle(roomId, sender, body, state) {
         "On the machine holding your masternode voting key, save the challenge below as challenge.json, then:",
         ...proveInstructions(challenge.mode, { gateway: MEMBER_GATEWAY, guide: GUIDE_URL, platform: "matrix", community: COMMUNITY, role: ROLE }),
         "then paste the resulting proof.json back into this room.",
-        "Your key, and which node you control, never leave your device.",
+        ...scheduleLinesUtc(challenge),
+        PRIVACY_LINE,
         "",
         "challenge:",
         JSON.stringify(challenge),
@@ -104,7 +106,7 @@ async function handle(roomId, sender, body, state) {
   if (!isPrivate()) return sendText(roomId, DM_ONLY);
 
   // Submit the account this sender is identified by. The gateway binds the verify to it (review B1).
-  let out;
+  let out, status;
   try {
     const res = await fetch(`${GATEWAY}/v1/verify`, {
       method: "POST",
@@ -112,14 +114,18 @@ async function handle(roomId, sender, body, state) {
       headers: { "content-type": "application/json", ...authHeaders },
       body: JSON.stringify({ ...payload, account: sender }),
     });
+    status = res.status;
     out = await res.json();
   } catch (e) {
     // A thrown fetch (connection refused, DNS) skips the !ok path entirely, and the sync loop only
     // logs, so the member would otherwise be left with no reply at all.
     console.error("[matrix] verify request failed:", e.message);
-    return sendText(roomId, "Cannot reach the verification service right now. Your proof is still valid; try again shortly.");
+    return sendText(roomId, uncertainResultLine("send !verify"));
   }
-  if (!out.ok) return sendText(roomId, `Verification failed (${out.reason ?? "unknown"}). Send !verify to start over.`);
+  if (!out.ok) {
+    const { code, text } = refusalFromResponse(status, out, "send !verify");
+    return sendText(roomId, `Not verified. ${text}\nReason code: ${code}`);
+  }
 
   // Access is membership in the gated room, recorded so it can be taken back when the epoch lapses.
   if (!Number.isFinite(out.expiresAt)) {
@@ -137,7 +143,7 @@ async function handle(roomId, sender, body, state) {
     return sendText(roomId, "Verification succeeded but the invite could not be issued. Send !verify to try again.");
   }
   const until = new Date(out.expiresAt * 1000).toISOString().replace("T", " ").slice(0, 16);
-  return sendText(roomId, `Verified. You have been invited to the members room until ${until} UTC. Re-verify before then to keep access.`);
+  return sendText(roomId, `Verified. You have been invited to the members room until ${until} UTC. ${renewalLine("send !verify")}`);
 }
 
 // Access here is membership in the gated room, so granting is an invite and revoking is a kick. The

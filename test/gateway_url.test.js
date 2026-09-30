@@ -95,3 +95,24 @@ test("an overlong member gateway address or guide link is refused at start rathe
   assert.equal(memberGatewayUrl(long, {}), null, "an overlong adapter address is not printed either");
   assert.throws(() => memberGuideUrl({ MNO_MEMBER_GUIDE_URL: long }), /over the 256/);
 });
+
+// Review finding F3 (2026-09-29). The member-facing address is printed to every member and the prover
+// appends /v1/... to it, so it must be a plain base.
+test("a member gateway address must be a plain base, and the adapter's own is never printed with credentials", () => {
+  for (const bad of ["https://gw.example/?x=1", "https://gw.example/#f", "https://user:pw@gw.example"]) {
+    assert.throws(() => memberGatewayUrl("http://127.0.0.1:8787", { MNO_MEMBER_GATEWAY_URL: bad }), /must be a plain address/, bad);
+  }
+  assert.equal(memberGatewayUrl("https://user:pw@gw.example", {}), null, "credentials are never shown to members");
+  assert.equal(memberGatewayUrl("https://gw.example/?t=1", {}), null);
+  assert.equal(memberGatewayUrl("https://gw.example/base/", {}), "https://gw.example/base", "a trailing slash is dropped");
+  assert.equal(memberGatewayUrl("http://127.0.0.1", { MNO_MEMBER_GATEWAY_URL: "https://gw.example/" }), "https://gw.example");
+});
+
+// Review of the repairs (2026-09-29). URL reports an empty "?" or "#" as no query or fragment, but either
+// one still swallows every "/v1/..." the prover appends.
+test("a bare query or fragment delimiter is refused too", () => {
+  for (const bad of ["https://gw.example/?", "https://gw.example/#", "https://gw.example?"]) {
+    assert.throws(() => memberGatewayUrl("http://127.0.0.1:8787", { MNO_MEMBER_GATEWAY_URL: bad }), /must be a plain address/, bad);
+    assert.equal(memberGatewayUrl(bad, {}), null, bad);
+  }
+});

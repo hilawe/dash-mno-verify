@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { proveInstructions, proveSteps, VOTING_KEY_FILE } from "../common/prover_instructions.js";
+import { proveInstructions, proveSteps, shellQuote, VOTING_KEY_FILE } from "../common/prover_instructions.js";
 import { parseTwoTierArgs } from "../prover/two_tier_args.js";
 
 // Pin the prover steps the adapters show. Every command must be copy-pasteable, so the gateway URL,
@@ -45,7 +45,7 @@ test("two-tier fills in the concrete gateway, platform, community, and role", ()
   // lookup that finds the real file.
   assert.doesNotMatch(prove, /--secret/, "an explicit --secret disables the prover's context lookup");
   assert.match(register, /^npm run register -- /);
-  for (const part of ["--gateway https://gw.example", "--platform discord", "--community C123", "--role R456", "--voting-key-file voting-key.txt"]) {
+  for (const part of ["--gateway https://gw.example", "--platform discord", "--community C123", "--role R456", "--voting-key-file voting-key.txt", "--node-list mnlist.json"]) {
     assert.ok(register.includes(part), `register is missing ${part}`);
   }
   for (const line of [prove, register]) {
@@ -67,6 +67,7 @@ test("the displayed two-tier commands parse with the real two_tier option parser
   const [register, prove] = commands(proveInstructions("two-tier", CTX));
   const r = parseTwoTierArgs(["register", ...argsOf(register)]);
   assert.equal(r.values["voting-key-file"], VOTING_KEY_FILE);
+  assert.equal(r.values["node-list"], "mnlist.json", "the node-list option is one the real parser accepts");
   assert.equal(r.values.community, "C123");
   const p = parseTwoTierArgs(["prove", ...argsOf(prove)]);
   assert.equal(p.values.challenge, "challenge.json");
@@ -109,7 +110,7 @@ test("the prove command never names a secret file registration would not have cr
 });
 
 test("two-tier without context falls back to angle-bracket placeholders", () => {
-  assert.match(commands(proveInstructions("two-tier"))[0], /--gateway <gateway-url>/);
+  assert.match(commands(proveInstructions("two-tier"))[0], /--gateway '<gateway-url>'/);
 });
 
 test("an unknown mode falls back to the single-tier steps", () => {
@@ -121,8 +122,8 @@ test("an unknown mode falls back to the single-tier steps", () => {
 // no member-facing address passes null, and the command must then show a placeholder, not an address.
 test("a null gateway prints the placeholder rather than an address", () => {
   const { register, prove } = proveSteps("two-tier", { ...CTX, gateway: null });
-  assert.match(register, /--gateway <gateway-url> /);
-  assert.match(prove, /--gateway <gateway-url> /);
+  assert.match(register, /--gateway '<gateway-url>' /, "quoted, so an unreplaced placeholder is not read as a redirection");
+  assert.match(prove, /--gateway '<gateway-url>' /);
   assert.doesNotMatch(register + prove, /127\.0\.0\.1|localhost/);
 });
 
@@ -139,4 +140,30 @@ test("a setup guide link is appended in two-tier mode when the adapter has one, 
   assert.ok(!proveInstructions("two-tier", CTX).some((l) => /setup guide/.test(l)));
   // The guide covers the two-tier setup only, so a single-tier member is not sent to it.
   assert.ok(!proveInstructions("single", { ...CTX, guide: "https://example.org/guide" }).some((l) => /setup guide/.test(l)));
+});
+
+// Review finding F3 (2026-09-29). Operator values went into the commands unquoted, so a Matrix room id
+// ("!..."), a label with a space or a quote, or a shell metacharacter changed what a pasted command
+// did. Each value is checked by a real shell reading it back, with nothing but printf run.
+const AWKWARD = ["plain", "has space", "it's", "wow!", "!room:example.org", "$(echo substituted)", "`echo x`", "a;b", "a&b", "a|b", "*", "~home", "=cmd", "tab\there", "back\\slash", ""];
+
+test("every awkward value survives a real shell unchanged once quoted", () => {
+  for (const v of AWKWARD) {
+    const out = execFileSync("bash", ["-c", `printf '%s' ${shellQuote(v)}`], { encoding: "utf8" });
+    assert.equal(out, v, `value ${JSON.stringify(v)} came back as ${JSON.stringify(out)}`);
+  }
+});
+
+test("ordinary values stay bare, so ordinary commands read as before", () => {
+  for (const v of ["discord", "123456789012345678", "mn-members", "https://gw.example/base", "voting-key.txt"]) assert.equal(shellQuote(v), v);
+});
+
+test("every operator value in a displayed command is quoted where it needs to be", () => {
+  const { register, prove } = proveSteps("two-tier", { gateway: "https://gw.example", platform: "matrix", community: "!abc:example.org", role: "core team's room" });
+  assert.ok(register.includes("--community '!abc:example.org'"));
+  assert.ok(register.includes("--role 'core team'\\''s room'"));
+  const argv = execFileSync("bash", ["-c", `f() { printf '%s\\n' "$@"; }; f ${register.replace(/^npm run register -- /, "")}`], { encoding: "utf8" }).split("\n");
+  assert.equal(argv[argv.indexOf("--community") + 1], "!abc:example.org");
+  assert.equal(argv[argv.indexOf("--role") + 1], "core team's room");
+  assert.match(prove, /^npm run prove-epoch -- --gateway https:\/\/gw\.example --challenge challenge\.json$/);
 });

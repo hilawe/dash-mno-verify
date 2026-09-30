@@ -23,6 +23,7 @@ export const TWO_TIER_OPTIONS = {
     "voting-key": str,
     "voting-key-file": str,
     "voting-key-stdin": { type: "boolean" },
+    "node-list": str,
   },
   prove: {
     gateway: str,

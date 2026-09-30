@@ -12,6 +12,7 @@ import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
 import process from "node:process";
 import { proveInstructions, memberGuideUrl } from "../../common/prover_instructions.js";
+import { PRIVACY_LINE } from "../../common/member_text.js";
 import { assertSafeGatewayUrl, memberGatewayUrl } from "../../common/gateway_url.js";
 
 const PORT = Number(process.env.MNO_WEB_PORT ?? 8080);
@@ -93,7 +94,7 @@ button{font:inherit;padding:.5rem 1rem;cursor:pointer}code{background:#f0f0f0;pa
 #out{white-space:pre-wrap;background:#f6f6f6;padding:1rem;margin-top:1rem;border-radius:6px}</style>
 </head><body>
 <h1>Masternode-gated area</h1>
-<p>Prove you control a Dash masternode without revealing which one. Your voting key never leaves your machine.</p>
+<p>${PRIVACY_LINE}</p>
 <ol>
 <li><button id="start">1. Get challenge</button> downloads <code>challenge.json</code> and shows the exact prover command.</li>
 <li>On the machine with your voting key, run the command shown below after step 1.</li>
@@ -171,7 +172,7 @@ const server = createServer(async (req, res) => {
       if (s && s.verifiedUntil <= now) sessions.delete(sid);
       if (s && s.verifiedUntil > now) {
         return html(res, 200, `<!doctype html><meta charset="utf-8"><body style="font:16px/1.6 system-ui;max-width:42rem;margin:3rem auto">
-<h1>Members area</h1><p>You are in. This page is gated behind anonymous masternode verification, and the gate never learned your address.</p>
+<h1>Members area</h1><p>You are in. This page is gated behind anonymous masternode verification.</p>
 <p>Access valid until ${new Date(s.verifiedUntil * 1000).toISOString().slice(0, 16)} UTC.</p></body>`);
       }
       return html(res, 403, `<!doctype html><meta charset="utf-8"><body style="font:16px/1.6 system-ui;max-width:42rem;margin:3rem auto">

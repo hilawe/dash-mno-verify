@@ -40,14 +40,31 @@ function isLoopbackHost(hostname) {
 // couple of thousand characters pushed them past Telegram's 4,096 and a Discord section past 2,000.
 export const MAX_MEMBER_URL = 256;
 
+// A member-facing address must be a plain base the prover can append /v1/... to (review finding F3,
+// 2026-09-29). A user name or password in it would be printed to every member, and a query or fragment
+// would break every endpoint the prover builds from it. A trailing slash is dropped for the same reason.
+// URL reports an empty "?" or "#" as no query or fragment at all, so the raw text is checked too. Either
+// one, even bare, leaves every "/v1/..." the prover appends inside the query or the fragment.
+function plainBase(url, raw) {
+  return !url.username && !url.password && !url.search && !url.hash && !/[?#]/.test(raw);
+}
+
 export function memberGatewayUrl(adapterGateway, env = process.env) {
   const explicit = env.MNO_MEMBER_GATEWAY_URL;
   if (explicit !== undefined && explicit !== "") {
     if (explicit.length > MAX_MEMBER_URL) {
       throw new Error(`MNO_MEMBER_GATEWAY_URL is ${explicit.length} characters, over the ${MAX_MEMBER_URL} the member instructions allow`);
     }
-    return assertSafeGatewayUrl(explicit, { allowHttp: env.MNO_GATEWAY_ALLOW_HTTP === "1" });
+    assertSafeGatewayUrl(explicit, { allowHttp: env.MNO_GATEWAY_ALLOW_HTTP === "1" });
+    if (!plainBase(new URL(explicit), explicit)) {
+      throw new Error("MNO_MEMBER_GATEWAY_URL must be a plain address, with no user name, password, query, or fragment");
+    }
+    return explicit.replace(/\/+$/, "");
   }
   if (adapterGateway.length > MAX_MEMBER_URL) return null;
-  return isLoopbackHost(new URL(adapterGateway).hostname) ? null : adapterGateway;
+  // The adapter's own address is shared only when members could use it as it is. One carrying
+  // credentials is never printed, whatever its host.
+  const url = new URL(adapterGateway);
+  if (isLoopbackHost(url.hostname) || !plainBase(url, adapterGateway)) return null;
+  return adapterGateway.replace(/\/+$/, "");
 }
