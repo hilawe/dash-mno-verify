@@ -7,8 +7,9 @@ function with input an outsider controls, and what was done.
 
 The conclusion is scoped to the supported configuration, a gateway with `MNO_STORE=sqlite` and the
 Discord bot, which is what the Linux pilot runs. In that configuration none of the remaining entries is
-reached. The optional Platform backend (`MNO_STORE=platform`) is a different case, below, and the bot
-has not yet logged in to Discord on the updated library.
+reached. The optional Platform backend (`MNO_STORE=platform`) is a different case, below. The bot ran
+on the updated library in the Linux pilot recipe on 2026-09-30, where it logged in, reconciled, and
+admitted a member.
 
 ## Counts
 
@@ -21,7 +22,8 @@ The update was `npm audit fix` without `--force`, so no dependency moved to a ne
 changed eight packages: `discord.js` 14.26.4 to 14.27.0, `@discordjs/rest` 2.6.1 to 2.6.3, `undici`
 6.24.1 to 6.29.0, `tar` 7.5.17 to 7.5.22, `js-yaml` 3.14.2 to 3.15.2, `brace-expansion` 2.1.1 to 2.1.7,
 `discord-api-types`, and `@sapphire/snowflake`, and removed one duplicate. The full suite (834 tests)
-and the real-proof expiry check passed after it. The bot has not yet logged in to Discord on 14.27.0.
+and the real-proof expiry check passed after it. On 2026-09-30 the bot logged in to Discord on 14.27.0,
+reconciled, and admitted a member in a live testnet run of `docs/LINUX_PILOT.md`.
 
 `discord.js` carries the Discord adapter's security reasoning, which rests on facts read from its
 14.26.4 source. In 14.27.0, `PermissionOverwriteManager.js` and `PermissionOverwrites.js` are

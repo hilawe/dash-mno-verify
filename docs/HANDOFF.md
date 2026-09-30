@@ -91,6 +91,26 @@ tests. CI was read green on all three jobs for `dfe17f6` (run 36658007622).
   separate from pilot testing. The interim keys stay labeled as a single-contributor setup.
 - There will never be an external audit or specialist review.
 
+### Live run of the Linux walkthrough, 2026-09-30
+
+`docs/LINUX_PILOT.md` was run as written on the crono project's testnet server at `8b30487` (CI run
+36663994280), with three host substitutions it records: a portable Node on the search path, the step 2
+and 4 prompts answered from files, and a stand-in for the plain `dash-cli` wrapper form. Steps 0 to 6
+passed. Measured there: step 1 in 51 s, the first oracle snapshot in 40 s, the bot open 6 s after
+start, registration with `--node-list` in 48 s at about 1.44 GB, and the members proof in 24 s. The bot
+took the access back by 04:01:08 UTC, within a minute of the period ending at 04:00, and the stop step
+left no pilot containers, with crono's wallet at the chain tip.
+
+- The walkthrough's `dash-cli` wrapper had looped forever under the oracle's search path. Fixed in
+  `b2f4efe` and run under that exact path.
+- The bot's startup reconciliation never finished once a revocation had left an empty member entry,
+  because it looped over a cache the clear path rebuilds. Every restart after the first revocation hung,
+  including the pilot's own restart on 2026-09-29. Fixed in `8b30487`, with a test that fails on the
+  old loop and a focused review (APPROVE).
+- A first `/submit` with `challenge.json` attached by mistake was refused as `http-400` without using
+  up the challenge, and the real proof then admitted the member. Two convenience changes are proposed,
+  not made: write `proof.json` only once finished, and name the challenge file when it is attached.
+
 ### Open, in order
 
 1. Pasta's first pass on DCG infrastructure using `docs/LINUX_PILOT.md`: one registration and one
@@ -100,8 +120,9 @@ tests. CI was read green on all three jobs for `dfe17f6` (run 36658007622).
 2. F9 is triaged in `docs/DEPENDENCY_AUDIT.md`. A same-major update fixed the Discord chain (`discord.js`
    14.27.0, whose overwrite and permission code is byte-identical to 14.26.4's) and three build-time
    packages. In the SQLite configuration the pilot runs, the rest are not reached by this project's
-   code. The Dash SDK's gRPC defects would be reached by the optional Platform backend. Making that backend live now includes a Dash SDK
-   migration. The bot has not yet logged in to Discord on 14.27.0.
+   code. The Dash SDK's gRPC defects would be reached by the optional Platform backend. Making that
+   backend live now includes a Dash SDK migration. The bot logged in, reconciled, and admitted a member
+   on 14.27.0 in the 2026-09-30 live run.
 3. Ceremony scheduling with Pasta.
 4. The gateway and bot do not finish shutting down within 10 s. Check it in the restart acceptance
    check before deciding whether it needs work.

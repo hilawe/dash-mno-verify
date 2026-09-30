@@ -14,6 +14,15 @@ the testnet node, the gateway, the bot, and the prover, and nothing is exposed t
 is the arrangement the project's own testnet pilot used on 2026-09-28 and 2026-09-29, and the gateway
 and bot use that run's container settings.
 
+This recipe was run as written on 2026-09-30, at the commit pinned in step 1, on a Linux host with a
+synced testnet node reached through dashmate. Three things were done differently there, and nothing
+else. Node.js was a portable copy put on the search path. The prompts in steps 2 and 4 were answered
+from files, the voting key coming straight from the node's wallet into its file. And the plain
+`dash-cli` form of step 3a ran with a stand-in `dash-cli`, since that host had none. The run went from
+step 0 through the admission in step 5, saw the bot take the access back within a minute of the
+period ending, and ended with the stop in step 6. It found and fixed a bot defect that had stopped
+admissions from ever opening after a revocation.
+
 Each block says where it runs, either **pilot host** or **Discord**. A block for **your desktop** only
 moves a file between your Discord client and the pilot host.
 
@@ -54,7 +63,7 @@ whose recipe was run as written below. Newer commits are not covered by that run
 ```bash
 git clone https://github.com/hilawe/dash-mno-verify.git ~/mno-pilot/repo
 cd ~/mno-pilot/repo
-git checkout --detach PINNED_COMMIT
+git checkout --detach 8b30487a4eac57ac956a04e8f846516c032cfbfb
 npm ci
 bash scripts/fetch_keys.sh --large registration
 ```
@@ -124,11 +133,13 @@ PATH="$HOME/mno-pilot/bin:$PATH" dash-cli getblockcount
 ```bash
 cd ~/mno-pilot && . ./pilot.conf
 setsid bash -c 'echo $$ > "$HOME/mno-pilot/run/oracle.pid"; cd "$HOME/mno-pilot"; export PATH="$HOME/mno-pilot/bin:$PATH" MNO_ORACLE_SIGNING_KEY="$HOME/mno-pilot/secrets/oracle-key.txt"; while true; do node repo/oracle/oracle.js --out data/root.json >> run/oracle.log 2>&1; sleep 120; done' </dev/null >/dev/null 2>&1 &
-sleep 20; tail -1 run/oracle.log
+for i in $(seq 1 36); do [ -s data/root.json ] && break; sleep 5; done; tail -1 run/oracle.log
 ```
 
 Check: the log line reads `[oracle] dash-cli height ..., N leaves, root ... signed by ... -> data/root.json`.
-The oracle loop records its own process ID in `run/oracle.pid`, which step 6 uses to stop it.
+The first snapshot can take a minute or more, so the check waits up to three minutes for it. Start the
+gateway only after this line appears. The oracle loop records its own process ID in `run/oracle.pid`,
+which step 6 uses to stop it.
 
 ### 3c. Start the gateway
 
@@ -150,8 +161,9 @@ sleep 10; curl -fsS http://127.0.0.1:8787/v1/health; printf '\n'
 ```
 
 Check: the JSON starts `{"ok":true,"canChallenge":true,"canVerify":true,"canRegister":true,"mode":"two-tier"`.
-The gateway is published only on the pilot host's loopback address, so it is not reachable from the
-internet.
+If `canRegister` is `false`, wait 30 seconds and run the `curl` line again, since the gateway re-reads the
+snapshot every 30 seconds. The gateway is published only on the pilot host's loopback address, so it is
+not reachable from the internet.
 
 ### 3d. Start the bot
 
@@ -167,7 +179,8 @@ docker run -d --name mno-pilot-bot --memory=512m --network host --user "$U" \
   -e MNO_MEMBER_GATEWAY_URL=http://127.0.0.1:8787 \
   -e DISCORD_GRANTS_DB=/botdata/grants.db -e DISCORD_SWEEP_SECONDS=60 \
   node:22-bookworm sh -c 'export DISCORD_TOKEN="$(cat /secrets/discord.token)" MNO_ADAPTER_SECRET="$(cat /secrets/adapter.secret)"; exec node adapters/discord/bot.js'
-sleep 15; docker logs mno-pilot-bot 2>&1 | grep '\[discord\]'
+for i in $(seq 1 24); do docker logs mno-pilot-bot 2>&1 | grep -q 'interactions are open' && break; sleep 5; done
+docker logs mno-pilot-bot 2>&1 | grep '\[discord\]'
 ```
 
 Check: the log includes `slash commands registered`, `logged in as ...`, and `reconciled; interactions are open`.
